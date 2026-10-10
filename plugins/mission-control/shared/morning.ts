@@ -63,6 +63,13 @@ export const startMorningCheck = defineRpc({
   }),
   output: morningStatusSchema,
 });
+// One ticket as a task, outside a Morning check: an orchestrator or agent read it from the tracker itself.
+// A ticket some task already carries is not imported again; its tasks are returned instead.
+export const importTicket = defineRpc({
+  name: "tasks.import-ticket",
+  input: hostInput.extend({ workspaceId: z.string().min(1), item: trackerItemSchema }),
+  output: z.object({ created: taskBriefSchema.nullable(), existing: z.array(z.string()) }),
+});
 export const importMorningItems = defineRpc({
   name: "morning.import",
   input: hostInput.extend({

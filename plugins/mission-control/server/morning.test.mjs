@@ -273,3 +273,22 @@ test("overlapping Morning check starts create one agent", async t => {
   await assert.rejects(start(), /is starting/);
   assert.equal(f.state.creates.length, 1);
 });
+
+test("a single ticket imports once, matching keys case-insensitively, and is refused elsewhere", async t => {
+  const f = await fixture(t);
+  const item = { system: "jira", key: "ABC-7", url: "https://tracker.example/browse/ABC-7", type: "Bug", title: "Fix rounding", description: "Totals round wrong.", acceptanceCriteria: "", status: "To Do", sprint: "" };
+  const first = await f.store.importTicket({ serverId, workspaceId: "wks_test", item }, f.paseo);
+  assert.equal(first.created.status, "inbox");
+  assert.equal(first.created.title, "ABC-7 · Fix rounding");
+  assert.deepEqual(first.existing, []);
+  const [task] = (await f.tasks.taskSources(serverId)).map(source => source.task);
+  assert.deepEqual(task.ticket, { system: "jira", key: "ABC-7", url: item.url, type: "Bug" });
+  assert.match(task.acceptanceCriteria, /^Totals round wrong\.\n\nImported from Jira ABC-7: /);
+
+  const again = await f.store.importTicket({ serverId, workspaceId: "wks_test", item: { ...item, key: "abc-7" } }, f.paseo);
+  assert.deepEqual(again, { created: null, existing: [task.taskId] });
+  assert.equal((await readdir(join(f.vault, "Tasks"))).filter(name => name.startsWith("task_")).length, 1);
+
+  await assert.rejects(f.store.importTicket({ serverId: "srv_other", workspaceId: "wks_test", item }, f.paseo), /Open Mission Control on that host/);
+  await assert.rejects(f.store.importTicket({ serverId, workspaceId: "wks_gone", item: { ...item, key: "ABC-8" } }, f.paseo), /workspace is unavailable/);
+});

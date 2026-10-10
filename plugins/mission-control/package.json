@@ -11,6 +11,7 @@
     "client/",
     "server/",
     "shared/",
+    "scripts/",
     "third-party/",
     "THIRD_PARTY_NOTICES.md"
   ],

@@ -738,6 +738,15 @@
 <p>Attention, Tasks, Review and Docs come from Mission Control on that host, read through its own copy running in your Paseo app, so they need Mission Control installed there and a version with this screen. When it's missing, outdated or the host is offline, the tab says which. Workspaces that Paseo sends without an activity time now show their latest agent's activity, or when they entered their current status, here and on the Workspaces page.</p>
 
 <!-- ============================================================ -->
+<h3 id="orchestrator-command">Driving a host's Mission Control from an orchestrator</h3>
+<p>An orchestrator agent should start ticket work through the remote host's Mission Control, not as a plain agent. That way the work becomes a task with its own worktree and goes through intake, plan, execute, validate, review and handoff, and it shows up in Tasks, Review and the status labels. The kit's <code>plugins/mission-control/scripts/remote.mjs</code> does this from your computer, using a file that holds the host's pairing URL:</p>
+<ul>
+  <li><code>import-ticket</code> turns one ticket into a task. If a task already has that ticket, it returns that task instead.</li>
+  <li><code>start</code> works like the <span class="ui">Start</span> button, including the new worktree and branch. It also resumes or recovers a task. A task whose agent is working is left alone.</li>
+  <li><code>status</code>, <code>runs</code> and <code>docs</code> show the task's stage, next action and its handoff.</li>
+  <li><code>set-status</code> and <code>due</code> change the task's status and due date. <code>attention</code> lists the decisions and questions waiting for you.</li>
+</ul>
+<p>It has no command to approve decisions, merge or open pull requests. Those stay with you in Mission Control. The host needs this version of Mission Control for <code>import-ticket</code>.</p>
 <h2 id="morning-check">Morning check</h2>
 <p>The Morning check starts your day from your ticket tracker. It's at the bottom of a workspace page, for projects set up with Development Flow.</p>
 <figure>

@@ -62,6 +62,20 @@ An orchestrator workspace is a workspace on this host where one agent drives ano
 
 Workspaces that Paseo sends without an activity time show their latest agent's activity or when they entered their current status, here and on the Workspaces page.
 
+**The orchestrator command** (`scripts/remote.mjs`) lets an orchestrator agent drive another host's Mission Control, so ticket work there runs as Mission Control tasks rather than plain agents. Give it a file holding the host's pairing URL, or `--local`:
+
+```
+node plugins/mission-control/scripts/remote.mjs --offer-file <file> import-ticket --workspace <id> --system jira --key ABC-12 --url <url> --title "<title>" --description-file <file>
+node plugins/mission-control/scripts/remote.mjs --offer-file <file> start --workspace <id> --task <taskId> --provider codex/<model> --thinking high
+node plugins/mission-control/scripts/remote.mjs --offer-file <file> status --workspace <id> --task <taskId>
+```
+
+- **Commands:** `identity`, `summary`, `tasks`, `import-ticket`, `create`, `status`, `start`, `set-status`, `due`, `runs`, `docs`, `attention`, `morning-status`, `morning-start` and `morning-import`. `--help` lists their options. Output is JSON.
+- **`import-ticket`** calls `tasks.import-ticket`, which imports one tracker item outside a Morning check. It shares the Morning import's lock and duplicate check, so a ticket some task already carries returns that task instead.
+- **`start`** does what the Start button does. A first start in a Git project gets its own worktree on the previewed branch (`--no-isolate`, `--branch` and `--branch-type` change that). A task whose agent is working, or which is blocked, is left alone, and the output says why.
+- **What it can't do:** there are no commands for decisions, merges or pull requests. Those stay with you.
+- **How it connects:** like the agent rename, it uses Paseo's internal `DaemonClient`, over the relay with end-to-end encryption, from the plugin's own dependencies.
+
 ## Morning check
 
 The workspace page's **Morning check** section starts an agent with the kit's `morning-check` skill, shows the latest report from `C:\dev-vault\Daily`, and imports the current-sprint Jira or Azure DevOps items you pick as tasks with their ticket. The agent reads the tracker through its own MCP tools; this plugin never calls Jira or Azure DevOps. See [Morning check](../../docs/agent-workflow.md#morning-check).

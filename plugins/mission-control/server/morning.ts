@@ -7,6 +7,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
   getMorningStatus,
   importMorningItems,
+  importTicket,
   morningLaunchSchema,
   morningReportIdSchema,
   morningReportSchema,
@@ -16,7 +17,7 @@ import {
   type MorningStatus,
   type MorningTaskBrief,
 } from "../shared/morning";
-import { compareTrackerItems, importedTaskFields, ticketIdentity } from "../shared/tickets";
+import { compareTrackerItems, importedTaskFields, ticketIdentity, type TrackerItem } from "../shared/tickets";
 import { defaultVaultPath } from "../shared/vault";
 import { workflowInstructionsPrompt } from "../shared/workflow-instructions.mjs";
 import { createWorkflowInstructionsStore } from "./workflow-instructions-store.mjs";
@@ -232,7 +233,23 @@ export function createMorningStore(overrides: Partial<Deps> = {}) {
     });
   }
 
-  return { status, start, importItems };
+  async function importTicket(input: { serverId: string; workspaceId: string; item: TrackerItem }, paseo: PaseoApi) {
+    await localHost(input.serverId);
+    const workspace = await paseo.workspaces.ref(input.workspaceId).refresh();
+    if (!workspace || workspace.archivingAt) throw new Error("This workspace is unavailable on this host.");
+    // The Morning import's lock, so the two can't create the same ticket twice.
+    return withLock(await daily(), ".morning-import.lock", "Another import is running. Retry in a moment.", async () => {
+      const { sources, skipped } = await deps.sources(input.serverId);
+      const unknown = skipped.filter(entry => !entry.ticket);
+      if (unknown.length) throw new Error(`${unknown.map(entry => entry.file).join(", ")} ${unknown.length === 1 ? "is" : "are"} invalid and can't be checked for this ticket, so importing could create a duplicate. Fix ${unknown.length === 1 ? "that file" : "those files"} in dev-vault first.`);
+      const { missing, imported } = compareTrackerItems([input.item], [...sources.map(source => source.task), ...ticketsOf(skipped)]);
+      if (!missing.length) return { created: null, existing: imported[0]?.taskIds ?? [] };
+      const task = await deps.createTask({ serverId: input.serverId, workspaceId: input.workspaceId, ...importedTaskFields(input.item) }, workspace.projectId);
+      return { created: { taskId: task.taskId, title: task.title, status: task.status }, existing: [] };
+    });
+  }
+
+  return { status, start, importItems, importTicket };
 }
 
 export function registerMorning(server: PluginServerContext) {
@@ -240,4 +257,5 @@ export function registerMorning(server: PluginServerContext) {
   server.handle(getMorningStatus, (input, { paseo }) => morning.status(input, paseo));
   server.handle(startMorningCheck, (input, { paseo }) => morning.start(input, paseo));
   server.handle(importMorningItems, (input, { paseo }) => morning.importItems(input, paseo));
+  server.handle(importTicket, (input, { paseo }) => morning.importTicket(input, paseo));
 }
