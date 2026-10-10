@@ -1,0 +1,203 @@
+{
+  "schemaVersion": 1,
+  "note": "Mission Control's dependencies (task 7 report, section 3). install: mission-control means the Setup screen may install or update it after a confirmation; manual means it only shows the version and the command or link.",
+  "dependencies": [
+    {
+      "id": "paseo",
+      "name": "Paseo",
+      "section": "paseo",
+      "detect": { "kind": "paseo" },
+      "minimum": "0.9.1",
+      "pinned": null,
+      "install": "manual",
+      "optional": false,
+      "help": { "text": "The Paseo app updates itself. Mission Control needs 0.9.1 or later.", "command": null, "link": "https://paseo.sh/download" }
+    },
+    {
+      "id": "node",
+      "name": "Node.js",
+      "section": "tools",
+      "detect": { "kind": "command", "command": "node", "args": ["--version"] },
+      "minimum": "22.0.0",
+      "pinned": null,
+      "install": "manual",
+      "optional": false,
+      "help": { "text": "Agents run dev-flow.mjs with Node, and the tests need 22 or later. Install the current LTS.", "command": null, "link": "https://nodejs.org/en/download" }
+    },
+    {
+      "id": "npm",
+      "name": "npm",
+      "section": "tools",
+      "detect": { "kind": "npm-self" },
+      "minimum": null,
+      "pinned": null,
+      "install": "manual",
+      "optional": false,
+      "help": { "text": "Comes with Node.js. Needed to install the OCR CLI.", "command": null, "link": "https://nodejs.org/en/download" }
+    },
+    {
+      "id": "git",
+      "name": "Git",
+      "section": "tools",
+      "detect": { "kind": "command", "command": "git", "args": ["--version"] },
+      "minimum": null,
+      "pinned": null,
+      "install": "manual",
+      "optional": false,
+      "help": { "text": "Task worktrees, reviews and merges use Git.", "command": "winget upgrade --id Git.Git", "link": "https://git-scm.com/downloads" }
+    },
+    {
+      "id": "gh",
+      "name": "GitHub CLI (gh)",
+      "section": "tools",
+      "detect": { "kind": "gh" },
+      "minimum": null,
+      "pinned": null,
+      "install": "manual",
+      "optional": true,
+      "help": { "text": "Opens draft pull requests on GitHub for projects that deliver by pull request (Settings → Delivery). Sign in with gh auth login.", "command": "winget install --id GitHub.cli", "link": "https://cli.github.com/" }
+    },
+    {
+      "id": "az",
+      "name": "Azure CLI (az) with azure-devops",
+      "section": "tools",
+      "detect": { "kind": "az" },
+      "minimum": null,
+      "pinned": null,
+      "install": "manual",
+      "optional": true,
+      "help": { "text": "Opens draft pull requests on Azure DevOps Repos. Needs the azure-devops extension, and az login (or AZURE_DEVOPS_EXT_PAT).", "command": "az extension add --name azure-devops", "link": "https://learn.microsoft.com/cli/azure/install-azure-cli-windows" }
+    },
+    {
+      "id": "bitbucket",
+      "name": "Bitbucket Cloud credentials",
+      "section": "tools",
+      "detect": { "kind": "bitbucket-credentials" },
+      "minimum": null,
+      "pinned": null,
+      "install": "manual",
+      "optional": true,
+      "help": { "text": "Opens draft pull requests on Bitbucket Cloud through its API. Set BITBUCKET_TOKEN, or BITBUCKET_USERNAME and BITBUCKET_APP_PASSWORD, for the Paseo daemon, or keep a bitbucket.org credential in Git's credential manager. Mission Control never stores or shows them.", "command": null, "link": "https://support.atlassian.com/bitbucket-cloud/docs/using-api-tokens/" }
+    },
+    {
+      "id": "gortex",
+      "name": "Gortex",
+      "section": "tools",
+      "detect": { "kind": "command", "command": "gortex", "args": ["version"], "extraDirs": [{ "env": "LOCALAPPDATA", "path": "Programs/gortex" }] },
+      "minimum": null,
+      "pinned": null,
+      "install": "manual",
+      "optional": false,
+      "help": { "text": "Reviews use it for repository context. Update with the command below; a first install uses Gortex's install script.", "command": "gortex upgrade --run", "link": "https://github.com/zzet/gortex#installation" }
+    },
+    {
+      "id": "ocr",
+      "name": "OpenCode Review (OCR) CLI",
+      "section": "tools",
+      "detect": { "kind": "npm-package", "package": "@alibaba-group/open-code-review" },
+      "minimum": null,
+      "pinned": "1.12.9",
+      "install": "mission-control",
+      "optional": false,
+      "help": { "text": "The review-changes skill runs ocr delegate preview and ocr delegate rule.", "command": "npm install -g @alibaba-group/open-code-review@1.12.9", "link": null }
+    },
+    {
+      "id": "ocr-rules",
+      "name": "OCR rule files",
+      "section": "tools",
+      "detect": { "kind": "ocr-rules" },
+      "minimum": null,
+      "pinned": null,
+      "install": "mission-control",
+      "optional": false,
+      "help": { "text": "Global review rules in ~/.opencodereview, copied from the kit's docs/ocr-kit.", "command": null, "link": null }
+    },
+    {
+      "id": "obsidian",
+      "name": "Obsidian app",
+      "section": "tools",
+      "detect": { "kind": "obsidian-app" },
+      "minimum": null,
+      "pinned": null,
+      "install": "manual",
+      "optional": true,
+      "help": { "text": "Optional: for reading and editing the vault. Detected from its files; never started.", "command": null, "link": "https://obsidian.md/download" }
+    },
+    {
+      "id": "obsidian-cli",
+      "name": "Obsidian CLI",
+      "section": "tools",
+      "detect": { "kind": "obsidian-cli" },
+      "minimum": null,
+      "pinned": null,
+      "install": "manual",
+      "optional": true,
+      "help": { "text": "Optional; nothing uses it yet. Turn it on in Obsidian → Settings → General → Command line interface.", "command": null, "link": "https://obsidian.md/help/cli" }
+    },
+    {
+      "id": "claude",
+      "name": "Claude Code",
+      "section": "providers",
+      "detect": { "kind": "npm-package", "package": "@anthropic-ai/claude-code", "provider": "claude" },
+      "minimum": null,
+      "pinned": null,
+      "install": "manual",
+      "optional": true,
+      "help": { "text": "Set up in Paseo → Settings → Providers.", "command": "npm install -g @anthropic-ai/claude-code", "link": null }
+    },
+    {
+      "id": "codex",
+      "name": "Codex",
+      "section": "providers",
+      "detect": { "kind": "npm-package", "package": "@openai/codex", "provider": "codex" },
+      "minimum": null,
+      "pinned": null,
+      "install": "manual",
+      "optional": true,
+      "help": { "text": "Set up in Paseo → Settings → Providers.", "command": "npm install -g @openai/codex", "link": null }
+    },
+    {
+      "id": "opencode",
+      "name": "OpenCode",
+      "section": "providers",
+      "detect": { "kind": "npm-package", "package": "opencode-ai", "provider": "opencode" },
+      "minimum": null,
+      "pinned": null,
+      "install": "manual",
+      "optional": true,
+      "help": { "text": "Set up in Paseo → Settings → Providers.", "command": "npm install -g opencode-ai", "link": null }
+    },
+    {
+      "id": "copilot",
+      "name": "GitHub Copilot CLI",
+      "section": "providers",
+      "detect": { "kind": "npm-package", "package": "@github/copilot", "provider": "copilot", "selfUpdateDir": { "env": "LOCALAPPDATA", "path": "copilot/pkg/win32-x64" } },
+      "minimum": null,
+      "pinned": null,
+      "install": "manual",
+      "optional": true,
+      "help": { "text": "Set up in Paseo → Settings → Providers. Copilot also updates itself outside npm; the newest version it downloaded is shown.", "command": "npm install -g @github/copilot", "link": null }
+    }
+  ],
+  "ocr": {
+    "package": "@alibaba-group/open-code-review",
+    "version": "1.12.9",
+    "home": ".opencodereview",
+    "files": [
+      { "path": "rule.json", "source": "docs/ocr-kit/global-rule.json" },
+      { "path": "rules/csharp-dotnet.md", "source": "docs/ocr-kit/csharp-dotnet.md" },
+      { "path": "reviewer-prompt.md", "source": "docs/ocr-kit/reviewer-prompt.md" },
+      { "path": "review-output.schema.json", "source": "docs/ocr-kit/review-output.schema.json" }
+    ]
+  },
+  "skills": {
+    "kitFolder": "skills",
+    "delegate": { "name": "open-code-review-delegate", "source": "docs/ocr-kit/open-code-review-delegate", "version": "OCR v1.12.9" },
+    "providers": [
+      { "id": "claude", "name": "Claude Code", "folder": ".claude/skills" },
+      { "id": "codex", "name": "Codex", "folder": ".codex/skills" },
+      { "id": "opencode", "name": "OpenCode", "folder": ".config/opencode/skills" },
+      { "id": "copilot", "name": "GitHub Copilot CLI", "folder": ".copilot/skills" }
+    ]
+  }
+}

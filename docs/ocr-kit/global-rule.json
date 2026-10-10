@@ -1,0 +1,16 @@
+{
+  "rules": [
+    {
+      "path": "**/*.{cs,csx,cshtml,razor,csproj,props,targets}",
+      "rule": "rules/csharp-dotnet.md",
+      "merge_system_rule": false
+    }
+  ],
+  "include": [
+    "**/*.{csx,cshtml,razor,csproj,props,targets}"
+  ],
+  "exclude": [
+    "**/bin/**",
+    "**/obj/**"
+  ]
+}

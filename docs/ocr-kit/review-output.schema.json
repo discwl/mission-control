@@ -1,0 +1,381 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Host-delegated OCR and Gortex review report",
+  "description": "Host workflow schema, not native OCR output. Validate cross-field counts and exact manifest membership separately. Empty string means not applicable or unavailable; explain unavailable required evidence in limitations.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "ocr-gortex-host-review/1"
+    },
+    "review_id": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "incomplete",
+        "empty"
+      ]
+    },
+    "summary": {
+      "type": "string"
+    },
+    "versions": {
+      "type": "object",
+      "properties": {
+        "ocr": {
+          "type": "string"
+        },
+        "gortex": {
+          "type": "string"
+        },
+        "reviewer": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ocr",
+        "gortex",
+        "reviewer"
+      ],
+      "additionalProperties": false
+    },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "range",
+            "commit",
+            "workspace"
+          ]
+        },
+        "repository": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "base_ref": {
+          "type": "string"
+        },
+        "base_sha": {
+          "type": "string"
+        },
+        "head_sha": {
+          "type": "string"
+        },
+        "merge_base": {
+          "type": "string"
+        },
+        "dirty_detected": {
+          "type": "boolean"
+        },
+        "snapshot_stable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "mode",
+        "repository",
+        "branch",
+        "base_ref",
+        "base_sha",
+        "head_sha",
+        "merge_base",
+        "dirty_detected",
+        "snapshot_stable"
+      ],
+      "additionalProperties": false
+    },
+    "gortex": {
+      "type": "object",
+      "properties": {
+        "used": {
+          "type": "boolean"
+        },
+        "freshness": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "degraded",
+            "unavailable",
+            "not_applicable"
+          ]
+        },
+        "requested_view": {
+          "type": "string"
+        },
+        "actual_view": {
+          "type": "string"
+        },
+        "observed_commit": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "used",
+        "freshness",
+        "requested_view",
+        "actual_view",
+        "observed_commit",
+        "evidence"
+      ],
+      "additionalProperties": false
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "start_line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "end_line": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "bug",
+              "security",
+              "performance",
+              "maintainability",
+              "test",
+              "style",
+              "documentation",
+              "other"
+            ]
+          },
+          "content": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "remediation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "start_line",
+          "end_line",
+          "severity",
+          "category",
+          "content",
+          "confidence",
+          "evidence",
+          "remediation"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "properties": {
+        "total_files": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reviewable_files": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reviewed_files": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "skipped_files": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "excluded_files": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "coverage_rate": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 100
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "disposition": {
+                "type": "string",
+                "enum": [
+                  "reviewed",
+                  "skipped"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              },
+              "rule_source": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "status",
+              "disposition",
+              "reason",
+              "rule_source"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "exclusions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "exclude_reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "status",
+              "exclude_reason"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "supplemental_checks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "total_files",
+        "reviewable_files",
+        "reviewed_files",
+        "skipped_files",
+        "excluded_files",
+        "coverage_rate",
+        "entries",
+        "exclusions",
+        "supplemental_checks"
+      ],
+      "additionalProperties": false
+    },
+    "validation": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "failed",
+              "not_run",
+              "unavailable"
+            ]
+          },
+          "evidence": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "command",
+          "revision",
+          "status",
+          "evidence"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "review_id",
+    "status",
+    "summary",
+    "versions",
+    "scope",
+    "gortex",
+    "findings",
+    "coverage",
+    "validation",
+    "limitations"
+  ],
+  "additionalProperties": false
+}

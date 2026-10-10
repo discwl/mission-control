@@ -1,0 +1,6 @@
+{
+  "remote-search": {
+    "tokens": { "accessToken": "SECRET-SENTINEL-oc-token", "refreshToken": "SECRET-SENTINEL-oc-refresh" },
+    "serverUrl": "https://search.example/mcp"
+  }
+}

@@ -1,0 +1,31 @@
+{
+  // OpenCode fixture: JSON with comments and trailing commas.
+  "$schema": "https://opencode.ai/config.json",
+  /* Block comments too, with a "quoted // not a comment" inside. */
+  "instructions": [
+    "~/.config/opencode/rules/extra.md",
+    "rules/*.md",
+    "https://example.com/rules.md?token=SECRET-SENTINEL-instructions",
+  ],
+  "mcp": {
+    "local-db": {
+      "type": "local",
+      "command": ["uvx", "db-server", "--password", "SECRET-SENTINEL-oc-arg"],
+      "environment": { "DB_PASSWORD": "SECRET-SENTINEL-oc-env" },
+      "enabled": true,
+    },
+    "remote-search": {
+      "type": "remote",
+      "url": "https://search.example/mcp",
+      "headers": { "Authorization": "Bearer SECRET-SENTINEL-oc-header" },
+    },
+    "parked": {
+      "type": "local",
+      "command": ["parked-server"],
+      "enabled": false, // turned off without deleting
+    },
+  },
+  "provider": {
+    "custom": { "options": { "apiKey": "SECRET-SENTINEL-oc-provider", "baseURL": "https://llm.example/v1" } },
+  },
+}

@@ -1,0 +1,939 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mission Control · User guide</title>
+<style>
+  :root {
+    --text: #1f2328; --muted: #59636e; --faint: #8c959f; --border: #d0d7de; --soft: #f6f8fa;
+    --accent: #1a7f37; --accent-soft: #dafbe1; --warn: #9a6700; --warn-soft: #fff8c5; --info: #0969da; --info-soft: #ddf4ff;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; font: 16px/1.6 "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif; color: var(--text); background: #fff; }
+  .layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); max-width: 1240px; margin: 0 auto; }
+  nav { position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto; padding: 28px 18px 28px 24px; border-right: 1px solid var(--border); font-size: 14px; }
+  nav .brand { font-weight: 700; font-size: 16px; margin-bottom: 4px; }
+  nav .version { color: var(--muted); font-size: 12px; margin-bottom: 18px; }
+  nav ol { list-style: none; margin: 0; padding: 0; }
+  nav li { margin: 2px 0; }
+  nav a { color: var(--text); text-decoration: none; display: block; padding: 3px 8px; border-radius: 6px; }
+  nav a:hover { background: var(--soft); }
+  nav ol ol { padding-left: 12px; font-size: 13px; }
+  nav ol ol a { color: var(--muted); }
+  main { padding: 40px 48px 80px; max-width: 920px; }
+  h1 { font-size: 34px; line-height: 1.2; margin: 0 0 6px; }
+  .subtitle { color: var(--muted); margin: 0 0 28px; }
+  h2 { font-size: 26px; margin: 56px 0 12px; padding-top: 8px; border-top: 1px solid var(--border); }
+  h3 { font-size: 19px; margin: 32px 0 8px; }
+  h4 { font-size: 16px; margin: 22px 0 6px; }
+  p, ul, ol, table { margin: 0 0 14px; }
+  li { margin: 4px 0; }
+  a { color: var(--info); }
+  code { font: 13.5px/1.4 Consolas, "Cascadia Mono", monospace; background: var(--soft); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; }
+  .ui { display: inline-block; font-size: 14px; font-weight: 600; line-height: 1.35; padding: 0 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--soft); white-space: nowrap; }
+  figure { margin: 18px 0 26px; }
+  figure img { display: block; max-width: 100%; height: auto; border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 6px 18px rgba(31, 35, 40, 0.12); background: #1b1d1e; }
+  figure.narrow img { max-width: 560px; }
+  figure.tall img { max-width: 340px; }
+  figcaption { color: var(--muted); font-size: 14px; margin-top: 8px; }
+  .callout { border-left: 4px solid var(--info); background: var(--info-soft); padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 0 0 16px; }
+  .callout.tip { border-color: var(--accent); background: var(--accent-soft); }
+  .callout.warn { border-color: var(--warn); background: var(--warn-soft); }
+  .callout > :last-child { margin-bottom: 0; }
+  .callout strong:first-child { margin-right: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { background: var(--soft); font-weight: 600; }
+  .badge { display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; background: var(--warn-soft); color: var(--warn); border: 1px solid #d4a72c; vertical-align: middle; margin-left: 6px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin: 0 0 18px; }
+  .card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .card h4 { margin: 0 0 4px; }
+  .card p { margin: 0; color: var(--muted); font-size: 14.5px; }
+  .flow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 16px; }
+  .flow span { border: 1px solid var(--border); border-radius: 999px; padding: 2px 12px; font-size: 14px; background: var(--soft); }
+  .flow b { color: var(--faint); font-weight: 400; }
+  footer { color: var(--muted); font-size: 13px; margin-top: 56px; border-top: 1px solid var(--border); padding-top: 14px; }
+  .table-wrap { max-width: 100%; overflow-x: auto; margin-bottom: 18px; }
+  .table-wrap table { min-width: 620px; margin-bottom: 0; }
+  caption { text-align: left; font-weight: 600; margin-bottom: 8px; }
+  td, code, figcaption { overflow-wrap: anywhere; }
+  pre { max-width: 100%; overflow-x: auto; padding: 14px; background: var(--soft); border: 1px solid var(--border); border-radius: 8px; }
+  pre code { padding: 0; border: 0; }
+  a:focus-visible { outline: 3px solid var(--info); outline-offset: 3px; }
+  .source-note { font-size: 13px; color: var(--muted); }
+  .roadmap-cards ul { padding-left: 19px; font-size: 14px; margin: 8px 0 12px; }
+  .roadmap-state { display: inline-block; font-size: 12px; font-weight: 600; line-height: 1.5; padding: 3px 9px; border-radius: 6px; margin-bottom: 8px; background: var(--soft); color: var(--muted); }
+  .roadmap-state.available { background: var(--accent-soft); color: var(--accent); }
+  .roadmap-state.next { background: var(--info-soft); color: var(--info); }
+  .roadmap-state.later { background: var(--soft); color: var(--muted); }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  @media (max-width: 900px) {
+    .layout { display: block; }
+    nav { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border); }
+    main { padding: 28px 20px 60px; }
+    figure.narrow img, figure.tall img { max-width: 100%; }
+  }
+  @media print {
+    nav { display: none; }
+    .layout { display: block; }
+    main { max-width: none; padding: 0; }
+    figure, table, .callout { break-inside: avoid; }
+    h2 { break-before: page; border-top: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav aria-label="Contents">
+  <div class="brand">Mission Control</div>
+  <div class="version">User guide · updated October 2, 2026<br>Talat meeting workflow · Roadmap &amp; Review</div>
+  <ol>
+    <li><a href="#overview">What it does</a></li>
+    <li><a href="#inventory">Current functionality</a></li>
+    <li><a href="#roadmap">Roadmap &amp; testing</a>
+      <ol>
+        <li><a href="#roadmap-now-next">Available now / next / later</a></li>
+        <li><a href="#roadmap-milestones">Build milestones</a></li>
+        <li><a href="#roadmap-testing">When to start testing</a></li>
+        <li><a href="#roadmap-workflow">Profiles, schedules &amp; OCR</a></li>
+        <li><a href="#roadmap-orchestration">Host coordinators &amp; supervisor</a></li>
+        <li><a href="#roadmap-schedules">How schedules work together</a></li>
+        <li><a href="#roadmap-hub">Where Paseo Hub fits</a></li>
+        <li><a href="#roadmap-dates">Timing &amp; deadlines</a></li>
+        <li><a href="#roadmap-meetings">Talat meeting input</a></li>
+      </ol>
+    </li>
+    <li><a href="#concepts">Key ideas</a></li>
+    <li><a href="#getting-around">Getting around</a></li>
+    <li><a href="#workspaces">Workspaces</a>
+      <ol>
+        <li><a href="#filters">Search and filters</a></li>
+        <li><a href="#projects">Projects and Git</a></li>
+        <li><a href="#renaming">Renaming</a></li>
+        <li><a href="#workspace-page">The workspace page</a></li>
+        <li><a href="#subagents">Sub-agents</a></li>
+      </ol>
+    </li>
+    <li><a href="#tasks">Tasks</a>
+      <ol>
+        <li><a href="#new-task">Creating a task</a></li>
+        <li><a href="#start-task">Starting an agent</a></li>
+        <li><a href="#running-task">Following a run</a></li>
+        <li><a href="#task-details">Activity, decisions &amp; artifacts</a></li>
+        <li><a href="#task-reference">Referencing a task in chat</a></li>
+      </ol>
+    </li>
+    <li><a href="#attention">Attention</a>
+      <ol>
+        <li><a href="#decisions">Decisions and findings</a></li>
+        <li><a href="#waiting">Waiting for you</a></li>
+        <li><a href="#prompts">Permission prompts</a></li>
+        <li><a href="#merge">Ready to deliver</a></li>
+      </ol>
+    </li>
+    <li><a href="#review">Review</a></li>
+    <li><a href="#docs">Docs</a>
+      <ol><li><a href="#talat-meetings">Talat meetings in Obsidian</a></li></ol>
+    </li>
+    <li><a href="#mission-panel">The Mission panel</a></li>
+    <li><a href="#agents-panel">The Agents panel</a> · <a href="#agent-cleanup">Agent cleanup</a></li>
+    <li><a href="#orchestrator">Orchestrator workspaces</a></li>
+    <li><a href="#morning-check">Morning check</a></li>
+    <li><a href="#settings">Settings</a>
+      <ol>
+        <li><a href="#updates">Updates</a></li>
+        <li><a href="#branch-names">Branch names</a></li>
+        <li><a href="#workflow-instructions">Workflow instructions</a></li>
+        <li><a href="#tools">Tools &amp; skills</a></li>
+        <li><a href="#delivery">Delivery</a></li>
+        <li><a href="#setup">Setup</a></li>
+      </ol>
+    </li>
+    <li><a href="#lifecycle">How a task moves</a></li>
+    <li><a href="#workspace-labels">Workspace labels &amp; agents</a></li>
+    <li><a href="#screenshot-notes">Screenshot coverage</a></li>
+    <li><a href="#coming">Deployment &amp; verification limits</a></li>
+    <li><a href="#troubleshooting">Troubleshooting</a></li>
+  </ol>
+</nav>
+
+<main>
+<h1>Mission Control user guide</h1>
+<p class="subtitle">Tasks, agents, decisions, documents and delivery in Paseo. Updated October 7, 2026 with orchestrator workspaces, following the October 2 Talat meeting guidance and the October 1 roadmap and Review update; the wider functionality inventory was refreshed September 30.</p>
+<div class="callout"><p><strong>This edition.</strong> The October 7 update adds <a href="#orchestrator">orchestrator workspaces</a>: a local workspace that drives another host gets that host's bubbles and a Host agents tab with its Workspaces, Attention, Tasks, Review and Docs. The October 2 update records Talat as the chosen meeting app and adds its Obsidian export setup and planned meeting intake. The October 1 roadmap and Review update builds on the September 30 functionality inventory. Some checkout changes still await independent review; this guide does not mean every host has the same build. Screenshots are real application captures from the previous edition and this conversation; their captions identify later changes. Fresh desktop capture was unavailable, and phone-device verification remains pending.</p></div>
+
+<!-- ============================================================ -->
+<h2 id="overview">What Mission Control does</h2>
+<p>Paseo runs coding agents (Claude Code, Codex, GitHub Copilot CLI and OpenCode) in workspaces on one or more computers. Mission Control adds the layer on top: it turns work into <strong>tasks</strong>, starts agents on them in their own worktrees, collects the questions agents need you to answer, and gets finished work reviewed and merged.</p>
+<div class="cards">
+  <div class="card"><h4>See everything</h4><p>Every host, project, workspace and agent in one place, with search, filters and collapsible projects.</p></div>
+  <div class="card"><h4>Run tasks</h4><p>Write down what "done" means, then start an agent on it in its own branch and folder with one click.</p></div>
+  <div class="card"><h4>Answer in one place</h4><p>Plan approvals, review decisions and permission prompts from every agent, in the Attention tab.</p></div>
+  <div class="card"><h4>Review and merge</h4><p>Risk-sorted file-by-file review with comments, then a guarded Merge into your main checkout.</p></div>
+  <div class="card"><h4>Keep tools in order</h4><p>MCP servers, rules, skills and tool search for every provider, plus updates, branch naming and dependencies.</p></div>
+  <div class="card"><h4>Start the day</h4><p>The Morning check reads your Jira or Azure DevOps sprint and imports the items you pick as tasks.</p></div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="inventory">Current functionality</h2>
+<p>This is an inventory of implemented behavior in the local checkout, not a list of promised features. Host-local records, provider tools and forge sign-ins still determine what is available on a particular host.</p>
+<div class="table-wrap" role="region" aria-label="Current functionality inventory" tabindex="0"><table>
+  <caption>Functionality checked for this guide refresh</caption>
+  <thead><tr><th scope="col">Area</th><th scope="col">What you can do</th><th scope="col">Boundary to keep in mind</th></tr></thead>
+  <tbody>
+  <tr><th scope="row"><a href="#workspaces">Workspaces</a></th><td>Browse hosts and projects; search and combine workspace, project and native-label filters; fold projects; rename workspaces and agents.</td><td>Offline rosters are last observed. A native label is separate from task status and agent activity.</td></tr>
+  <tr><th scope="row"><a href="#projects">Project Git</a></th><td>See the default branch, use the compact Pull latest icon, and inspect auto-fetch state. Change branch and fetch preferences in plugin settings.</td><td>Pull latest uses guarded fast-forward behavior; a status icon does not prove that a fetch succeeded.</td></tr>
+  <tr><th scope="row"><a href="#tasks">Tasks</a></th><td>Create tasks; use Board or List; filter active work; set status; start or resume a bound run; copy the exact task ID with an icon.</td><td>Tasks are assigned to a workspace. Delivered and closed tasks stay in history.</td></tr>
+  <tr><th scope="row"><a href="#task-details">Task details</a></th><td>Read a task-status badge and separate latest update; expand compact activity rows; inspect decisions, Markdown artifacts, run snapshots and technical IDs.</td><td>The timeline is bounded recent history. A completion check means the event recorded completion, not that the current revision is approved.</td></tr>
+  <tr><th scope="row"><a href="#attention">Attention</a></th><td>Answer plan/review decisions and recorded questions; handle permission prompts; inspect findings, unsent answers and delivery results.</td><td>An idle agent is not automatically a request for help. Approval and permission are distinct records.</td></tr>
+  <tr><th scope="row"><a href="#review">Review</a></th><td>Choose a change range, inspect diffs, mark files/blocks reviewed, send comments, open/reveal files or folders, copy absolute/relative paths, and confirm discard actions.</td><td>Human review markers are not the task's approval decision. The Review bubble opens the main workspace tab directly; device validation remains separate.</td></tr>
+  <tr><th scope="row"><a href="#docs">Docs</a></th><td>Browse the vault, preview/edit eligible Markdown, follow wiki or relative document links, and manage notes/folders or open Obsidian.</td><td>Missing or ambiguous targets show feedback. Unsaved notes must be saved or discarded before navigating.</td></tr>
+  <tr><th scope="row"><a href="#mission-panel">Mission panel</a></th><td>See this workspace's Needs you, Tasks, Review and Agents sections; inspect task details; save their display order.</td><td>The section order belongs to this plugin installation. Task/review records require the matching host.</td></tr>
+  <tr><th scope="row"><a href="#agents-panel">Agents</a></th><td>Browse parent/child trees and helpers; search and filter states; refresh; open chats and use reply, redirect, detach, archive or permission actions. The <a href="#agent-cleanup">broom</a> previews eligible families for manual cleanup.</td><td>A recorded run agent may be idle, missing or different from the currently active agent. Cleanup requires explicit selection and a fresh eligibility check.</td></tr>
+  <tr><th scope="row"><a href="#orchestrator">Orchestrator workspaces</a></th><td>Link a local workspace to the remote host it drives with a <code>host.json</code>; use that host's Workspaces, Attention, Tasks, Review and Docs in a Host agents tab; list what is ready to review there and open its review.</td><td>Workspaces come from the remote host's Paseo. Attention, Tasks, Review and Docs need Mission Control on that host, in a version with this screen.</td></tr>
+  <tr><th scope="row"><a href="#morning-check">Morning check</a></th><td>Read sprint work through an agent, write a daily report, and import selected Jira/Azure DevOps items; use fixtures for local checks.</td><td>Real imports require the tracker tools and configuration on the relevant host; they do not change tracker records.</td></tr>
+  <tr><th scope="row"><a href="#merge">Delivery</a></th><td>Prepare guarded local Merge or draft Open PR actions, check PR state, and explicitly clean up delivered work.</td><td>Delivery requires the relevant approval and exact revision checks; it does not follow from a completed handoff.</td></tr>
+  <tr><th scope="row"><a href="#settings">Settings &amp; setup</a></th><td>Inspect/install supported dependencies, manage supported MCP settings, review rules/skills, configure branch naming, delivery and host/project Intake and Planning guidance, and check plugin updates.</td><td>Capabilities vary by provider. Running sessions retain their loaded configuration; folder installs need their own update/reload workflow.</td></tr>
+  <tr><th scope="row"><a href="#workspace-labels">Agent-managed labels</a></th><td>Use a task-bound command to read, create/assign or remove native labels; apply a guarded lifecycle status. Nine workflow skills now carry that policy.</td><td>Live-tested with Paseo 0.10.2's exported internal client. Shared-workspace safeguards apply. This is not a background synchronizer or a new direct label-editing UI.</td></tr>
+  </tbody>
+</table></div>
+<p class="source-note">Inventory basis: the existing guide plus the current task-flow, Docs, document-link, Markdown-preview, Mission, Project Git, Review-pill and workflow implementations. Labels additionally have live daemon receipts and 29 passing script tests. Those checks do not replace native visual testing.</p>
+
+<!-- ============================================================ -->
+<h2 id="roadmap">Roadmap: toward an automated software factory</h2>
+<p class="source-note">October 1, 2026 snapshot, with the Review improvements completed later in this session noted below. The <a href="../mission-control-factory-roadmap.md">detailed automation roadmap</a> is optional local supporting material; this summary is embedded in the standalone guide.</p>
+<div class="callout"><p><strong>The goal.</strong> Mission Control should automatically turn ready tasks into reviewed, deliverable work, with Paseo's native schedules keeping the process moving. You set priorities, answer genuine product questions and review results, without pressing Start for every task.</p></div>
+<p><strong>Current position:</strong> the manual workflow has many of the necessary parts. Reliable coordination between them is the main gap. Unattended operation is still planned. At the October 1 snapshot, the connected host had no saved agent profiles or schedules; this observation does not describe every host. This guide update enables no automation.</p>
+<p><strong>Tracker scope:</strong> each host uses either Jira or Azure DevOps tasks/work items. Planned intake will use that host's configured tracker, project and field/status mapping, preserving source links and task ownership.</p>
+<h3 id="roadmap-now-next">Available now, next, and later</h3>
+<div class="cards roadmap-cards">
+  <div class="card"><span class="roadmap-state available">Implemented foundation</span><h4>Use and test now</h4><ul>
+    <li>Task/run records, criteria, manual Start and Resume, isolated worktrees.</li>
+    <li>Lifecycle skills, validation evidence, independent-review instructions, decisions and explicit delivery.</li>
+    <li>Readable activity, Markdown artifacts, Docs links, copy task IDs and workspace labels.</li>
+    <li>Manual Morning check and selected Jira/Azure DevOps imports.</li>
+  </ul><p><a href="#inventory">See the functionality inventory</a>. Implementation and native-device verification are separate.</p></div>
+  <div class="card"><span class="roadmap-state next">Build next</span><h4>Start eligible work automatically</h4><ul>
+    <li>Check readiness, authorization, tools and dependencies.</li>
+    <li>Claim each task once and reconcile live agents before retrying.</li>
+    <li>Route profiles and continue through checks, review and bounded fixes.</li>
+    <li>Record timing and provide pause, capacity and escalation controls.</li>
+  </ul><p>Connect these to native schedules, then prove the loop in a supervised pilot.</p></div>
+  <div class="card"><span class="roadmap-state later">Expand after the pilot</span><h4>Add planning and scale</h4><ul>
+    <li>Scheduled intake from each host's configured Jira or Azure DevOps tracker.</li>
+    <li>Host-specific project queries, status mapping and source links.</li>
+    <li>Dependencies, concurrency and explicitly authorized delivery automation.</li>
+    <li>Sprint targets, task deadlines and forecasts from recorded history.</li>
+  </ul><p>Add operational health visibility and verified lessons from rework.</p></div>
+</div>
+<div class="callout tip"><p><strong>Recent completion: Review.</strong> The bubble opens the main workspace tab directly, without the extra Open Review popover. File/folder actions now include opening/revealing, guarded discard, Copy path and Copy relative path. The latest change passed 177 client/review-action tests and typecheck and was reloaded. Native desktop/mobile verification remains pending. <a href="#review">Using Review</a>.</p></div>
+
+<h3 id="roadmap-milestones">Build milestones</h3>
+<p>This is a proposed sequence, not committed delivery dates or completion percentages. Task/run records remain authoritative for progress and evidence.</p>
+<div class="table-wrap" role="region" aria-label="Automation roadmap milestones" tabindex="0"><table>
+<caption>Build order and evidence needed to advance</caption>
+<thead><tr><th scope="col">Milestone</th><th scope="col">Work to complete</th><th scope="col">Completion check</th></tr></thead>
+<tbody>
+<tr><th scope="row">1. Manual baseline</th><td>Exercise Start, Resume, checks, independent review and a decision.</td><td>One representative task has traceable evidence; Review opens, can be left and closes normally on the intended clients.</td></tr>
+<tr><th scope="row">2. Coordination</th><td>Readiness rules, exclusive claims, profile routing, automatic transitions, timing, pause controls and recovery.</td><td>Overlapping checks cannot create competing writers; working agents, waits, failures and uncertain actions are handled distinctly.</td></tr>
+<tr><th scope="row">3. Automatic starts</th><td>Scheduled dry run, then a supervised one-project pilot with one active implementation task.</td><td>Three to five small tasks reach user review without pressing Start, with independent review evidence and recoverable state. Delivery stays manual.</td></tr>
+<tr><th scope="row">4. Scheduled intake</th><td>Start with one host's Jira or Azure DevOps tracker; deduplication, freshness and changed/canceled requirement detection.</td><td>Imports use the correct host and project; no duplicates or silent changes to active scope; missing tracker access is visible.</td></tr>
+<tr><th scope="row">5. Planning and estimates</th><td>Sprint targets, optional task due dates (manual due dates are available now) and evidence-based completion ranges.</td><td>Forecasts include review/repair time, show limited history honestly and retain past predictions for accuracy checks.</td></tr>
+<tr><th scope="row">6. Broader operation</th><td>More projects and sources, controlled concurrency, repeatable environments, verified lessons and authorized delivery automation.</td><td>Several observed working days, including downtime and provider limits, with reliable recovery and no unauthorized delivery.</td></tr>
+</tbody></table></div>
+
+<h3 id="roadmap-testing">When to start testing</h3>
+<div class="callout tip"><p><strong>Start manual testing now. Do not wait for sprint dates.</strong> The first automatic-start checkpoint is a ready task reaching user review with independent review evidence and recoverable state. It does not require scheduled tracker intake, a sprint dashboard or accurate estimates.</p></div>
+<ol>
+  <li><strong>Manual baseline — now.</strong> Use a small reversible task in a test project or isolated worktree. Record its task/run, actual revision and dirty state, commands, results and observed UI behavior.</li>
+  <li><strong>Scheduled dry run — after coordination exists.</strong> Report what would be imported, started, resumed, left waiting or escalated without dispatching work. Include duplicates, missing criteria, wrong context, dependencies and unavailable tools.</li>
+  <li><strong>Supervised pilot — before sprint features.</strong> One project, one active implementation task, three to five small tasks and manual delivery. Exercise overlapping checks, interruption, failed validation, review findings, unanswered decisions/permissions and offline hosts. New code after review requires fresh relevant verification.</li>
+  <li><strong>Unattended expansion — after the pilot passes.</strong> Observe several working days and set reliability thresholds from evidence. Limit new starts when the review queue grows, and verify pause and recovery controls.</li>
+</ol>
+<p><strong>Pilot settings still to choose:</strong> project/tasks, profiles, operating hours/timezone, cadence, concurrency, retry/repair limits, review-queue limit and delivery boundary. Morning intake plus daytime checks every 10–15 minutes, and two repair rounds before escalation, are proposals rather than active settings.</p>
+
+<h3 id="roadmap-workflow">Profiles, schedules and independent review</h3>
+<ul>
+  <li><strong>Paseo schedules wake the coordinator.</strong> Progress stays in task/run records and receipts so a fresh coordinator can recover after downtime. It checks live state before acting and records its start, wait, retry or escalation reasons.</li>
+  <li><strong>Paseo profiles configure the agents.</strong> Implementation and independent-review profiles need to be created, routed and applied at launch, including supported provider/model settings. A profile name alone does not establish reviewer independence or permission.</li>
+  <li><strong>OCR supports the reviewer.</strong> OpenCode Review's <code>ocr delegate preview</code> selects scope and <code>ocr delegate rule</code> resolves rules; a fresh reviewer performs the review with Gortex context. The verdict must identify the revision and account for reviewed/excluded files. Missing required tools or context is a review gap, not a clean result.</li>
+  <li><strong>Your review stays deliberate.</strong> A completed stage, idle agent or Done workspace label does not approve or deliver a task. Accepted work follows the project's authorized delivery route.</li>
+</ul>
+
+<h3 id="roadmap-orchestration">Host coordinators and a main-host supervisor</h3>
+<div class="callout"><p><strong>Recommended design · planned.</strong> Each host owns its tasks and agents. A supervisor on your main host watches progress across hosts and gathers the decisions and reviews that need you. This coordination layer still needs implementation and testing.</p></div>
+<div class="flow" aria-label="Responsibilities from user to workers"><span>You: priorities &amp; reviews</span><b aria-hidden="true">→</b><span>Main-host supervisor</span><b aria-hidden="true">→</b><span>Host coordinators</span><b aria-hidden="true">→</b><span>Task agents</span></div>
+<div class="cards roadmap-cards">
+  <div class="card"><h4>Main-host supervisor</h4><p>Combines host health, task progress, capacity and review queues. Requests checks or pauses through the owning host instead of launching competing workers.</p></div>
+  <div class="card"><h4>One coordinator per host</h4><p>A durable role that fresh agents can perform. Uses that host's Jira or Azure DevOps, repositories and profiles to claim eligible tasks, advance checks/review and record waiting or recovery reasons.</p></div>
+  <div class="card"><h4>Task agents</h4><p>Implement, validate and review within the exact task/workspace binding. An independent reviewer examines the candidate and evidence before work reaches your review queue.</p></div>
+</div>
+<ul>
+  <li><strong>One owner per task.</strong> Code enforces exclusive, time-bounded claims and rejects stale owners. Check the live agent before taking over an expired claim. Models provide judgment; code enforces transitions.</li>
+  <li><strong>Records survive agents.</strong> Existing task/run records and action receipts retain the host, workspace, agent and candidate revision. Reconcile uncertain sends before retrying.</li>
+  <li><strong>Capacity includes review.</strong> Start with one implementation per pilot project. Bound repairs/retries and limit new starts when reviews pile up or shared provider capacity is exhausted.</li>
+  <li><strong>Disconnected is not failed.</strong> Main-host downtime must leave authorized remote work running. An unreachable remote host shows its last confirmed state; do not start replacement work elsewhere.</li>
+  <li><strong>On track requires evidence.</strong> Show latest verified progress, stage, next action and waiting reason. Quiet agents are not automatically stuck; forecasts follow reliable timing history.</li>
+</ul>
+
+<h3 id="roadmap-schedules">How schedules work together</h3>
+<p>Paseo <a href="https://paseo.sh/docs/schedules.md">schedules start fresh agents; heartbeats prompt an existing agent</a>. Use schedules for routine coordination and bounded heartbeats for individual builds/investigations. Inventory existing jobs before adding any. These cadences are proposals, using configured operating hours and timezones.</p>
+<div class="table-wrap" role="region" aria-label="Proposed coordination schedules" tabindex="0"><table>
+<caption>Initial schedule responsibilities</caption>
+<thead><tr><th scope="col">Job</th><th scope="col">Where / when</th><th scope="col">Responsibility</th></tr></thead>
+<tbody>
+<tr><th scope="row">Morning intake</th><td>Each host, once each workday</td><td>Reconcile its tracker work with existing tasks; report source freshness.</td></tr>
+<tr><th scope="row">Workflow check</th><td>Each host, every 10–15 minutes</td><td>Read live agents and records; claim, advance, wait or escalate.</td></tr>
+<tr><th scope="row">Cross-host supervision</th><td>Main host, every 15 minutes</td><td>Watch missed checks, availability, capacity and review queues.</td></tr>
+<tr><th scope="row">Daily summary</th><td>Main host, end of workday</td><td>Report verified results, decisions and next priorities.</td></tr>
+</tbody></table></div>
+<p><strong>Every start uses the same guarded path.</strong> Intake, schedules, completion events and Hub requests reconcile the same task claim before acting. Do not repeatedly prompt a working agent. Record last success, next check and skipped/failed checks; reconcile missed wake-ups instead of replaying them blindly. Existing build/review schedules must join this policy rather than become competing task owners.</p>
+<p>Use host-local profiles for coordinator, implementation and independent review responsibilities. Read their notes and apply the actual launch settings; profile names alone establish neither authority nor independence. See <a href="https://paseo.sh/docs/agent-profiles.md">Paseo profiles</a>.</p>
+
+<h3 id="roadmap-hub">Where Paseo Hub fits</h3>
+<p class="source-note">Research checked October 1, 2026 against the <a href="https://paseo.sh/docs/hub">Hub docs</a>, <a href="https://paseo.sh/hub">product page</a> and <a href="https://hub.paseo.sh/api/openapi.json">public API schema</a>. The local Paseo 0.10.2 CLI supports Hub but reports <strong>not connected</strong>. No live Hub integration or remote-host setup was tested.</p>
+<p><strong>Recommendation:</strong> use Hub where it saves dispatch and event infrastructure. Mission Control still owns readiness, task claims, evidence, decisions and delivery. The first local scheduled pilot should work independently of Hub.</p>
+<div class="table-wrap" role="region" aria-label="Hub reuse opportunities" tabindex="0"><table>
+<caption>What we could reuse from Hub</caption><thead><tr><th scope="col">Capability</th><th scope="col">Proposed use</th></tr></thead><tbody>
+<tr><th scope="row">Registered daemons</th><td>Explicit host/directory routing and presence. <a href="https://paseo.sh/docs/hub/daemons">Daemons</a></td></tr>
+<tr><th scope="row">External events and manual API dispatch</th><td>Wake the owning coordinator. The documented catalog does not establish native Jira/Azure DevOps intake; retain host-local tracker adapters. <a href="https://paseo.sh/docs/hub/triggers">Triggers</a></td></tr>
+<tr><th scope="row">Configuration and workflow execution</th><td>Reuse validation, conditional steps, structured results and time limits where supported. Current organization triggers and legacy project workflows use different formats; verify the chosen contract. <a href="https://paseo.sh/docs/hub/configuration">Configuration</a> · <a href="https://paseo.sh/docs/hub/workflows">Workflows</a></td></tr>
+<tr><th scope="row">Recovery and activity</th><td>Link Hub execution receipts to task runs. Recovery covers Hub-dispatched agents, not all locally started work. <a href="https://paseo.sh/docs/hub/daemons">Recovery</a> · <a href="https://paseo.sh/docs/hub/activity">Activity</a></td></tr>
+</tbody></table></div>
+<ul>
+<li><strong>Offline dispatch is not queued.</strong> Preserve pending intent and reconcile when the host returns. <a href="https://paseo.sh/docs/hub/activity">Offline behavior</a></li>
+<li><strong>Duplicate starts still need prevention.</strong> Matching triggers can both run; delivery keys do not promise exactly-once dispatch. Keep claims and receipts. <a href="https://paseo.sh/docs/hub/triggers">Matching</a> · <a href="https://paseo.sh/docs/hub/api">API contract</a></li>
+<li><strong>Keep reviewers independent.</strong> Hub can continue a conversation and steer a busy agent. Select fresh execution for reviewers/coordinator wake-ups. <a href="https://paseo.sh/docs/hub/triggers">Continuation</a></li>
+<li><strong>Completion still needs evidence.</strong> Hub finishing an execution is not validation, approval or delivery; preserve OCR/Gortex review and revision-specific checks.</li>
+</ul>
+<p><strong>API gap:</strong> the inspected schema has no general host-health/run-history read endpoint. Use native state and Activity links initially. Its manual-run request is project-scoped; verify compatibility with the selected trigger format. <a href="https://paseo.sh/docs/hub/api">Public API</a></p>
+<p><strong>Deployment:</strong> evaluate a self-hosted pilot on an always-available main host, or Hosted Hub for managed operation. Preserve its data. Enrollment and execution permission are separate; <code>hub.execute</code> also covers existing agents/workspaces. Start with a controlled host. <a href="https://paseo.sh/docs/hub/self-hosting">Self-hosting</a> · <a href="https://paseo.sh/docs/hub/hosted">Hosted</a> · <a href="https://paseo.sh/docs/hub/security">Authority</a></p>
+<h4>Adoption and testing</h4>
+<p>Prove one local coordinator first, then add a second host and read-only main supervision before control requests. Evaluate Hub alongside that work: presence first, then one bounded coordinator trigger with recorded versions, host binding and execution IDs. Test overlapping schedules/events, lost responses, host/Hub downtime, recovery, pauses and fresh review. Each stage must have one dispatcher and produce no duplicate worker or unapproved delivery.</p>
+<div class="callout tip"><p><strong>Testing need not wait for Hub or sprint dates.</strong> This roadmap update installs no service, creates no schedules and grants no execution permissions.</p></div>
+
+<h3 id="roadmap-dates">Timing, sprint ends and task deadlines</h3>
+<p><strong>Record timing from the first pilot; forecast later.</strong> Track queue wait, first actual work to a review-ready candidate, review wait, and total cycle time from first work to verified delivery. Keep observed execution/check intervals and rework separate. Resuming must not reset the task's original start. Parallel agents' combined work time is not elapsed task time; missing data stays unknown.</p>
+<div class="cards roadmap-cards">
+  <div class="card"><h4>Sprint end</h4><p>The planning target for a group of tasks. A task without its own due date can use this as a derived target.</p></div>
+  <div class="card"><h4>Task due date</h4><p>An optional specific commitment. Distinguish a target from a hard deadline; do not copy the sprint end into every task's stored due date.</p></div>
+  <div class="card"><h4>Forecast completion</h4><p>A calculated range including checks, repairs and review wait. Show the supporting history and explain risks without moving commitments.</p></div>
+</div>
+<p class="source-note">Update this roadmap after each testing stage with the date, candidate, passed/failed scenarios, evidence and next gate. The <a href="#coming">deployment limits</a> and <a href="#screenshot-notes">screenshot coverage</a> still apply.</p>
+
+<!-- ============================================================ -->
+<h3 id="roadmap-meetings">Talat meeting input</h3>
+<p><strong>Selected now:</strong> Talat is the chosen meeting app and the user reports it is working well. Use its native Obsidian export on the machine attending meetings, then verify a finished note in the vault. The <a href="#talat-meetings">setup below</a> and <a href="../meeting-capture-vault-workflow.md">meeting workflow</a> describe the path.</p>
+<p><strong>Still to build:</strong> meeting ingestion receipts, source-preserving context notes, project and daily-note links, and proposed task intake through the owning host's Jira or Azure DevOps configuration. Coordinators should reconcile exports and events without duplicate work. Native export does not implement these features, and they should not delay the first automatic-start pilot.</p>
+
+<h2 id="concepts">Key ideas</h2>
+<table>
+  <tr><th style="width: 22%">Term</th><th>What it means</th></tr>
+  <tr><td><strong>Host</strong></td><td>A computer running Paseo, such as <code>pc-864</code> or a remote machine. Mission Control shows every host Paseo is connected to. Tasks, reviews and settings belong to the host Mission Control is installed on.</td></tr>
+  <tr><td><strong>Project</strong></td><td>A repository Paseo knows, such as <code>development-flow</code>.</td></tr>
+  <tr><td><strong>Workspace</strong></td><td>A working folder in a project, with its own agents and terminals. Each task's worktree is a workspace too.</td></tr>
+  <tr><td><strong>Agent</strong></td><td>One Claude Code, Codex, Copilot or OpenCode session working in a workspace.</td></tr>
+  <tr><td><strong>Task</strong></td><td>A piece of work with a title and acceptance criteria ("what will prove this is done?"). Tasks are plain files in the vault.</td></tr>
+  <tr><td><strong>Run</strong></td><td>One recorded attempt at a task, linked to a run agent. Its updates can record different authors, including reviewers. It records a <em>stage</em> (Intake, Plan, Build, Checks, Review, Fixes, Delivery, Handoff), an <em>outcome</em>, a next action and evidence.</td></tr>
+  <tr><td><strong>Workspace label</strong></td><td>A native Paseo tag attached to the whole workspace, such as In Progress or Review. It is not an agent's label, a task status, or proof of completion.</td></tr>
+  <tr><td><strong>Decision</strong></td><td>A question an agent asks you: approve its plan, or accept its review. Review decisions come with <em>findings</em> you can send back to be fixed.</td></tr>
+  <tr><td><strong>Worktree</strong></td><td>A separate folder and branch for task work, which helps isolate changes. Several agents can still contribute to one task or share a workspace, so they must coordinate their ownership.</td></tr>
+  <tr><td><strong>Vault</strong></td><td>The folder that holds task records, run evidence and daily reports: <code>C:\dev-vault</code>. It's Markdown, so Obsidian can open it too.</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="getting-around">Getting around</h2>
+<p>Open <span class="ui">Mission Control</span> from Paseo's sidebar. The screen has two parts:</p>
+<ul>
+  <li><strong>The host rail</strong> on the left: search hosts, switch between <span class="ui">All hosts</span> and <span class="ui">Online</span>, and pick a host. Each host card shows whether it's online, its workspace and task counts, and a badge for anything that needs you. Drag the cards to reorder them.</li>
+  <li><strong>The main pane</strong>, with five tabs: <span class="ui">Workspaces</span>, <span class="ui">Attention</span>, <span class="ui">Tasks</span>, <span class="ui">Review</span> and <span class="ui">Docs</span>. Mission Control opens on Workspaces. Attention shows a count when something is waiting for you.</li>
+</ul>
+<figure>
+  <img src="screenshots/overview.png" alt="Mission Control with the host rail on the left and the Workspaces tab open">
+  <figcaption>Mission Control opens on the Workspaces tab. The host rail is on the left.</figcaption>
+</figure>
+<div class="callout tip"><p><strong>Tip.</strong> The small icon beside the title shows or hides Paseo's own sidebar, which gives Mission Control the whole window. On narrow screens and phones the panes stack instead of sitting side by side.</p></div>
+<p>Rosters refresh every 20 seconds. If a host goes offline, its last known data stays visible and is marked as last observed.</p>
+
+<!-- ============================================================ -->
+<h2 id="workspaces">Workspaces</h2>
+<p>The Workspaces tab lists every workspace on the selected host, grouped by project.</p>
+<figure>
+  <img src="screenshots/workspaces-list.png" alt="The Workspaces tab with search, the Show, Label and Project filters, and project blocks">
+  <figcaption>Search, filters, and projects with their Git bar. At this width the filters use two rows.</figcaption>
+</figure>
+
+<h3 id="filters">Search and filters</h3>
+<ul>
+  <li><strong>Search</strong> matches workspace and project names.</li>
+  <li><span class="ui">Show</span> narrows the list: <em>All workspaces</em>, <em>Running agent</em>, <em>Needs attention</em>, <em>Has tasks</em> or <em>Has active tasks</em>.</li>
+  <li><span class="ui">Label</span> filters by Paseo workspace label, and <span class="ui">Project</span> by project. Project only appears when the host has more than one project.</li>
+  <li><span class="ui">Clear filters</span> resets everything. The count above the list (for example "9 of 9 workspaces") shows how much you're seeing.</li>
+</ul>
+<p>The filters adapt to the space: one row on a wide window, Show on its own row with Label and Project side by side at medium widths, and stacked on narrow screens.</p>
+
+<h3 id="projects">Projects and Git</h3>
+<p>Each project is a block you can fold with its arrow; <span class="ui">Expand all</span> and <span class="ui">Collapse all</span> do every project at once. The project header shows its workspace and task counts, its agents by state (running, idle, need you), the providers in use, and the last activity. Mission Control remembers which projects you folded.</p>
+<p>Under each project header, the compact <strong>Git summary</strong> shows the default branch, a <strong>Pull latest</strong> refresh icon and an auto-fetch state icon. The branch override and auto-fetch switch are in <strong>Settings → Plugins → Mission Control → Project Git</strong>:</p>
+<ul>
+  <li><strong>Default branch</strong> shows the branch new task worktrees start from, normally origin's default. In Project Git settings, select the project and use <span class="ui">Change</span> to choose an override.</li>
+  <li><span class="ui">Auto-fetch</span> keeps origin's branches up to date in the background.</li>
+  <li><span class="ui">Pull latest</span> fast-forwards the default branch to origin. It never merges or rewrites anything; if a fast-forward isn't possible, it tells you why.</li>
+</ul>
+<p>A new task worktree always starts from the latest version of the default branch on origin. A project without a remote starts worktrees from its current branch instead, and the Git bar says so.</p>
+
+<h3 id="renaming">Renaming workspaces and agents</h3>
+<p>New workspaces and agents often get unhelpful names. <span class="ui">Rename all (N)</span> at the top of the tab opens <strong>Rename workspaces</strong> for the whole host; <span class="ui">Review names</span> on a workspace page does the same for that workspace's agents.</p>
+<figure class="narrow">
+  <img src="screenshots/rename-workspaces.png" alt="The Rename workspaces dialog with a suggested name typed in and ticked">
+  <figcaption>Type a name or press Suggest, tick the ones to change, then Apply selected.</figcaption>
+</figure>
+<ol>
+  <li>Press <span class="ui">Suggest</span> on a row, or <span class="ui">Suggest all</span>. A small, fast model reads the current names, the linked task titles and each agent's first and latest prompts, and proposes a 2 to 5 word name.</li>
+  <li>Edit any suggestion, and tick the rows you want. Names that are too long get a gentle warning.</li>
+  <li>Press <span class="ui">Apply selected</span>. Nothing is renamed before this, and <span class="ui">Undo</span> puts the old names back.</li>
+</ol>
+
+<h3 id="workspace-page">The workspace page</h3>
+<p>Click a workspace to open its page. It combines the agent tree with a compact list of linked work; completed tasks no longer dominate the page.</p>
+<figure>
+  <img src="screenshots/workspace-compact-tasks.png" alt="User-supplied workspace page showing the searchable agent tree, two active linked task rows and a collapsed group of completed tasks">
+  <figcaption>User-supplied screenshot from this refresh discussion: active linked tasks stay visible, and 36 completed tasks are folded away. This was captured before the later Refresh alignment and label-task status update; the illustrated label task is now In review. It is a layout example, not a live status report.</figcaption>
+</figure>
+<figure>
+  <img src="screenshots/workspace-page.png" alt="A workspace page with its header, action buttons and agent cards">
+  <figcaption>A workspace page: status, shortcuts, and one card per agent.</figcaption>
+</figure>
+<ul>
+  <li><strong>Header:</strong> host and project, Paseo's status for the workspace, last activity, and labels. <span class="ui">Open workspace</span> jumps to it in Paseo; <span class="ui">Tasks</span>, <span class="ui">Review changes</span> and <span class="ui">Documents</span> open the matching tab for this workspace; <span class="ui">Archive workspace</span> archives it after a confirmation.</li>
+  <li><strong>Agents:</strong> the workspace's agents as a tree, the same one as the <a href="#agents-panel">Agents panel</a>: each agent's provider and model, state and age, with sub-agents under their parents (see <a href="#subagents">Sub-agents</a>).</li>
+  <li><strong>Terminals:</strong> appears only while the workspace has an active terminal.</li>
+  <li><strong>Linked tasks:</strong> active assigned tasks appear first as compact, clickable title/status rows. Delivered and closed work is grouped under <span class="ui">Completed tasks</span>, collapsed by default. Open a row for its task, or use the header's <span class="ui">Tasks</span> shortcut to view and add work. Long internal IDs are no longer the main label.</li>
+  <li><strong>Morning check:</strong> at the bottom; see <a href="#morning-check">Morning check</a>.</li>
+</ul>
+
+<h3 id="subagents">Sub-agents</h3>
+<figure>
+  <img src="screenshots/subagents.png" alt="An agent card with an expanded Sub-agents row listing a separate agent and a finished helper">
+  <figcaption>An agent card's Sub-agents row, expanded.</figcaption>
+</figure>
+<p>Agents can start two kinds of sub-agent, and Mission Control shows both with the agent that started them:</p>
+<ul>
+  <li><strong>Separate agents:</strong> a full Paseo agent that another agent started. It has its own chat and appears in agent lists.</li>
+  <li><strong>Helpers:</strong> short jobs that run inside an agent's turn, such as Claude Code's Agent tool (for example "Explore" or a fresh review). They have no chat of their own.</li>
+</ul>
+<p>Agent cards on the workspace page, and task cards in the Tasks tab and the Mission panel, get a <span class="ui">Sub-agents (N)</span> row when there are any. Collapsed, it says how many there are and how many helpers are running ("2 helpers running"). Open it to see each sub-agent's name, what it was started for (a helper's description, or a separate agent's first prompt), its kind, status (running, finished, idle, error or stopped) and time. Separate agents have <span class="ui">Open agent</span>; a helper's <span class="ui">Last messages</span> shows its last few messages. Finished helpers stay a count until you open them.</p>
+<p>Where a separate agent appears without its parent, for example because the parent works in another workspace or is archived, a line under its name says whose it is: <strong>Sub-agent of &lt;parent&gt; · &lt;the parent's task&gt; · &lt;project / workspace&gt;</strong>. Click it to open the parent. If the parent agent no longer exists, the line says so and isn't a link. In lists that include both, the sub-agent sits under its parent instead. The same line appears in the agent choice for sending review comments and in the <span class="ui">Review names</span> dialogs.</p>
+<p>Helpers are read from this host's Paseo, so they appear only for the host running this Mission Control. On other hosts, or on a Paseo that can't list them, the row shows separate agents only.</p>
+<p>In the agent tree (the <a href="#agents-panel">Agents panel</a>, the workspace page and the Mission panel), a sub-agent sits under its parent on a rail, and the parent's row counts its sub-agents and helpers. A separate agent's <strong>Started for</strong> line shows the prompt it was started with, and its task's number and title.</p>
+<div class="callout"><p><strong>Looking never wakes a stopped agent.</strong> Paseo restarts a stopped agent to read its chat or list its helpers, so Mission Control asks only about live agents, checking each one's status with Paseo first. For a stopped agent, press <span class="ui">Show what it was started for</span> to read it on purpose.</p></div>
+
+<!-- ============================================================ -->
+<h2 id="tasks">Tasks</h2>
+<p>The Tasks tab shows the tasks of one workspace (pick it first, or use <span class="ui">Change workspace</span>). It opens on the <span class="ui">Board</span>; <span class="ui">List</span> gives a compact list instead, and Mission Control remembers your choice. Search with <strong>Find a task</strong>, and tick <span class="ui">Active only</span> to hide delivered and closed work. The narrow Tasks panel inside a workspace always starts on the list.</p>
+<figure>
+  <img src="screenshots/tasks-board.png" alt="The Tasks tab in board view with Inbox, Doing, Review and Delivered columns">
+  <figcaption>The board groups tasks into Inbox, Doing, Review and Delivered columns.</figcaption>
+</figure>
+<figure>
+  <img src="screenshots/tasks-list.png" alt="The Tasks tab in list view">
+  <figcaption>List view: each card shows the title, status, the start of its criteria, and when it last changed.</figcaption>
+</figure>
+
+<h3 id="new-task">Creating a task</h3>
+<figure class="narrow">
+  <img src="screenshots/task-new.png" alt="The New task dialog with a title field and an acceptance criteria field">
+  <figcaption>A task needs a title and what will prove it's done.</figcaption>
+</figure>
+<ol>
+  <li>Press <span class="ui">+ Task</span>.</li>
+  <li>Give it a short title, and write the acceptance criteria: what must be true when it's finished, and how you'll check it. Up to 4,000 characters.</li>
+  <li>Press <span class="ui">Add task</span>. Mission Control creates the task's folder in the vault. Nothing starts yet.</li>
+</ol>
+<p>Tasks can also come from Jira or Azure DevOps through the <a href="#morning-check">Morning check</a>; those carry their ticket and an <span class="ui">Open ticket</span> link.</p>
+
+<h3 id="due-dates">Due dates</h3>
+<p>Open a task and enter a <strong>Due date</strong> as YYYY-MM-DD, then press <span class="ui">Save</span>; <span class="ui">Clear</span> removes it. Cards show <em>Due tomorrow</em>, <em>Due Oct 22</em> or <em>Overdue</em>, highlighted when the date is three days away or closer, and tasks with the earliest due date come first in each list and column. An agent started or resumed on the task is told the date and asked to say early if it can't finish in time. Due dates aren't imported from the tracker yet, and sprint forecasting is still planned.</p>
+
+<h3 id="start-task">Starting an agent</h3>
+<p>Open a task in the Tasks tab to manage its criteria, status and <strong>Agent workflow</strong> launcher. The compact <span class="ui">Task details</span> / <span class="ui">View full details</span> actions open its activity, decisions and artifacts; that reading view is separate from launching an agent.</p>
+<figure class="narrow">
+  <img src="screenshots/task-details.png" alt="Task details showing the workspace path and acceptance criteria">
+  <figcaption>Earlier-edition capture of the task editor and its acceptance criteria. Current activity details are shown below; button placement and heading styling have since changed.</figcaption>
+</figure>
+<figure class="narrow">
+  <img src="screenshots/task-launcher.png" alt="The Agent workflow panel with the worktree option, branch preview, provider, model, effort and permission choices">
+  <figcaption>The launcher: its own worktree, the branch it will create, and the agent's provider, model, effort and permissions.</figcaption>
+</figure>
+<ol>
+  <li>Keep <span class="ui">Work in its own worktree</span> ticked (the default for Git projects). The task gets its own branch and folder, and Review then shows only its work. The <strong>Branch</strong> line shows the exact name first; it follows your <a href="#branch-names">branch name</a> templates.</li>
+  <li>Choose the <strong>provider</strong> (claude, codex, copilot or opencode) and <strong>model</strong>.</li>
+  <li>Choose the <strong>effort</strong> (how hard the model thinks) and the <strong>permissions</strong>. <em>Bypass</em> and <em>Full Access</em> skip permission prompts and are shown in amber as a reminder.</li>
+  <li>Press <span class="ui">Start task</span>. The first message gives the agent the task, the project's profile, and the Development Flow skills it follows.</li>
+</ol>
+<div class="callout"><p><strong>Slow starts.</strong> Creating a worktree can take a while. If it takes more than about 20 seconds, the panel shows "Starting the task…" and updates by itself when the agent is running.</p></div>
+<p>Prefer typing? <strong>Use a chat command instead</strong> shows <code>/mission-task &lt;task ID&gt;</code>; <span class="ui">Copy command</span> and paste it into any agent's chat.</p>
+
+<h3 id="running-task">Following a run</h3>
+<figure class="narrow">
+  <img src="screenshots/task-running.png" alt="A running task with its status buttons, stage chips, next action and agent card">
+  <figcaption>Earlier-edition capture of the task launcher/run controls. The current compact reading view separates task status from the latest recorded update.</figcaption>
+</figure>
+<ul>
+  <li><strong>Task status</strong> (inbox, ready, in progress, blocked, in review, delivered, closed) is the stored task record. The compact view makes it a badge; managing it is separate from recording an event or assigning a workspace label.</li>
+  <li><strong>Latest update</strong> is the most recent run's recorded stage/outcome. <strong>Next action</strong> shows what was recorded next. Neither a later stage nor a completion check establishes approval, validation of today's revision or delivery.</li>
+  <li><strong>Agents</strong> may include the linked run agent, other task-linked agents and recorded update authors. Use the named agent's action to choose a chat. <span class="ui">Open run agent</span> specifically opens the agent ID recorded on that run; it does not choose whichever agent is currently working. <span class="ui">Open worktree</span> opens the associated workspace.</li>
+  <li>When the agent is idle, <span class="ui">Resume task</span> sends it the latest task context. <span class="ui">Continue launch</span> finishes a start that was interrupted, without starting a second agent.</li>
+  <li><span class="ui">Open task documents</span> shows the task's files in the Docs tab.</li>
+</ul>
+
+<h3 id="task-details">Activity, decisions and artifacts</h3>
+<p>The task header shows its title, a <strong>task-status badge</strong>, a separate <strong>Latest update</strong>, the recorded <strong>Next action</strong> and an update time. A task can be <strong>In review</strong> while its latest update says <strong>Handoff completed</strong>: the handoff happened, but the task still awaits review.</p>
+<figure>
+  <img src="screenshots/task-activity-compact.png" alt="User-supplied task activity dialog with Activity, Decisions and Artifacts tabs and collapsed completed updates marked with checkbox icons">
+  <figcaption>User-supplied screenshot from this refresh discussion: readable activity titles, completion checkboxes and collapsed rows. It predates the final status-badge/header polish, copy-ID icon and improved recorded-agent lookup. The five checks describe recorded events, not approval of this task.</figcaption>
+</figure>
+<ul>
+  <li><strong>Activity:</strong> select a row such as <em>Planning completed</em>, <em>Implementation completed</em> or <em>Handoff completed</em> to reveal the recorded author, summary and evidence. The long report is collapsed by default. A checkbox means that event recorded completion; waiting and blocked use different indicators.</li>
+  <li><strong>History limits:</strong> the detail view reads up to five updates from each of three recent runs. Older events can be omitted. Expand <span class="ui">Run snapshots</span> or <span class="ui">Record issues</span> when you need to inspect missing/conflicting records.</li>
+  <li><strong>Decisions:</strong> inspect the task's open and recent plan/review decisions and their findings. An activity row named <em>Review completed</em> is not a substitute for this decision record.</li>
+  <li><strong>Artifacts:</strong> select a readable document label to preview its Markdown. Headings, emphasis, lists and tables are rendered; metadata is hidden from the normal reading view. <span class="ui">Raw source</span> shows the original text; <span class="ui">Technical details</span> reveals the underlying path. Run records are grouped separately. Use Docs to edit eligible documents.</li>
+  <li><strong>Evidence:</strong> expand its count to inspect references. A document not included in this bounded view is reported as not included; that is not proof that the file does not exist. Offline or failed refreshes are shown explicitly.</li>
+  <li><strong>Agents:</strong> more than one agent can be associated with a task. Details try to resolve recorded agents beyond the loaded directory and keep a readable fallback when details are unavailable. A compact run shortcut can still show <em>an agent</em> if the loaded roster has no name; it represents that run's stored agent ID.</li>
+</ul>
+<p>In the compact task list, expand the task row to read its <strong>Latest recorded update</strong>, then choose <span class="ui">View full details</span> for the complete reading view. Activity preview loads when expanded. Current live-agent state is distinct from recorded run state.</p>
+<div class="callout"><p><strong>No invented progress.</strong> The guide and UI do not derive a success percentage, effort estimate or ETA from stage position. Progress-plugin row minutes are estimates; recorded elapsed time is a different fact.</p></div>
+
+<h3 id="task-reference">Referencing a task in chat</h3>
+<p>Press the <strong>copy icon beside the task title</strong> in the detail-dialog header or task card/row. It copies the complete stored task ID, such as <code>task_f278a57f-1e8a-4ac8-ba17-7b055c773013</code>, with no <code>task id:</code> prefix. Paste it into a chat with your instruction so the agent can resolve the exact record. Task titles stay readable while IDs remain stable internally.</p>
+<p>Copying an ID does not launch or bind an agent. To use the documented task workflow, launch from Tasks or use <code>/mission-task &lt;task ID&gt;</code>; the bound host, project and workspace still need to be verified.</p>
+
+<!-- ============================================================ -->
+<h2 id="attention">Attention</h2>
+<p>Everything waiting for you, in one list. The tab's count tells you how many things are waiting. Permission prompts come from every online host; decisions, questions, tasks to deliver and pull requests come from the host Mission Control is installed on. <span class="ui">Show recent decisions</span> lists the last ones you answered.</p>
+<p>Every card under <strong>Needs you</strong> explains itself, so you rarely need to open the chat:</p>
+<ul>
+  <li><strong>The task line</strong> names the task (number and title) and where the agent runs: host, project and workspace.</li>
+  <li><strong>Where it's at</strong> says where things stand, in the agent's own summary. If the agent didn't write one, the card quotes its latest message, marked as a quote. Nothing is made up.</li>
+  <li><strong>Needs from you</strong> says in one sentence what the agent is waiting for, with its recommendation when it gave one.</li>
+  <li><span class="ui">Conversation</span> shows the agent's last few messages and steps, and <span class="ui">Open agent</span> is a small link for when you want the whole chat.</li>
+</ul>
+<div class="callout"><p><strong>Looking never wakes an agent.</strong> Paseo restarts a stopped agent to read its chat, so Attention reads a chat by itself only while the agent is live. For a stopped or failed agent, it reads the chat only when you open Conversation.</p></div>
+<figure>
+  <img src="screenshots/attention.png" alt="The Attention tab with a review decision in plain words, a highlighted recommendation, and Accept, Fix and Stop buttons">
+  <figcaption>A review decision: what was built, what the review found, the recommendation, and buttons named for what they do.</figcaption>
+</figure>
+
+<h3 id="decisions">Decisions and findings</h3>
+<p>Agents don't leave their questions buried in the chat. For a plan or a review they request a <strong>decision</strong>, and for anything else they record a question (see <a href="#waiting">Waiting for you</a>). There are two kinds of decision:</p>
+<ul>
+  <li><strong>Plan decisions:</strong> approve the agent's plan before it builds, or send it back.</li>
+  <li><strong>Review decisions:</strong> an independent reviewer checked the work; accept it, or send its <strong>findings</strong> back to be fixed.</li>
+</ul>
+<p>Every card is written for you, not for engineers:</p>
+<ul>
+  <li><strong>The first lines</strong> say what was built and what the review found, in everyday words.</li>
+  <li><strong>Recommended</strong> gives the agent's advice with a one-line reason, and its button is highlighted.</li>
+  <li><strong>The buttons say what they do.</strong> For reviews: <span class="ui">Accept</span> (it reads <span class="ui">Accept, skipping N</span> when open issues would be skipped), <span class="ui">Fix N issues first</span> and <span class="ui">Stop</span>. For plans: <span class="ui">Approve plan</span>, <span class="ui">Change the plan</span> and <span class="ui">Stop</span>.</li>
+</ul>
+<p><span class="ui">More</span> opens everything else:</p>
+<figure>
+  <img src="screenshots/attention-details.png" alt="The expanded card: the recommendation, what was built, what the review found, and each issue fixed in earlier rounds">
+  <figcaption>What was built, what the review found, and a tick for each issue fixed in earlier rounds.</figcaption>
+</figure>
+<figure>
+  <img src="screenshots/attention-more.png" alt="An open issue with its impact and a Fix now or Skip choice, what each button does, and the note field">
+  <figcaption>Each open issue, what happens if you skip it, its own Fix now or Skip choice, and what each button does.</figcaption>
+</figure>
+<ul>
+  <li><strong>Each open issue</strong> is described in plain words, with what happens if you skip it and its own <span class="ui">Fix now</span> / <span class="ui">Skip</span> choice. The choice starts on the agent's recommendation, and the buttons' labels follow your choices.</li>
+  <li><strong>What each button does</strong> spells out the result of each answer before you press it.</li>
+  <li><strong>A note for the agent</strong> is optional. <span class="ui">Technical details</span> holds the reviewer's full report, the evidence and the file references.</li>
+</ul>
+<p>A note is never sent without you seeing it. If your answer needs one, for example because it skips issues or stops the task, the card first shows the exact action and note, and you can edit them. Your answer is saved first and sent to the agent when it's idle. If the agent is busy, the answer shows <strong>Saved, not sent</strong> with <span class="ui">Send to agent</span>.</p>
+<div class="callout warn"><p><strong>Findings are verified.</strong> Approving is refused while earlier findings are still waiting to be verified. A fix only counts once a fresh review confirms it, so an agent can't mark its own work as fixed.</p></div>
+
+<h3 id="waiting">Waiting for you</h3>
+<p>Two kinds of card appear here, each with a <span class="ui">Reply</span> box that sends your answer straight to that agent on its host:</p>
+<ul>
+  <li><strong>A question:</strong> a Mission Control task agent that stops to ask you something records it with a short "where it's at" and "what I need". The card leaves once the agent has your reply.</li>
+  <li><strong>An error:</strong> an agent that Paseo reports as failed. The card says what failed, from Paseo's error message.</li>
+</ul>
+<p>An agent that simply finished its turn doesn't get a card, because Paseo can't tell a question in the chat from a normal finish. Only recorded questions and errors are listed.</p>
+
+<h3 id="prompts">Permission prompts</h3>
+<p>When an agent needs permission for a tool, the prompt appears here with the task line, where the agent is (its latest message), and a <strong>Wants to</strong> line in plain words, for example the command it wants to run. The buttons are the agent's own choices (for example allow once, allow always, or deny), and <span class="ui">Details</span> shows the full command. Prompts also appear in the <a href="#mission-panel">Mission panel</a> of the agent's workspace.</p>
+
+<h3 id="merge">Ready to deliver</h3>
+<p>A task whose review you approved, and which ran in its own worktree, appears under <strong>Ready to deliver</strong>. Until it's delivered, its changes live only on the task's own branch. How it's delivered depends on its project's <a href="#delivery">Delivery setting</a>: <span class="ui">Merge</span> into your main checkout for personal projects, or <span class="ui">Open PR</span> for work repositories.</p>
+<figure>
+  <img src="screenshots/attention-ready.png" alt="A task ready to deliver with the Merge button and every check listed with a tick">
+  <figcaption>A task ready to deliver, with Checks open: every safety check and its result.</figcaption>
+</figure>
+<h4>Merge</h4>
+<p><span class="ui">Merge</span> brings the task's changes into your main checkout:</p>
+<ol>
+  <li>Commits the task's changes on its branch.</li>
+  <li>Merges that branch into master, keeping a merge commit.</li>
+  <li>Archives the task's workspace and deletes its branch.</li>
+  <li>Marks the task delivered and tells its agent.</li>
+</ol>
+<p>The commit message follows the repository's own conventions. When its <code>paseo.json</code> has commit message instructions (the same ones Paseo's Commit button uses, such as Conventional Commits), a small, fast model writes the message from the task's title, ticket and handoff summary. The confirmation shows it, and you can edit it before anything is committed. Without instructions, or if writing fails, the message is the task's title and ID.</p>
+<p>Before anything happens, it checks that it's safe, and says exactly why if it isn't:</p>
+<ul>
+  <li>the files still match what you approved (a fingerprint is recorded when the review is requested);</li>
+  <li>the task's agent is idle;</li>
+  <li>your main checkout is clean, on the branch the worktree started from, with no merge or rebase in progress;</li>
+  <li>the merge wouldn't overwrite any local file, including ignored files such as <code>.env</code>;</li>
+  <li>the branch has something to merge.</li>
+</ul>
+<figure class="narrow">
+  <img src="screenshots/merge-confirm.png" alt="The Merge confirmation listing every step">
+  <figcaption>The confirmation lists every step before anything runs.</figcaption>
+</figure>
+<p>When the merge is quick, the dialog then shows each step's outcome, including anything that was skipped. A merge that takes longer than about 20 seconds (for example with slow Git hooks, or while Paseo archives the worktree) carries on in the background:</p>
+<figure class="narrow">
+  <img src="screenshots/merge-background.png" alt="The Merging in the background dialog">
+  <figcaption>A longer merge carries on in the background; you can close the dialog.</figcaption>
+</figure>
+<p>If Git reports a conflict, Merge undoes it and leaves master as it was. It shows <strong>Merge needs you</strong> with the conflicting files; the task's work stays committed on its branch, ready for you (or the coordinator) to merge by hand. Merge never pushes, rewrites history or touches other branches.</p>
+<div class="callout"><p><strong>After merging Mission Control itself,</strong> reload the plugin (Settings → Plugins → Reload) to see the changes.</p></div>
+
+<h4>Open PR</h4>
+<p>For a project that delivers by pull request, <span class="ui">Open PR</span> takes the place of Merge. It runs the same checks, except the ones about your main checkout, which it never touches. Its confirmation lists:</p>
+<ul>
+  <li>the commit of the task's work;</li>
+  <li>the push of the task's own branch, never forced and with no tags;</li>
+  <li>the draft pull request: which forge, the target branch, the title and the description.</li>
+</ul>
+<p>The title and description follow the repository's <code>paseo.json</code> pull request instructions in the same way, and you can edit both in the confirmation. The ticket key stays in the title. If the repository has a pull request template, the model gets it too and keeps its sections. Only the task's title, ticket key, handoff summary, the instructions and that template are sent, never other files or secrets. Without instructions, the title comes from the <a href="#delivery">Delivery title template</a> and the description from the template plus the task's summary.</p>
+<p>Mission Control then opens the PR itself, as a <strong>draft</strong>: with <code>gh</code> for GitHub, <code>az</code> for Azure DevOps (linking the work item), and Bitbucket Cloud's web API. It uses the sign-ins those tools already have, and never stores or shows a credential. The task moves to <strong>In review</strong>, and its PR link and number are saved on the task.</p>
+
+<h4>Pull requests and Clean up</h4>
+<p>Attention also lists the pull requests it opened, with their state: draft, open, merged or closed. <span class="ui">Refresh</span> or <span class="ui">Check status</span> reads the latest state from the forge.</p>
+<ul>
+  <li>When a PR is <strong>merged</strong>, it shows <strong>PR merged</strong> with <span class="ui">Clean up</span>. After a confirmation, this archives the task's workspace, deletes its local branch and marks the task delivered. Nothing is cleaned up without you.</li>
+  <li>Clean up refuses, and changes nothing, if the local branch has work the PR didn't include, or the worktree has uncommitted changes. Squash merges, branches deleted on the website, and review fixes pushed to the PR are all fine.</li>
+  <li>A PR <strong>closed</strong> without merging offers no cleanup.</li>
+</ul>
+<p>Every Merge, Open PR and Clean up leaves a <strong>result card</strong> in Attention, with each step's outcome, until you press <span class="ui">Dismiss</span>.</p>
+
+<!-- ============================================================ -->
+<h2 id="review">Review</h2>
+<p>Review shows what a workspace has changed, file by file. Pick a workspace, or press <span class="ui">Review changes</span> on its page. From a chat, press the Review bubble once to open the main workspace tab using freshly resolved agent/workspace context. The extra Open Review popover is removed; switching away or closing the tab does not trigger navigation from a mounted launcher. The <code>/review</code> command also targets the main workspace tab. Automated regression checks pass; native desktop/mobile behavior still needs device verification.</p>
+<figure>
+  <img src="screenshots/review-tab.png" alt="The Review tab with a risk-sorted file list and a change block with its reasons">
+  <figcaption>Files sorted by risk, and a change block with the reasons it was flagged.</figcaption>
+</figure>
+<ul>
+  <li><strong>The header</strong> says exactly what's being reviewed, for example "everything since this task branched: 3 commits plus uncommitted changes", with a snapshot time and line counts. <span class="ui">Change what to review</span> picks a different range; <span class="ui">Refresh</span> takes a new snapshot.</li>
+  <li><strong>The file list</strong> is sorted by risk: HIGH, MEDIUM, LOW and INFO, with a filter for each. Every file shows its change blocks and lines added and removed.</li>
+  <li><strong>A file</strong> shows why it was flagged (for example new export, security-sensitive, error handling, file writes), then its change blocks or the full file. Step through blocks with the arrows.</li>
+  <li><span class="ui">Mark reviewed</span> ticks off a block, and <span class="ui">Mark file reviewed</span> a whole file; the header counts your progress. <span class="ui">Next to review</span> jumps to the next file.</li>
+  <li><strong>Comments:</strong> tap a line number to comment on it, or use <span class="ui">Comment on file</span>. Comments collect as unsent, and you send them to the agent together once it's idle.</li>
+  <li><strong>Slow hosts:</strong> where every Git command starts slowly (for example, security software inspecting each launch), Review keeps reading in the background. The bubble shows <span class="ui">Review · counting…</span> and the tab shows <span class="ui">READING CHANGES</span> until the scan finishes; workspaces on the same checkout share one scan. <span class="ui">Review · unavailable</span> means Mission Control itself couldn't be reached, for example during a plugin reload.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="docs">Docs</h2>
+<p>Docs is a file browser and Markdown editor for the vault. The shared preview now renders readable task/document references instead of printing raw wiki-link syntax and GUID paths.</p>
+<h3>Reading linked tasks and handoffs</h3>
+<ul>
+  <li><code>[[Tasks/task_…/task|Task title]]</code> displays <strong>Task title</strong> as a document link. The current-task shorthand <code>[[task_…|Task title]]</code> also resolves the task document. Full stored IDs are used under the readable label.</li>
+  <li>A linked handoff opens its exact run's <code>handoff.md</code>, not the newest handoff from a different run. References can use vault-relative paths, optional <code>.md</code>, or supported relative Markdown document links.</li>
+  <li>Clicking a resolved reference selects the matching document in Docs on the same host. Missing/ambiguous targets show feedback rather than picking an arbitrary basename or switching to an unrelated workspace.</li>
+  <li>Daily handoff rows matching the recorded title/date/status/link format get a separate bold title, readable recorded date/status and handoff link. Nested summaries are indented and wrap beneath their parent.</li>
+  <li>Markdown tables show aligned columns and can scroll horizontally. Wiki-link alias pipes, escaped pipes and pipes inside code are kept within their cells. Code fences and inline code stay literal; frontmatter is hidden in preview.</li>
+  <li>This is a focused Markdown reading view, not a full Obsidian renderer. External links and image references remain text in the preview; vault-document navigation is the supported clickable behavior.</li>
+</ul>
+<figure>
+  <img src="screenshots/docs-tab.png" alt="The Docs tab with the vault tree on the left and a task plan previewed on the right">
+  <figcaption>The vault tree, and a task's plan in preview.</figcaption>
+</figure>
+<ul>
+  <li>Browse <code>C:\dev-vault</code>: <code>Tasks</code> (one folder per task), <code>Projects</code> (project profiles), <code>Daily</code> (Morning check reports) and <code>Templates</code>. A lock marks items you can open but not rename, move or delete from here, such as task folders and Mission Control's own data.</li>
+  <li>A task folder holds <code>task.md</code>, <code>status.md</code>, <code>notes.md</code>, the agent's <code>plan.md</code>, and a <code>runs</code> folder with each run's decisions, reviews, test logs and <code>handoff.md</code>.</li>
+  <li>Open a file to preview it. <span class="ui">Edit Markdown</span> edits eligible files; <span class="ui">New note</span>, <span class="ui">New folder</span>, <span class="ui">Rename or move</span> and <span class="ui">Move to trash</span> manage eligible entries. Save or discard an unsaved note before changing files or following a document link. On compact screens, <span class="ui">Browse files</span> shows the tree and selecting a file closes it.</li>
+  <li><span class="ui">Open vault in Obsidian</span> and <span class="ui">Open file in Obsidian</span> hand over to Obsidian if you use it; <span class="ui">Set up Obsidian</span> registers the vault.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h3 id="talat-meetings">Talat meetings in Obsidian</h3>
+<p>Talat is our chosen meeting app. The user reports capture is working well; vault export still needs to be configured and verified on each meeting host. Follow the <a href="https://talat.app/docs/integrations/obsidian">Talat Obsidian setup</a>:</p>
+<ol>
+  <li>In Talat, open <span class="ui">Settings → Exports → Post-meeting actions</span> and add a <span class="ui">Markdown file</span> action.</li>
+  <li>Choose <code>C:\dev-vault\Meetings\Talat</code>, optionally with the <code>{year}/{month}</code> subfolder rule.</li>
+  <li>Start with <span class="ui">Frontmatter note</span>. Preview the template and retain the summary, timestamped transcript and meeting notes you need.</li>
+  <li>Finish a short meeting. Confirm the exported note opens in Obsidian and in Mission Control's Docs browser. Audio retention is optional.</li>
+</ol>
+<p>Keep Talat exports as source records. Planned processing will write separate context notes in <code>Meetings/Processed</code> and link the correct project and daily note. The proposed <code>ingest-meeting</code> workflow and automatic meeting-to-task intake are not implemented. Proposed actions still need clarification and normal project authorization.</p>
+<p>Configure this only where you attend meetings. Plugin installation does not set up Talat. See the <a href="../meeting-capture-vault-workflow.md">full meeting workflow</a> for ownership, backfill and verification details.</p>
+
+<h2 id="mission-panel">The Mission panel</h2>
+<figure class="tall">
+  <img src="screenshots/mission-panel.png" alt="The Mission panel in Paseo's right-hand panel, listing needs you items and the workspace's tasks with stage chips">
+  <figcaption>The Mission panel inside a workspace.</figcaption>
+</figure>
+<p>Inside any Paseo workspace with agents, the <span class="ui">Mission</span> button in the header opens the Mission tab in Paseo's right-hand panel. The button reads <strong>N need you</strong> when a prompt or decision is waiting. You can also type <code>/mission</code> in a chat.</p>
+<ul>
+  <li><strong>Needs you:</strong> this workspace's permission prompts and decisions.</li>
+  <li><strong>Tasks:</strong> compact title/status summaries, latest recorded update and next action, an icon to copy the task ID, <span class="ui">Task details</span> and the named run-agent shortcut.</li>
+  <li><strong>Agents:</strong> the workspace's agents as the same tree as the <a href="#agents-panel">Agents panel</a>.</li>
+  <li><span class="ui">Open Mission Control</span> jumps to the full view.</li>
+</ul>
+
+<!-- ============================================================ -->
+<p>Use the <strong>Customize sections</strong> settings icon in Mission to move Needs you, Tasks, Review and Agents up or down. The order is saved for this installation; <span class="ui">Reset order</span> restores the default. A failed save is shown with <span class="ui">Reload layout</span>.</p>
+
+<h2 id="agents-panel">The Agents panel</h2>
+<figure class="tall">
+  <img src="screenshots/agents-panel.png" alt="The Agents panel with filter chips, a parent agent and its sub-agents on a rail">
+  <figcaption>Every agent in the workspace as a tree, with its sub-agents under it. This earlier capture predates the cleanup broom.</figcaption>
+</figure>
+<p>A workspace panel that shows every agent working in the workspace, and what each one needs. To open it, add a new tab in a workspace's Explorer and pick <span class="ui">Agents</span>, or run <span class="ui">Open Agents</span> from the Command Center. A setting (off by default) opens it once for each new workspace. It's modelled on the Agent Crew plugin, and goes further.</p>
+<ul>
+  <li><strong>The tree:</strong> agents started by another agent sit under their parent on a collapsible rail, with a count of descendants. A sub-agent working in another workspace stays with its parent's group, and a parent from another workspace shows dimmed, for context. The header counts the agents and the <strong>crews</strong> (parents with sub-agents).</li>
+  <li><strong>Each row:</strong> a state dot and label, the agent's name, provider and model, workspace, its Mission Control task and role, a one-line "where it's at", the last error if any, and how long ago it was active. Helpers that Claude runs inside a turn appear under their agent too.</li>
+  <li><strong>Filters and search:</strong> chips with counts for <strong>Needs input</strong> (permission prompts, recorded questions and open decisions), <strong>Failed</strong>, <strong>Working</strong>, <strong>Ready</strong>, <strong>Idle</strong> and <strong>Closed</strong>, and a search over name, ID, provider, model, task, workspace and labels.</li>
+  <li><strong>Actions</strong>, each confirmed in plain words first: <span class="ui">Open</span>; <span class="ui">Reply</span> to an idle or waiting agent; <span class="ui">Interrupt and redirect</span> a running one (the confirmation says the current turn stops); <span class="ui">Detach</span> a sub-agent from its parent; <span class="ui">Archive</span> (it says what happens to the sub-agents); and <span class="ui">Allow</span> or <span class="ui">Deny</span> a pending permission.</li>
+</ul>
+<p>It updates live from Paseo, with a 30-second backstop, and never wakes a stopped agent (see <a href="#subagents">Sub-agents</a>).</p>
+
+<!-- ============================================================ -->
+<h3 id="agent-cleanup">Agent cleanup <span class="badge">New</span></h3>
+<p>The <strong>broom beside the pencil</strong> checks one agent's family. The broom in the Agents heading checks every family in that workspace. Both open a preview; nothing is archived when you press the broom. The same controls appear in the Agents panel, workspace page and Mission sidebar for the host running this Mission Control.</p>
+<ol>
+  <li>Review <strong>Eligible</strong>, <strong>Keep</strong> and <strong>Couldn't verify</strong>. Each family explains its result and lists how many conversations will archive, detach or remain unchanged.</li>
+  <li>Tick the eligible families you want, or press <span class="ui">Select finished task families</span>. Unlinked conversations require an individual tick. Nothing is selected by default.</li>
+  <li>Press <span class="ui">Archive selected</span>. Mission Control checks again; changed or newly busy families are skipped. Results stay visible even after archived rows disappear. <span class="ui">Show recent cleanup</span> opens this workspace's saved receipts.</li>
+</ol>
+<p>Cleanup keeps families with active agents or helpers, unfinished tasks, pending permissions, questions or decisions, open chat tabs, or pinned workspaces. Missing records and failed checks appear under Couldn't verify. Archived conversations retain their chat history; task records, workspaces and branches remain in place.</p>
+<p>Set retention in <strong>Settings → Plugins → Mission Control → Agent cleanup</strong> on each host. Defaults are <strong>7 days</strong> after the latest activity or task update for delivered/closed work, and <strong>14 days</strong> for unlinked conversations. Both accept 1–365 days. Cleanup runs only when you confirm a selection.</p>
+<p>A preview lasts five minutes. Use <span class="ui">Scan again</span> after it expires or after an uncertain result. A merged pull request offers <span class="ui">Check delivery cleanup</span>, which opens the existing delivery checks before any workspace archival, branch deletion or task-status change.</p>
+
+<!-- ============================================================ -->
+<h2 id="orchestrator">Orchestrator workspaces <span class="badge">New</span></h2>
+<figure>
+  <img src="screenshots/orchestrator-host-agents.png" alt="The Host agents tab of an orchestrator workspace, listing the remote host's projects and workspaces">
+  <figcaption>The Host agents tab: the remote host's workspaces, read live, with their agents, branch, changes and pull request.</figcaption>
+</figure>
+<p>An orchestrator workspace is a workspace on this host where you talk with one agent that drives another host's work. Its folder holds a <code>host.json</code> that names that host, for example in <code>C:\Code\Orchestrator\Acme</code>:</p>
+<pre><code>{ "schemaVersion": 1, "label": "Acme", "serverId": "srv_…" }</code></pre>
+<p>Use the host's name and Paseo server ID as this app knows them. The file holds no secrets. A vault's own <code>host.json</code>, which names its host with <code>hostId</code>, isn't mistaken for one.</p>
+<ul>
+  <li><strong>Bubbles:</strong> every open chat in the workspace gets two bubbles above the message box. <span class="ui">Acme agents</span> counts the host's agents that need you, and <span class="ui">Review</span> counts its workspaces that are ready. The counts come from the remote host, read at most once a minute; when the host is unreachable the last counts stay. They replace the usual Review bubble, which would review the orchestrator's own folder.</li>
+  <li><strong>Host agents tab:</strong> <span class="ui">Acme agents</span> opens a Host agents tab with the same menu as the main page, for that host:
+    <ul>
+      <li><span class="ui">Workspaces</span>: the host's projects and workspaces, with the Workspaces page's search, Show, label and project filters (without the task filters) and collapsible projects. Each workspace shows its status, labels, agents, last activity, branch, lines added and removed, uncommitted or unpushed work, and pull request. Choose one to see its agent tree, with <span class="ui">Open review</span>, <span class="ui">Tasks</span> and <span class="ui">Open workspace</span>.</li>
+      <li><span class="ui">Attention</span>: the host's permission prompts, questions and plan or review decisions, with Merge or Open PR for tasks ready to deliver.</li>
+      <li><span class="ui">Tasks</span>: the chosen workspace's tasks from the host's vault, with Start and Resume.</li>
+      <li><span class="ui">Review</span>: Mission Control's Review of the chosen workspace on that host, with its diffs, marks and comments. With no workspace chosen, it lists what's ready.</li>
+      <li><span class="ui">Docs</span>: the host's vault: task folders, handoffs and reports.</li>
+    </ul>
+  </li>
+  <li><strong>Review list:</strong> the <span class="ui">Review</span> bubble opens the list of what's ready on that host. Workspaces labelled Review come first, then other workspaces with changes whose agents have all stopped, except ones labelled Done or Paused. Each card shows the branch, changes, pull request and its checks and review, and the latest agent. <span class="ui">Open review</span> shows that workspace in the Review tab; <span class="ui">Open workspace</span> takes you to it on that host; <span class="ui">Open agent</span> opens its latest agent; <span class="ui">Show agents</span> shows its agent tree.</li>
+</ul>
+<p>Attention, Tasks, Review and Docs come from Mission Control on that host, read through its own copy running in your Paseo app, so they need Mission Control installed there and a version with this screen. When it's missing, outdated or the host is offline, the tab says which. Workspaces that Paseo sends without an activity time now show their latest agent's activity, or when they entered their current status, here and on the Workspaces page.</p>
+
+<!-- ============================================================ -->
+<h2 id="morning-check">Morning check</h2>
+<p>The Morning check starts your day from your ticket tracker. It's at the bottom of a workspace page, for projects set up with Development Flow.</p>
+<figure>
+  <img src="screenshots/morning-check.png" alt="The Morning check section with provider choice, the Run button and a report listing sprint items not yet in Mission Control">
+  <figcaption>The latest report lists sprint items that aren't tasks yet.</figcaption>
+</figure>
+<ol>
+  <li>Pick a provider and press <span class="ui">Run Morning check</span>. An agent reads your current-sprint items in Jira or Azure DevOps with its own MCP tools. It only reads; it never changes the tracker.</li>
+  <li>It writes a report to <code>C:\dev-vault\Daily</code>, and also reviews yesterday's handoffs, open decisions, and blocked or idle tasks.</li>
+  <li>Tick the items you want and press <span class="ui">Import selected into Mission Control</span>. Each becomes an Inbox task titled <code>KEY · title</code>, with the ticket's criteria and a link back. Importing the same item twice doesn't create a duplicate.</li>
+</ol>
+<div class="callout"><p><strong>Where it runs.</strong> Jira and Azure DevOps are connected on your work hosts, so real imports need Mission Control on those hosts. <span class="ui">Use test fixture</span> runs the same flow with sample items.</p></div>
+
+<!-- ============================================================ -->
+<h2 id="settings">Settings</h2>
+<p>Mission Control's settings are in Paseo under <strong>Settings → Plugins → Mission Control</strong>. Each screen describes the host chosen in Paseo's host picker. The main settings page now includes <strong>Project Git</strong>: select a Git project to change its default-branch override, set auto-fetch, or Pull latest. The compact summaries elsewhere show those saved preferences.</p>
+
+<h3 id="updates">Updates</h3>
+<figure>
+  <img src="screenshots/settings-updates.png" alt="The Updates screen showing the installed version, its source and Check for updates">
+  <figcaption>The installed version, where it came from, and the update check.</figcaption>
+</figure>
+<p>Shows the installed version and where Mission Control was installed from, and checks for a newer version when you open it or press <span class="ui">Check for updates</span>. For an install from Git, <span class="ui">Update</span> asks for confirmation, checks again that it's the version you reviewed, and lets Paseo build and reload it. Nothing updates automatically. A folder install (as on pc-864 today) updates by pulling into the folder and reloading the plugin.</p>
+
+<h3 id="branch-names">Branch names</h3>
+<figure>
+  <img src="screenshots/settings-branch-names.png" alt="The Branch names screen with a host template, per-project overrides and a live example">
+  <figcaption>A host template with a live example, and per-project overrides.</figcaption>
+</figure>
+<p>Sets how task branches are named, to match each company's rules. Set a template for the host and, if needed, a different one per project. The tokens are <code>{ticket}</code> (the ticket key), <code>{slug}</code> (a short description), <code>{type}</code> (feature or bugfix) and <code>{id}</code> (Mission Control's short task ID). For example <code>{type}/{ticket}-{slug}</code> gives <code>feature/ABC-123-add-login-retry</code>.</p>
+<p>Start task shows the exact branch before creating it, and refuses a name that already exists. Tasks without a ticket keep <code>task/{id}-{slug}</code>.</p>
+<p>When a project's <code>paseo.json</code> has branch name guidance, the screen shows it beside that project's template, read-only, with the file it came from. The guidance is advice to compare against; your template still decides the name.</p>
+
+<h3 id="workflow-instructions">Workflow instructions <span class="badge">New</span></h3>
+<p>Open <strong>Settings → Plugins → Mission Control → Workflow instructions</strong> on the intended host. Set separate <strong>Intake</strong> and <strong>Planning</strong> guidance under Host defaults, then select a project for any exceptions. Each stage can <span class="ui">Inherit host</span>, <span class="ui">Add to host</span>, or <span class="ui">Replace host</span>. The <strong>Effective guidance</strong> preview shows what that project will receive.</p>
+<p>For a host with vague tickets, an Intake note could say: “Ask me focused questions when acceptance criteria or business context are missing. Reuse context I already supplied.” Planning guidance can name the relevant Confluence space, design references or read-only database checks. Include how to find those sources and what to verify; configure tool connections and credentials separately.</p>
+<p><span class="ui">Save instructions</span> writes ordinary Markdown notes in this host's vault: <code>C:\dev-vault\Workflow\host.md</code> and <code>Workflow\Projects\&lt;projectId&gt;.md</code>. The screen shows their exact paths. Save or discard edits before switching scope. A concurrent save from another client preserves your draft and blocks overwriting the newer revision.</p>
+<p>Morning check receives the selected project's effective Intake guidance. Task Start, Resume, <code>/mission-task</code> and <code>dev-flow context</code> load both stages. Saved changes reach agents on their next launch, resume or context read; they do not interrupt an active agent. Missing notes use the normal workflow. Invalid notes produce an error, so they can be corrected. Notes guide the agent's judgment; they do not grant new access, tracker writes or delivery permission. Shared workflow skills and repository rules still apply. Unresolved questions use the existing Needs you interaction.</p>
+<p><a href="../workflow-instructions.md">Examples, vault-note editing and verification steps</a>. Visual verification of this new settings screen is pending.</p>
+
+<h3 id="tools">Tools &amp; skills</h3>
+<figure>
+  <img src="screenshots/tools-summary.png" alt="Tools and skills summary rows for Claude Code, Codex, OpenCode and GitHub Copilot CLI">
+  <figcaption>One summary row per provider, then the details for the provider you pick.</figcaption>
+</figure>
+<p>A view of each provider's global setup on this host: Claude Code, Codex, OpenCode and GitHub Copilot CLI. For each one:</p>
+<ul>
+  <li><strong>MCP servers:</strong> transport, on or off, sign-in state, where it's configured, and a light health check. Local servers are never started; the check only looks for their command. Remote servers get one request with no credentials.</li>
+  <li><strong>Rule files</strong> such as <code>CLAUDE.md</code> and <code>AGENTS.md</code>, with a preview.</li>
+  <li><strong>Skills</strong> by folder, including skills that come from plugins.</li>
+  <li><strong>Tool search:</strong> whether the provider loads MCP tools only when needed, which keeps agents' context small.</li>
+</ul>
+<figure>
+  <img src="screenshots/tools-rule-preview.png" alt="A rule file preview in Tools and skills">
+  <figcaption>Preview any rule file without leaving the screen.</figcaption>
+</figure>
+<h4>Turning MCP servers off and on</h4>
+<p>For Codex, OpenCode and Copilot CLI, each server has <span class="ui">Turn off</span> or <span class="ui">Turn on</span>:</p>
+<figure>
+  <img src="screenshots/tools-turn-off-confirm.png" alt="The confirmation under a server row showing the file, key and change">
+  <figcaption>The confirmation opens under the server you clicked and shows the exact change.</figcaption>
+</figure>
+<ol>
+  <li>A confirmation shows the file, the server, the exact key and its old and new value.</li>
+  <li>On confirm, the file is backed up to Mission Control's own folder, re-read (nothing is written if it changed meanwhile), replaced in one step, and read back to check the change. For Codex, <code>codex mcp list</code> must agree too.</li>
+  <li><span class="ui">Undo</span> changes just that setting back.</li>
+</ol>
+<p>Changes apply to new agent sessions; running agents keep the servers they started with. Claude Code's servers stay read-only: Claude has no global off switch, and its tool search already loads their tools only when needed. Built-in and plugin servers are read-only too, each with its reason shown.</p>
+
+<h3 id="delivery">Delivery <span class="badge">New</span></h3>
+<figure>
+  <img src="screenshots/settings-delivery.png" alt="The Delivery screen with the host default, the pull request title template, each project's delivery and detected forge, and custom hosts">
+  <figcaption>How each project delivers finished work, and which forge each one is on.</figcaption>
+</figure>
+<p>Delivery sets how finished tasks leave the task branch:</p>
+<ul>
+  <li><strong>Default for this host:</strong> <em>Merge</em> (into your main checkout) or <em>Pull request</em>. Each project can override it; for example, keep Merge on your personal machine, and use Pull request on a work host.</li>
+  <li><strong>Pull request title:</strong> a template using the same tokens as branch names: <code>{ticket}</code>, <code>{title}</code>, <code>{slug}</code>, <code>{type}</code> and <code>{id}</code>. The default gives titles like <code>ABC-123: Add login retry</code>; a task without a ticket drops the ticket part.</li>
+  <li><strong>Each project's forge:</strong> detected from its <code>origin</code> remote (GitHub, Azure DevOps or Bitbucket Cloud) and shown with the repository, for example "GitHub · discwl/huginn (detected)". A project's forge can also be set by hand.</li>
+  <li><strong>Custom hosts:</strong> github.com, dev.azure.com, visualstudio.com and bitbucket.org are recognised on their own. Add a company domain (GitHub Enterprise, a self-hosted Azure DevOps Server) or an SSH alias (such as <code>github-work</code> in <code>git@github-work:org/repo.git</code>) here, and map it to its forge.</li>
+</ul>
+
+<h3 id="setup">Setup <span class="badge">New</span></h3>
+<figure>
+  <img src="screenshots/setup.png" alt="The Setup screen showing Paseo, the Development Flow kit, the vault and skills by provider">
+  <figcaption>Paseo, the kit, the vault, and the skills each provider has.</figcaption>
+</figure>
+<p>Setup lists everything Mission Control and its agents rely on, with a status for each: Installed, Outdated, Missing, Modified, Not managed or Unknown. <span class="ui">Check again</span> re-reads everything; reading changes nothing.</p>
+<ul>
+  <li><strong>Paseo</strong> and whether it's new enough.</li>
+  <li><strong>The Development Flow kit</strong> (its skills and scripts). On pc-864 it's your developer checkout, updated with Git. A host that installed Mission Control from GitHub gets a new install folder on every update, so Mission Control keeps a <strong>stable kit path</strong> that always points at the current install. If a project profile still names one install's folder, <span class="ui">Stable kit path → Use it…</span> moves it onto the stable path; then update the skill links it lists. After that, updates no longer break the profile, the skill links or running agents.</li>
+  <li><strong>The vault</strong> and whether its <code>host.json</code> matches this host.</li>
+  <li><strong>Skills by provider:</strong> the Development Flow skills and the OpenCode Review delegate skill, for Claude Code, Codex, OpenCode and Copilot CLI. <span class="ui">Install…</span> links the missing ones in, after a confirmation that shows the exact paths. It never replaces a folder it didn't create ("Not managed").</li>
+</ul>
+<figure>
+  <img src="screenshots/setup-tools.png" alt="The Tools part of Setup with Node, npm, Git, GitHub CLI, Gortex, the OpenCode Review CLI and Obsidian">
+  <figcaption>Tools, each with its version, why it's needed, and the exact command to install or update it.</figcaption>
+</figure>
+<ul>
+  <li><strong>Tools</strong> show their version, why they're needed, and the exact command or link: Node, npm, Git, Gortex, and Obsidian and its CLI (detected from their files; Obsidian is never started).</li>
+  <li><strong>Forge tools</strong> appear only for the forges your projects use: the GitHub CLI (<code>gh</code>), the Azure CLI (<code>az</code>) with its azure-devops extension, and Bitbucket Cloud credentials. Each shows whether it's signed in, with the command to install it or sign in. The rest are listed under "Not shown", with the reason.</li>
+  <li><strong>The OpenCode Review CLI</strong> can be installed or updated at its pinned version from here. A slow install keeps running, and the screen follows it. OpenCode Review's rule files are copied only when missing or unchanged since Mission Control wrote them, so your edits are never overwritten.</li>
+  <li>Every install is logged under <strong>Recent installs</strong>.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="lifecycle">How a task moves</h2>
+<p>Keep four things separate: the <strong>task's stored status</strong>, the <strong>run's recorded stage/outcome</strong>, the <strong>agent's live activity</strong> and the <strong>workspace's native labels</strong>. Status changes and delivery are explicit actions; a recorded event or label does not silently advance the task. A run records its stage as it goes:</p>
+<div class="flow"><span>Intake</span><b>→</b><span>Plan</span><b>→</b><span>Build</span><b>→</b><span>Checks</span><b>→</b><span>Review</span><b>→</b><span>Fixes</span><b>→</b><span>Delivery</span><b>→</b><span>Handoff</span></div>
+<table>
+  <tr><th>Stored task status</th><th>Meaning</th><th>Related recorded work</th></tr>
+  <tr><td>Inbox</td><td>Captured, not shaped yet</td><td>none</td></tr>
+  <tr><td>Ready</td><td>Clear enough to start</td><td>none yet; Start task creates a run at Intake</td></tr>
+  <tr><td>In progress</td><td>Being worked on</td><td>Plan → Build → Checks → Review → Fixes</td></tr>
+  <tr><td>Blocked</td><td>A recorded problem prevents progress</td><td>Any stage can record a blocker. Waiting for an answer or a dependency is only called blocked when the record establishes that.</td></tr>
+  <tr><td>In review</td><td>The task record says review is pending or in progress</td><td>Review or handoff may be completed or waiting; the status is not inferred from a stage's position.</td></tr>
+  <tr><td>Delivered</td><td>Accepted and merged or shipped</td><td>Delivery</td></tr>
+  <tr><td>Closed</td><td>Finished or dropped; kept for history</td><td>none active</td></tr>
+</table>
+<h4>Who does what</h4>
+<ul>
+  <li><strong>Agents</strong> verify the task binding, plan, build, validate, obtain independent review, fix findings and write an honest handoff. They perform commit, push or merge actions only when the task's delivery route and your authorization permit them. A label does not grant that authorization.</li>
+  <li><strong>You</strong> write the criteria, answer decisions, review the changes, and deliver: Merge for personal projects, and draft pull requests for work repositories.</li>
+</ul>
+<h4>A finding's life</h4>
+<div class="flow"><span>open</span><b>→</b><span>submitted by you, or dismissed</span><b>→</b><span>awaiting verification (fixed)</span><b>→</b><span>resolved by a fresh review</span></div>
+
+<!-- ============================================================ -->
+<h2 id="workspace-labels">Workspace labels and the agent workflow</h2>
+<p>A workspace label is a native Paseo tag for the <strong>whole workspace</strong>. Mission Control reads it for the workspace header and Label filter. It is separate from task status, the run's events and the agent-label metadata used for task/role associations.</p>
+<p>You can manage labels through Paseo's native workspace label menu, or instruct the <strong>bound task coordinator</strong> to do it. The Development Flow kit now has <code>workspace-label</code> actions <code>get</code>, <code>assign</code>, <code>remove</code> and <code>status</code>. Assign can create a missing native label; remove detaches it without deleting the catalog's shared definition or changing its color.</p>
+<div class="callout tip"><p><strong>A useful instruction.</strong> “For this task's verified host and workspace, inspect the native labels, apply the appropriate lifecycle label when safe, preserve unrelated labels, and record the verified result. If other tasks share the workspace, reconcile its overall status rather than using this task alone.”</p></div>
+<p>The agent checks the exact daemon, workspace, project and real checkout, performs the permitted write, then reads the assignments back. An uncertain write is reported as unconfirmed: inspect the current labels before retrying. Agents never edit Paseo's private label stores, and assigning a label never changes the task record.</p>
+<details><summary>Task-bound read command for agents</summary>
+<p>Use the actual copied task ID and verified server/workspace IDs from the current task binding. The command below only reads; placeholders must be replaced.</p>
+<pre><code>node &lt;kitRoot&gt;/scripts/dev-flow.mjs workspace-label \
+  --task &lt;taskId&gt; --server &lt;serverId&gt; --workspace &lt;workspaceId&gt; \
+  --cwd &lt;checkoutPath&gt; --action get</code></pre>
+<p>The trailing backslashes above illustrate line continuation in a POSIX shell. In PowerShell, enter it on one line or use PowerShell continuation. Use <code>--action assign --label "Review"</code> or <code>--action remove --label "Review"</code> only for an explicitly intended label edit; the guarded lifecycle form is <code>--action status --label "Review" --reason "&lt;recorded reason&gt;"</code>.</p>
+</details>
+<div class="table-wrap" role="region" aria-label="Workspace lifecycle label policy" tabindex="0"><table>
+  <caption>Labels reflect evidence; they do not replace it</caption>
+  <thead><tr><th scope="col">Label</th><th scope="col">When the workflow uses it</th></tr></thead>
+  <tbody>
+  <tr><th scope="row">Ready</th><td>There is recorded readiness to start, with the required plan decision resolved. Intake or an unanswered plan question alone is insufficient.</td></tr>
+  <tr><th scope="row">In Progress</th><td>Authorized planning, implementation, validation or fixes are actively proceeding.</td></tr>
+  <tr><th scope="row">Review</th><td>Recorded review is underway or the task is awaiting its review decision. A completed review event alone does not approve the revision.</td></tr>
+  <tr><th scope="row">Blocked</th><td>A recorded blocker actually prevents progress. Do not turn ordinary waiting or an idle agent into a blocker.</td></tr>
+  <tr><th scope="row">Paused</th><td>You explicitly paused the work. Agent inactivity is not an instruction to pause.</td></tr>
+  <tr><th scope="row">Done</th><td>Required verification and authorized delivery/closure have actually finished; no other active linked task or agent still needs the workspace. A completed handoff or stage is insufficient.</td></tr>
+  </tbody>
+</table></div>
+<p><strong>Shared workspaces:</strong> one coordinator owns their overall label. The guarded <code>status</code> action refuses to replace it when another active task is linked; its Done check also verifies the complete live agent roster and the calling agent's identity. Preserve unrelated tags and user-selected labels. Explicit assignment/removal is available for an intentional coordinator/user choice; it is not an automatic override of shared-workspace state.</p>
+<p>The nine skills now follow this policy from <strong>check-environment → intake-task → plan-task → execute-task → validate-changes → review-changes → fix-findings → prepare-delivery → write-handoff</strong>. Reviewers remain read-only and report a proposed label to the coordinator. Resume and handoff reconcile recorded versus live state and retain a concrete next action. Label failure is recorded separately from an implementation blocker.</p>
+<p class="source-note">Verified on the personal host with Paseo 0.10.2: temporary native label creation, assignment, removal and cleanup; 29 script tests and plugin typecheck passed. The adapter uses an exported internal client API with capability checks because the public plugin SDK/MCP agent-label interface is different. Future versions may need adapter updates. The nine installed Codex skill folders are links to the updated repository; already-running agents keep their loaded context until the instructions are read again.</p>
+
+<h2 id="screenshot-notes">Screenshot coverage</h2>
+<p>All photographs of the interface in this guide are real screenshots, embedded in the standalone HTML. Existing captures from the September 29 guide edition remain for areas that have not been recaptured. Two user-supplied images were added for compact activity and linked tasks. They document the layout during this discussion, before the later heading/copy-button, Refresh alignment and label-task status changes.</p>
+<ul>
+  <li><strong>Added:</strong> collapsed Activity/Decisions/Artifacts detail view, and active linked tasks with completed history folded away.</li>
+  <li><strong>Existing edition:</strong> navigation, workspace/task lists, launcher, Attention decisions, Review, Docs, Mission, Morning check and captured settings/setup screens.</li>
+  <li><strong>Still to capture:</strong> final task-status badge and copy icon, clickable wiki links/tables, customized Mission ordering, Project Git settings, the Agents panel, Delivery settings, the current Review workspace tab and redesigned file/folder actions modal, and the orchestrator bubbles, Host agents tab and review list. A pending placeholder means the screenshot is unavailable, not that the feature is unimplemented.</li>
+  <li><strong>Device coverage:</strong> resizing this HTML guide checks the guide's layout only. Native desktop/phone visual and navigation verification has not been performed in this refresh.</li>
+</ul>
+
+<h2 id="coming">Deployment and verification limits</h2>
+<p>This guide describes the current local checkout, including uncommitted changes, rather than promising a deployment schedule. Install/reload Mission Control and set up the owning vault/profile on each host where you need host-local tasks, reviews and tracker imports. A connected host's agent roster alone does not prove that host has this plugin build or the updated workflow skills.</p>
+<p>For the agent-managed label task, implementation and its relevant checks are complete, but independent review and delivery remain pending. Its task status is now <strong>In review</strong>; the shared workspace retains <strong>In Progress</strong>. This distinction is expected. Native visual verification remains separate from script tests.</p>
+
+<!-- ============================================================ -->
+<h2 id="troubleshooting">Troubleshooting and where things live</h2>
+<table>
+  <tr><th style="width: 34%">Situation</th><th>What to do</th></tr>
+  <tr><td>A change to Mission Control doesn't show</td><td>Reload the plugin: Settings → Plugins → Mission Control → Reload, or <code>paseo plugin reload mission-control</code>. <code>paseo plugin logs mission-control</code> should end with "Plugin ready".</td></tr>
+  <tr><td>A task is missing from the list</td><td>Its <code>task.md</code> may be invalid (for example criteria over 4,000 characters). The list skips it and shows a warning naming the file.</td></tr>
+  <tr><td>Starting a task seems slow</td><td>Creating a worktree can take a minute. The panel shows "Starting the task…" and updates by itself.</td></tr>
+  <tr><td>Merge refuses</td><td>Its message says why: files changed since approval (request a fresh review), the agent is busy, or the main checkout has uncommitted changes. Fix that and press Check again.</td></tr>
+  <tr><td>Open PR says a tool is missing or not signed in</td><td>Settings → Setup lists <code>gh</code>, <code>az</code> or Bitbucket credentials for the forges your projects use, with the exact install or sign-in command.</td></tr>
+  <tr><td>Clean up refuses</td><td>Its message says why: the local branch has work the PR didn't include, or the worktree has uncommitted changes. Nothing was changed; push or discard that work first.</td></tr>
+  <tr><td>An answer says "Saved, not sent"</td><td>The agent was busy. Press Send to agent once it's idle.</td></tr>
+  <tr><td>Activity says completed, but the task is In review</td><td>The recorded update and stored task status are separate. Inspect Decisions for approval and Artifacts for the report; a completion checkbox does not establish acceptance of the current revision.</td></tr>
+  <tr><td>An evidence document is not included</td><td>The returned detail view is bounded. Inspect the exact task/run documents in Docs. Do not assume the file is missing until its actual target is checked.</td></tr>
+  <tr><td>A wiki link cannot open</td><td>Check its exact vault path, host and optional extension. Missing or ambiguous targets should give feedback; use the vault tree to select the exact record. Save/discard an unsaved note before leaving it.</td></tr>
+  <tr><td>A label write is unconfirmed</td><td>Ask the bound agent to read workspace-label get before retrying. A timeout may occur after a write; do not blindly replay it or use a label as task approval.</td></tr>
+  <tr><td>The guarded status action refuses a shared workspace</td><td>Another active linked task or agent prevents replacing the overall status. Have the workspace coordinator reconcile it; the individual task's state is not the whole workspace's state.</td></tr>
+</table>
+<p><strong>Where things live on each host:</strong></p>
+<ul>
+  <li><code>C:\dev-vault</code>: tasks, runs, decisions, reviews, handoffs and daily reports.</li>
+  <li><code>C:\dev-vault\Projects</code>: one profile per project, including where the Development Flow kit is.</li>
+  <li><code>~\.paseo\plugin-data\mission-control\config-backups</code>: backups taken before any MCP setting changes.</li>
+  <li>Task worktrees: Paseo's worktree folder, one per task, removed when the task is merged and cleaned up.</li>
+</ul>
+
+<footer>Mission Control user guide · roadmap and Review update October 1, 2026 · wider inventory refreshed September 30, 2026 · previous edition September 29, 2026, 6:12 PM Pacific. Current local checkout; Paseo 0.10.2 label behavior verified. Screenshots are embedded real captures with the coverage limits stated above. They contain real workspace/task information; check before sharing. No native-device verification is claimed.</footer>
+</main>
+</div>
+</body>
+</html>

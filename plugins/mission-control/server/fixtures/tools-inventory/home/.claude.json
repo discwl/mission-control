@@ -1,0 +1,30 @@
+{
+  "numStartups": 12,
+  "mcpServers": {
+    "local-tool": {
+      "type": "stdio",
+      "command": "C:\\tools\\local-tool.exe",
+      "args": ["--api-key", "SECRET-SENTINEL-arg"],
+      "env": { "LOCAL_TOOL_TOKEN": "SECRET-SENTINEL-env" }
+    },
+    "untyped": {
+      "command": "npx",
+      "args": ["-y", "some-server"]
+    },
+    "linear": {
+      "type": "http",
+      "url": "https://user:SECRET-SENTINEL-pass@mcp.linear.example/v1/fixture-path-key-0123456789abcdef?api_key=SECRET-SENTINEL-query#SECRET-SENTINEL-hash",
+      "headers": { "Authorization": "Bearer SECRET-SENTINEL-header" }
+    },
+    "notion": {
+      "type": "sse",
+      "url": "https://mcp.notion.example/sse",
+      "alwaysLoad": true
+    }
+  },
+  "projects": {
+    "C:/Code/one": { "disabledMcpServers": ["untyped"], "mcpServers": { "repo-only": { "command": "repo-server" } } },
+    "C:/Code/two": { "disabledMcpServers": ["untyped", "linear"] },
+    "C:/Code/three": {}
+  }
+}

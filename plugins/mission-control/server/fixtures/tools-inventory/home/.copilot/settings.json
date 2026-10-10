@@ -1,0 +1,6 @@
+{
+  // Copilot fixture settings.
+  "toolSearch": false,
+  "disabledMcpServers": ["tickets"],
+  "enabledPlugins": { "notes-kit@awesome-copilot": false }
+}

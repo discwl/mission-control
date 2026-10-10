@@ -1,0 +1,57 @@
+# Codex fixture: covers the TOML forms real configs use.
+model = "gpt-test-search"
+model_reasoning_effort = 'high'
+notify = ["node", "C:\\tools\\notify.js"]   # trailing comment
+approval_timeout = 1_000
+hex_value = 0xff
+started = 2026-09-26T10:00:00Z
+greeting = """
+Hello \
+  world"""
+path_literal = '''C:\no\escapes'''
+
+[features]
+js_repl = true
+
+[features.code_mode]
+direct_only_tool_namespaces = [
+  "gortex",   # arrays may span lines
+  "other",
+]
+
+[mcp_servers]
+
+[mcp_servers.gortex]
+command = 'C:\Users\someone\bin\gortex.exe'
+args = ["mcp", "--token", "SECRET-SENTINEL-toml-arg"]
+startup_timeout_sec = 90
+
+[mcp_servers.gortex.env]
+GORTEX_TOKEN = "SECRET-SENTINEL-toml-env"
+
+[mcp_servers."docs-http"]
+url = "https://docs.example/mcp?key=SECRET-SENTINEL-toml-query"
+bearer_token_env_var = "DOCS_TOKEN"
+http_headers = { "X-Api-Key" = "SECRET-SENTINEL-toml-header" }
+
+[mcp_servers.parked]
+command = "npx"
+args = ["-y", "parked-server"]
+enabled = false
+
+[mcp_servers.parked.tools.search]
+approval_mode = "never"
+
+[plugins."browser@openai-bundled"]
+enabled = true
+
+[[skills.config]]
+path = "~/.agents/skills/turned-off/SKILL.md"
+enabled = false
+
+[[skills.config]]
+path = "somewhere/else/SKILL.md"
+enabled = true
+
+[projects.'C:\Code\example']
+trust_level = "trusted"

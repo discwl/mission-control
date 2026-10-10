@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "gortex": {
+      "type": "local",
+      "command": "gortex",
+      "args": ["mcp", "--key=SECRET-SENTINEL-cp-arg"],
+      "env": { "GORTEX_TOKEN": "SECRET-SENTINEL-cp-env" },
+      "tools": ["*"],
+      "deferTools": false
+    },
+    "tickets": {
+      "type": "http",
+      "url": "https://tickets.example/mcp",
+      "headers": { "Authorization": "Bearer SECRET-SENTINEL-cp-header" },
+      "tools": ["*"]
+    }
+  }
+}

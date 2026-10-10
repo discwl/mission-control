@@ -1,0 +1,9 @@
+{
+  "firstLaunchAt": "2026-05-08T00:00:00.000Z",
+  "loggedInUsers": [{ "host": "https://github.com", "login": "fixture-user" }],
+  "installedPlugins": [
+    { "name": "deploy-helper", "marketplace": "copilot-plugins", "version": "1.2.0", "installed_at": "2026-09-01T00:00:00.000Z", "enabled": true },
+    { "name": "notes-kit", "marketplace": "awesome-copilot", "version": "0.3.0", "installed_at": "2026-09-01T00:00:00.000Z", "enabled": true },
+    { "name": "removed-by-hand", "marketplace": "copilot-plugins", "installed_at": "2026-09-01T00:00:00.000Z", "enabled": true }
+  ]
+}

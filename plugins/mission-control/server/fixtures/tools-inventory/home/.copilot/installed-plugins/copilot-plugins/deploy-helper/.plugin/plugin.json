@@ -1,0 +1,1 @@
+{ "name": "deploy-helper", "version": "1.2.0", "description": "Deploy checks for the fixture host.", "skills": { "paths": ["./skills"] } }

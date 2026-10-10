@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "deploy-api": {
+      "type": "http",
+      "url": "https://deploy.example/mcp?token=SECRET-SENTINEL-plugin-query",
+      "headers": { "Authorization": "Bearer SECRET-SENTINEL-plugin-header" }
+    },
+    "deploy-local": {
+      "command": "${PLUGIN_ROOT}/bin/deploy-mcp",
+      "args": ["--key", "SECRET-SENTINEL-plugin-arg"],
+      "env": { "DEPLOY_TOKEN": "SECRET-SENTINEL-plugin-env" }
+    }
+  }
+}

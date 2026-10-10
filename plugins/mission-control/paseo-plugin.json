@@ -1,0 +1,7 @@
+{
+  "id": "mission-control",
+  "build": [["npm", "ci", "--include=dev", "--ignore-scripts"]],
+  "requirements": {
+    "paseo": ">=0.9.1"
+  }
+}

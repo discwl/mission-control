@@ -1,0 +1,37 @@
+{
+  "note": "Test fixture for the Morning check. These items are made up; no tracker was read.",
+  "items": [
+    {
+      "system": "jira",
+      "key": "MCFX-101",
+      "url": "https://example.atlassian.net/browse/MCFX-101",
+      "type": "Story",
+      "title": "Show the ticket key on imported tasks",
+      "description": "Task cards and details should show the Jira key and link for imported tasks.",
+      "acceptanceCriteria": "- The task details show the ticket key.\n- The key links to the Jira issue.",
+      "status": "In Progress",
+      "sprint": "Fixture Sprint 1"
+    },
+    {
+      "system": "jira",
+      "key": "MCFX-102",
+      "url": "https://example.atlassian.net/browse/MCFX-102",
+      "title": "Explain an empty Morning check",
+      "description": "When the tracker has no current-sprint items, the report says so instead of showing an empty list.",
+      "acceptanceCriteria": "",
+      "status": "To Do",
+      "sprint": "Fixture Sprint 1"
+    },
+    {
+      "system": "azure-devops",
+      "key": "48213",
+      "url": "https://dev.azure.com/example/Fixture/_workitems/edit/48213",
+      "type": "Bug",
+      "title": "Import work items picked in Mission Control",
+      "description": "Only the work items the user selects become Mission Control tasks.",
+      "acceptanceCriteria": "Unselected items stay in the report as not imported.",
+      "status": "Active",
+      "sprint": "Fixture\\Iteration 7"
+    }
+  ]
+}

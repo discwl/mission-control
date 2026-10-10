@@ -1,0 +1,7 @@
+{
+  "model": "opus",
+  "env": {
+    "ENABLE_TOOL_SEARCH": "auto:5",
+    "SOME_API_KEY": "SECRET-SENTINEL-settings-env"
+  }
+}

@@ -1,0 +1,3 @@
+model = "gpt-test-search"
+[mcp_servers.bad]
+command = SECRET-SENTINEL-unquoted

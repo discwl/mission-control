@@ -1,0 +1,5 @@
+{
+  "name": "notes-kit",
+  "skills": { "paths": ["./extra-skills"], "exclusive": true },
+  "mcpServers": { "notes": { "type": "local", "command": "notes-mcp", "env": { "NOTES_KEY": "SECRET-SENTINEL-notes-env" } } }
+}
