@@ -46,6 +46,7 @@ import { registerMorning } from "./server/morning";
 import { registerWorkflowInstructions } from "./server/workflow-instructions";
 import { registerAgentCleanup } from "./server/agent-cleanup";
 import { registerOrchestrator } from "./server/orchestrator";
+import { startWorkspaceLabelSync } from "./server/workspace-labels";
 import { getMissionSummary } from "./shared/mission";
 import { renameAgent } from "./shared/agent-names";
 import { daemonServerId, renameAgentRecord, setAgentNameViaDaemon } from "./server/agent-names";
@@ -205,7 +206,13 @@ export default function contribute(server: PluginServerContext) {
     listTaskDocumentRecords(serverId, workspaceId, taskId),
   );
   server.handle(saveTaskDocument, async input => saveTaskDocumentRecord(input));
-  server.handle(updateTaskStatus, async input => updateTaskStatusRecord(input));
+  // Each workspace's status label (Ready, In Progress, Review, Blocked, Done) follows its tasks.
+  const statusLabels = startWorkspaceLabelSync(async serverId => (await taskSources(serverId)).map(source => source.task));
+  server.handle(updateTaskStatus, async input => {
+    const task = await updateTaskStatusRecord(input);
+    statusLabels.poke();
+    return task;
+  });
   server.handle(updateTaskDueDate, async input => updateTaskDueDateRecord(input));
   server.handle(listTaskRuns, async ({ serverId, workspaceId, taskId }) => ({
     runs: await listRunRecords(serverId, workspaceId, taskId),
@@ -226,5 +233,5 @@ export default function contribute(server: PluginServerContext) {
   const updater = createPluginUpdater();
   server.handle(checkPluginUpdate, () => updater.check());
   server.handle(applyPluginUpdate, ({ target }) => updater.apply(target));
-  return () => {};
+  return () => { statusLabels.stop(); };
 }
