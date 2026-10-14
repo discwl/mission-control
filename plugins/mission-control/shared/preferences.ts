@@ -9,6 +9,8 @@ export const missionPreferences = defineSettings({
     hostOrder: z.array(z.string().min(1)).default([]),
     // Project IDs are scoped to their roster host; absent projects retain their slots.
     projectOrder: z.record(z.string(), z.array(z.string().min(1))).default({}),
+    // Workspace order is scoped to its roster host and project.
+    workspaceOrder: z.record(z.string(), z.array(z.string().min(1))).default({}),
     missionSectionOrder: z.array(z.string().min(1)).default([]),
     // Collapsed Workspaces-tab project blocks, keyed by roster server ID and project ID.
     collapsedProjects: z.array(z.string().min(1)).default([]),

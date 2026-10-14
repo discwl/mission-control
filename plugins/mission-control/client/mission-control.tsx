@@ -401,13 +401,17 @@ export function MissionControl({ theme, host, layout, navigation }: PluginSurfac
                   tasks={<TaskCountBadge counts={selectTaskCounts(taskSummary, currentHostId ?? "", { projectId: project.id })} unavailable={taskCountPlaceholder(currentHostId ?? "")} colors={colors} small />}
                   tasksLabel={taskCountLabel(selectTaskCounts(taskSummary, currentHostId ?? "", { projectId: project.id }), taskCountPlaceholder(currentHostId ?? ""))} /></View>{handle}</View>
                 <View style={{ paddingLeft: 30, paddingRight: 10 }}><ProjectGit projectId={project.id} projectName={project.name} local={activeHost?.serverId === host.id && activeHost.status === "online"} colors={colors} /></View>
-                {!collapsed && projectWorkspaces.map((workspace) => {
+                {!collapsed && <ProjectList key={`${currentHostId}:${project.id}`} serverId={currentHostId ?? ""} workspaceScope={project.id}
+                  projects={activeRoster?.workspaces.filter(workspace => workspace.projectId === project.id) ?? []} visibleIds={projectWorkspaces.map(workspace => workspace.id)}
+                  colors={colors} scrollRef={compact ? compactScroll : projectScroll} scrollState={compact ? compactScrollState : projectScrollState}
+                  renderProject={(item, workspaceHandle) => {
+                  const workspace = projectWorkspaces.find(workspace => workspace.id === item.id)!;
                   const agents = activeRoster?.agents.filter((agent) => agent.workspaceId === workspace.id) ?? [];
                   const selected = selection?.serverId === activeHost?.serverId && selection?.workspaceId === workspace.id;
                   return (
-                    <View key={workspace.id} style={{ gap: 4 }}><Pressable accessibilityRole="button" accessibilityLabel={`Open ${workspace.name} on ${activeHost?.label}`}
+                    <View key={workspace.id} style={{ flexDirection: "row", alignItems: "stretch", gap: 4 }}><Pressable accessibilityRole="button" accessibilityLabel={`Open ${workspace.name} on ${activeHost?.label}`}
                       onPress={() => { if (activeHost) setSelection({ serverId: activeHost.serverId, workspaceId: workspace.id }); if (view === "workspaces") setWorkspaceOpen(true); setDocumentTaskId(null); setWorkspacePickerOpen(false); setNavigationError(null); }}
-                      style={{ backgroundColor: selected ? colors.surface2 : colors.surface0, borderColor: selected ? colors.accent : colors.border, borderWidth: 1, borderRadius: 7, padding: 10, gap: 4 }}>
+                      style={{ flex: 1, minWidth: 0, backgroundColor: selected ? colors.surface2 : colors.surface0, borderColor: selected ? colors.accent : colors.border, borderWidth: 1, borderRadius: 7, padding: 10, gap: 4 }}>
                       <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 6 }}>
                         <Text numberOfLines={1} style={{ color: colors.foreground, fontWeight: "600", flex: 1 }}>{workspace.name}</Text>
                         <Text style={{ color: workspaceStatusColor(workspace.status, colors), fontSize: 12 }}>{workspace.status.replaceAll("_", " ")}</Text>
@@ -420,10 +424,10 @@ export function MissionControl({ theme, host, layout, navigation }: PluginSurfac
                         <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{agents.length} {agents.length === 1 ? "agent" : "agents"} · {timeLabel(workspace.activityAt)}</Text>
                         <TaskCountBadge counts={selectTaskCounts(taskSummary, currentHostId ?? "", { workspaceId: workspace.id })} unavailable={taskCountPlaceholder(currentHostId ?? "")} colors={colors} />
                       </View>
-                    </Pressable>
+                    </Pressable>{workspaceHandle}
                     </View>
                   );
-                })}
+                }} />}
               </View>
               );
             }} />

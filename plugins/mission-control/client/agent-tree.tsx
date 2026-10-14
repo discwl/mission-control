@@ -169,7 +169,8 @@ function AgentRow({ node, context }: { node: Node; context: RowContext }) {
     node.descendants ? plural(node.descendants, "sub-agent", "sub-agents") : null,
     node.helpers ? `${plural(node.helpers, "helper", "helpers")}${node.runningHelpers ? `, ${node.runningHelpers} running` : ""}` : null,
   ].filter(Boolean).join(" · ");
-  const age = formatAge(agentAgeTimestamp(agent), context.now);
+  const activeNow = context.online && node.state === "working" && !node.contextOnly;
+  const age = activeNow ? "Active now" : formatAge(agentAgeTimestamp(agent), context.now);
   const waitingLabel = [
     agent.permissions.length ? plural(agent.permissions.length, "permission request", "permission requests") : null,
     node.waiting ? `${plural(node.waiting, "decision", "decisions")} waiting` : null,
@@ -214,10 +215,10 @@ function AgentRow({ node, context }: { node: Node; context: RowContext }) {
     <View style={{ alignItems: "flex-end", gap: 3, maxWidth: 110 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 4, zIndex: 10 }}>
         <AgentStateLabel state={node.state} colors={colors} online={context.online} contextOnly={!node.member} />
-        <InfoTip label={`Agent dates for ${agent.name}`} text={`Created ${formatDateTime(agent.createdAt)}\nLast prompt ${agent.lastUserMessageAt ? formatDateTime(agent.lastUserMessageAt) : "not recorded"}`} colors={colors} />
+        <InfoTip label={`Agent dates for ${agent.name}`} text={`Created ${formatDateTime(agent.createdAt)}\nLast prompt ${agent.lastUserMessageAt ? formatDateTime(agent.lastUserMessageAt) : "not recorded"}\nTurn started ${agent.activeTurnStartedAt ? formatDateTime(agent.activeTurnStartedAt) : "not recorded"}`} colors={colors} />
       </View>
       {waitingLabel ? <Text numberOfLines={2} style={{ color: colors.statusWarning, fontSize: 10, textAlign: "right" }}>{waitingLabel}</Text> : null}
-      {age ? <Text accessibilityLabel={`Last activity ${formatDateTime(new Date(agentAgeTimestamp(agent)).toISOString())}`} style={{ color: muted, fontSize: 10 }}>{age}</Text> : null}
+      {age ? <Text accessibilityLabel={activeNow ? `Active now. Turn started ${agent.activeTurnStartedAt ? formatDateTime(agent.activeTurnStartedAt) : "not recorded"}` : `Last activity ${formatDateTime(new Date(agentAgeTimestamp(agent)).toISOString())}`} style={{ color: muted, fontSize: 10 }}>{age}</Text> : null}
     </View>
   </View>;
 }
