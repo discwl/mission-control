@@ -723,7 +723,13 @@
 <pre><code>{ "schemaVersion": 1, "label": "Acme", "serverId": "srv_…" }</code></pre>
 <p>Use the host's name and Paseo server ID as this app knows them. The file holds no secrets. A vault's own <code>host.json</code>, which names its host with <code>hostId</code>, isn't mistaken for one.</p>
 <ul>
-  <li><strong>Bubbles:</strong> every open chat in the workspace gets two bubbles above the message box. <span class="ui">Acme agents</span> counts the host's agents that need you, and <span class="ui">Review</span> counts its workspaces that are ready. The counts come from the remote host, read at most once a minute; when the host is unreachable the last counts stay. They replace the usual Review bubble, which would review the orchestrator's own folder.</li>
+  <li><strong>Bubbles:</strong> every open chat in the workspace gets bubbles above the message box:
+    <ul>
+      <li><span class="ui">Acme agents</span> shows how many of the host's agents are running.</li>
+      <li><span class="ui">Review</span> counts its workspaces that are ready.</li>
+      <li><span class="ui">Attention</span> appears only while something on that host blocks an agent, and counts it: permission prompts, unanswered questions, agent errors, and plan and review decisions. An agent that just finished doesn't count.</li>
+    </ul>
+    The counts come from the remote host, read at most once a minute; when the host is unreachable the last counts stay. They replace the usual Review bubble, which would review the orchestrator's own folder.</li>
   <li><strong>Host agents tab:</strong> <span class="ui">Acme agents</span> opens a Host agents tab with the same menu as the main page, for that host:
     <ul>
       <li><span class="ui">Workspaces</span>: the host's projects and workspaces, with the Workspaces page's search, Show, label and project filters (without the task filters) and collapsible projects. Each workspace shows its status, labels, agents, last activity, branch, lines added and removed, uncommitted or unpushed work, and pull request. Choose one to see its agent tree, with <span class="ui">Open review</span>, <span class="ui">Tasks</span> and <span class="ui">Open workspace</span>.</li>
@@ -734,6 +740,13 @@
     </ul>
   </li>
   <li><strong>Review list:</strong> the <span class="ui">Review</span> bubble opens the list of what's ready on that host. Workspaces labelled Review come first, then other workspaces with changes whose agents have all stopped, except ones labelled Done or Paused. Each card shows the branch, changes, pull request and its checks and review, and the latest agent. <span class="ui">Open review</span> shows that workspace in the Review tab; <span class="ui">Open workspace</span> takes you to it on that host; <span class="ui">Open agent</span> opens its latest agent; <span class="ui">Show agents</span> shows its agent tree.</li>
+  <li><strong>Attention dialog:</strong> the <span class="ui">Attention</span> bubble, or <span class="ui">Attention</span> at the top of the Host agents tab, opens what's waiting on you there, with the same cards as Mission Control's Attention:
+    <ul>
+      <li>for permission prompts, <span class="ui">Allow</span> or <span class="ui">Deny</span>;</li>
+      <li>for questions and agent errors, a reply box;</li>
+      <li>for plan and review decisions, your choice and a note.</li>
+    </ul>
+    Your answer goes to that host's own Mission Control, so it's recorded as if you'd answered there. <span class="ui">Open agent</span> takes you to the agent's chat. Questions and decisions need Mission Control on that host; without it, the dialog says so, and the bubble counts only permission prompts and errors.</li>
 </ul>
 <p>Attention, Tasks, Review and Docs come from Mission Control on that host, read through its own copy running in your Paseo app, so they need Mission Control installed there and a version with this screen. When it's missing, outdated or the host is offline, the tab says which. Workspaces that Paseo sends without an activity time now show their latest agent's activity, or when they entered their current status, here and on the Workspaces page.</p>
 

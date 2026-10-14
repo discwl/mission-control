@@ -37,13 +37,18 @@ export function hostReviewItems(workspaces: readonly Workspace[], agents: readon
   return { ready: ready.sort(newest), changed: changed.sort(newest) };
 }
 
-/** Agents waiting on the user: permission prompts, questions and errors that Paseo flags. */
+/** Agents Paseo flags for the user, including ones that only finished; the Attention bubble counts what blocks work. */
 export function needsYouCount(agents: readonly Pick<Agent, "requiresAttention" | "archivedAt">[]): number {
   return agents.filter(agent => agent.requiresAttention && !agent.archivedAt).length;
 }
 
-export function hostAgentsLabel(label: string, needs: number | null): string {
-  return needs ? `${label} agents · ${needs} need${needs === 1 ? "s" : ""} you` : `${label} agents`;
+/** Agents working right now. */
+export function runningAgentsCount(agents: readonly Pick<Agent, "status" | "archivedAt">[]): number {
+  return agents.filter(agent => !agent.archivedAt && (agent.status === "running" || agent.status === "initializing")).length;
+}
+
+export function hostAgentsLabel(label: string, running: number | null): string {
+  return running ? `${label} agents · ${running} running` : `${label} agents`;
 }
 
 export function hostReviewLabel(counts: { ready: number; changed: number } | null): string {

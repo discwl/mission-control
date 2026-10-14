@@ -1,28 +1,35 @@
 import type { PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
-import { hostAgentsLabel, hostReviewItems, hostReviewLabel, needsYouCount } from "./host-review-model";
-import { requestHostReview } from "./host-review-request";
+import { hostAttentionCount, hostAttentionLabel, noAttentionReads, type HostAttentionReads } from "./host-attention";
+import { hostAgentsLabel, hostReviewItems, hostReviewLabel, runningAgentsCount } from "./host-review-model";
+import { requestHostAttention, requestHostReview } from "./host-review-request";
 import type { BindingLookup } from "./orchestrator-bindings";
 import { hostAgentsPanelId } from "./panel-ids";
 import type { Agent, Workspace } from "./roster-model";
 
 type HostActivity = { workspaces: Workspace[]; agents: Agent[] };
-type HostCounts = { at: number; needs: number; ready: number; changed: number };
+type HostCounts = { at: number; running: number; attention: number; ready: number; changed: number };
 type Entry = {
   workspaceId: string;
   serverId: string;
   hostLabel: string;
   agents: { registration: PluginButtonRegistration; label: string };
   review: { registration: PluginButtonRegistration; label: string };
+  // Only while something on the host waits for the user.
+  attention: { registration: PluginButtonRegistration; label: string } | null;
+  agentId: string;
 };
 
 /**
- * In a workspace that orchestrates a remote host (its folder has a host file), each active chat gets two
- * bubbles: "<host> agents" opens the Host agents tab, and Review opens that tab's review list. Their
- * counts come from the remote host, read at most once a minute; an unreachable host keeps its last counts.
+ * In a workspace that orchestrates a remote host (its folder has a host file), each active chat gets
+ * bubbles: "<host> agents" opens the Host agents tab, Review opens that tab's review list, and
+ * "Attention · N", shown only while something blocks an agent there, opens its Attention dialog. Their counts
+ * come from the remote host, read at most once a minute; an unreachable host keeps its last counts.
  */
-export function startOrchestratorPills(client: Pick<PluginClientContext, "paseo" | "addComposerPill" | "openPanel">, { lookUp, readHost, intervalMs = 30_000, hostRefreshMs = 60_000, now = Date.now }: {
+export function startOrchestratorPills(client: Pick<PluginClientContext, "paseo" | "addComposerPill" | "openPanel">, { lookUp, readHost, readAttention = async () => noAttentionReads, intervalMs = 30_000, hostRefreshMs = 60_000, now = Date.now }: {
   lookUp: BindingLookup;
   readHost: (serverId: string) => Promise<HostActivity>;
+  // The host's own Mission Control: its open questions and decisions.
+  readAttention?: (serverId: string) => Promise<HostAttentionReads>;
   intervalMs?: number;
   hostRefreshMs?: number;
   now?: () => number;
@@ -35,20 +42,35 @@ export function startOrchestratorPills(client: Pick<PluginClientContext, "paseo"
 
   function labels(entry: Pick<Entry, "serverId" | "hostLabel">) {
     const host = counts.get(entry.serverId);
-    return { agents: hostAgentsLabel(entry.hostLabel, host?.needs ?? null), review: hostReviewLabel(host ?? null) };
+    return {
+      agents: hostAgentsLabel(entry.hostLabel, host?.running ?? null),
+      review: hostReviewLabel(host ?? null),
+      attention: host?.attention ? hostAttentionLabel(host.attention) : null,
+    };
+  }
+
+  function attentionPill(entry: Pick<Entry, "agentId" | "workspaceId" | "hostLabel">, label: string, openTab: () => void) {
+    return { label, registration: client.addComposerPill({
+      id: `host-attention-${entry.agentId}`, workspaceId: entry.workspaceId, agentId: entry.agentId,
+      button: { title: `What ${entry.hostLabel}'s agents are waiting on you for`, label, icon: "Bell", behavior: { kind: "action", onPress: () => { requestHostAttention(entry.workspaceId); openTab(); } } },
+    }) };
   }
 
   function relabel(entry: Entry) {
     const next = labels(entry);
     if (entry.agents.label !== next.agents) { entry.agents.registration.update({ label: next.agents }); entry.agents.label = next.agents; }
     if (entry.review.label !== next.review) { entry.review.registration.update({ label: next.review }); entry.review.label = next.review; }
+    if (!next.attention) { entry.attention?.registration.remove(); entry.attention = null; }
+    else if (!entry.attention) entry.attention = attentionPill(entry, next.attention, () => client.openPanel(hostAgentsPanelId, { workspaceId: entry.workspaceId, location: "workspace" }));
+    else if (entry.attention.label !== next.attention) { entry.attention.registration.update({ label: next.attention }); entry.attention.label = next.attention; }
   }
 
   function add(agentId: string, workspaceId: string, serverId: string, hostLabel: string): Entry {
     const next = labels({ serverId, hostLabel });
     const openTab = () => client.openPanel(hostAgentsPanelId, { workspaceId, location: "workspace" });
     return {
-      workspaceId, serverId, hostLabel,
+      workspaceId, serverId, hostLabel, agentId,
+      attention: next.attention ? attentionPill({ agentId, workspaceId, hostLabel }, next.attention, openTab) : null,
       agents: { label: next.agents, registration: client.addComposerPill({
         id: `host-agents-${agentId}`, workspaceId, agentId,
         button: { title: `${hostLabel}'s workspaces and agents`, label: next.agents, icon: "Server", behavior: { kind: "action", onPress: openTab } },
@@ -64,6 +86,7 @@ export function startOrchestratorPills(client: Pick<PluginClientContext, "paseo"
     const entry = entries.get(agentId);
     entry?.agents.registration.remove();
     entry?.review.registration.remove();
+    entry?.attention?.registration.remove();
     entries.delete(agentId);
   }
 
@@ -72,9 +95,13 @@ export function startOrchestratorPills(client: Pick<PluginClientContext, "paseo"
     if (stopped || reading.has(serverId) || (known && now() - known.at < hostRefreshMs)) return;
     reading.add(serverId);
     try {
-      const host = await readHost(serverId);
+      const [host, reads] = await Promise.all([readHost(serverId), readAttention(serverId).catch(() => noAttentionReads)]);
       const review = hostReviewItems(host.workspaces, host.agents);
-      counts.set(serverId, { at: now(), needs: needsYouCount(host.agents), ready: review.ready.length, changed: review.changed.length });
+      const label = [...entries.values()].find(entry => entry.serverId === serverId)?.hostLabel ?? serverId;
+      counts.set(serverId, {
+        at: now(), running: runningAgentsCount(host.agents), ready: review.ready.length, changed: review.changed.length,
+        attention: hostAttentionCount({ serverId, label, roster: host, reads }),
+      });
       if (!stopped) for (const entry of entries.values()) if (entry.serverId === serverId) relabel(entry);
     } catch {
       // Offline or unreachable: keep the last counts; the next poll tries again.

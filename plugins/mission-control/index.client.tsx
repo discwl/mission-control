@@ -8,7 +8,8 @@ import { startReviewPills } from "./client/review-pills";
 import { agentReviewPanelId, hostAgentsPanelId, missionPanelId, reviewPanelId } from "./client/panel-ids";
 import { HostAgentsPanel } from "./client/host-agents-panel";
 import { createBindingLookup } from "./client/orchestrator-bindings";
-import { startCopyRegistration } from "./client/host-bridge";
+import { findCopy, startCopyRegistration } from "./client/host-bridge";
+import { readHostAttention } from "./client/host-attention";
 import { startOrchestratorPills } from "./client/orchestrator-pills";
 import { readHostActivity } from "./client/roster";
 import { MissionPanel } from "./client/mission-panel";
@@ -102,7 +103,10 @@ export default function contribute(client: PluginClientContext) {
     Component: HostAgentsPanel,
   });
   const stopReviewPills = startReviewPills(client, undefined, async workspaceIds => new Set((await orchestratorBindings(workspaceIds)).keys()));
-  const stopOrchestratorPills = startOrchestratorPills(client, { lookUp: orchestratorBindings, readHost: readHostActivity });
+  const stopOrchestratorPills = startOrchestratorPills(client, {
+    lookUp: orchestratorBindings, readHost: readHostActivity,
+    readAttention: serverId => { const found = findCopy(serverId); return readHostAttention(serverId, "copy" in found ? found.copy : null); },
+  });
   // The Mission tab belongs in Paseo's right panel (Explorer), beside the chat.
   const removeMissionPanel = client.addWorkspacePanel({
     id: missionPanelId,

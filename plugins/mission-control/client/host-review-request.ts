@@ -1,19 +1,38 @@
-// A Review bubble asks its workspace's Host agents tab to open the review list. The tab may not be
+// A Review or Attention bubble asks its workspace's Host agents tab to open that dialog. The tab may not be
 // mounted yet, so the request waits here until the tab takes it.
 
-const pending = new Set<string>();
+export type HostDialog = "review" | "attention";
+
+const pending = new Map<string, HostDialog>();
 const listeners = new Set<() => void>();
 let version = 0;
 
-export function requestHostReview(workspaceId: string) {
-  pending.add(workspaceId);
+export function requestHostDialog(workspaceId: string, dialog: HostDialog) {
+  pending.set(workspaceId, dialog);
   version++;
   for (const listener of [...listeners]) listener();
 }
 
-/** True once per request: the tab that takes it opens the review list. */
+export function requestHostReview(workspaceId: string) {
+  requestHostDialog(workspaceId, "review");
+}
+
+export function requestHostAttention(workspaceId: string) {
+  requestHostDialog(workspaceId, "attention");
+}
+
+/** The dialog to open, once per request; null when there is none. The latest request wins. */
+export function takeHostDialogRequest(workspaceId: string): HostDialog | null {
+  const dialog = pending.get(workspaceId) ?? null;
+  pending.delete(workspaceId);
+  return dialog;
+}
+
+/** True once per Review request. */
 export function takeHostReviewRequest(workspaceId: string): boolean {
-  return pending.delete(workspaceId);
+  if (pending.get(workspaceId) !== "review") return false;
+  pending.delete(workspaceId);
+  return true;
 }
 
 export function subscribeHostReviewRequests(listener: () => void): () => void {

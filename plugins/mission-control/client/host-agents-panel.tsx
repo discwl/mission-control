@@ -12,8 +12,9 @@ import { CompactLink } from "./compact-link";
 import { formatDateTime } from "./date-time";
 import { VaultDocumentLinks } from "./document-links";
 import type { MissionControlCopy } from "./host-bridge";
-import { changeSummary, hostReviewItems, needsYouCount, pullRequestSummary, type ReviewItem } from "./host-review-model";
-import { hostReviewRequestVersion, subscribeHostReviewRequests, takeHostReviewRequest } from "./host-review-request";
+import { hostAttentionCount, hostAttentionLabel, noAttentionReads, readHostAttention } from "./host-attention";
+import { changeSummary, hostReviewItems, pullRequestSummary, runningAgentsCount, type ReviewItem } from "./host-review-model";
+import { hostReviewRequestVersion, subscribeHostReviewRequests, takeHostDialogRequest } from "./host-review-request";
 import { HostRpcProvider, useMissionControlCopy } from "./host-rpc";
 import { InfoTip } from "./info-tip";
 import { MissionDocs } from "./mission-docs";
@@ -123,6 +124,7 @@ function HostView({ binding, remote, localServerId, workspaceId, theme, layout, 
   // The workspace the Workspaces page, Tasks and Review are showing; null lists them instead.
   const [openId, setOpenId] = usePageState<string | null>(`${scope}:workspace`, null);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [attentionOpen, setAttentionOpen] = useState(false);
   const [docsTaskId, setDocsTaskId] = useState<string | null>(null);
   const [docsRequest, setDocsRequest] = useState<{ path: string; requestId: number } | null>(null);
   const [navigationError, setNavigationError] = useState<string | null>(null);
@@ -132,9 +134,23 @@ function HostView({ binding, remote, localServerId, workspaceId, theme, layout, 
   const query = useQuery(rosterQuery(serverId, online));
   const roster = query.data;
 
-  // A Review bubble asks for the list; take the request whether the tab was open already or just mounted.
+  // A Review or Attention bubble asks for its dialog; take the request whether the tab was open already or just mounted.
   const requests = useSyncExternalStore(subscribeHostReviewRequests, hostReviewRequestVersion, hostReviewRequestVersion);
-  useEffect(() => { if (takeHostReviewRequest(workspaceId)) setReviewOpen(true); }, [requests, workspaceId]);
+  useEffect(() => {
+    const dialog = takeHostDialogRequest(workspaceId);
+    if (dialog === "review") { setAttentionOpen(false); setReviewOpen(true); }
+    if (dialog === "attention") { setReviewOpen(false); setAttentionOpen(true); }
+  }, [requests, workspaceId]);
+  // What blocks an agent there: the bubble's count, from the host's roster and its own Mission Control.
+  const copy = "copy" in bridge ? bridge.copy : null;
+  const attentionReads = useQuery({
+    queryKey: ["mission-control", "host-attention", serverId, copy?.version ?? null],
+    queryFn: () => readHostAttention(serverId, copy),
+    enabled: online && copy !== null,
+    staleTime: 10_000,
+    refetchInterval: online && copy ? 20_000 : false,
+    retry: false,
+  });
 
   const canNavigate = online && navigation !== undefined;
   function go(action: () => void) {
@@ -143,7 +159,7 @@ function HostView({ binding, remote, localServerId, workspaceId, theme, layout, 
   // focusHost asks newer Paseo clients to show the destination host in the sidebar; older ones ignore it.
   const openWorkspace = (id: string) => go(() => { const target = { serverId, workspaceId: id, focusHost: true }; navigation?.openWorkspace(target); });
   const openAgent = (id: string) => go(() => { const target = { serverId, agentId: id, focusHost: true }; navigation?.openAgent(target); });
-  const openReview = (id: string) => { setReviewOpen(false); setOpenId(id); setView("review"); };
+  const openReview = (id: string) => { setReviewOpen(false); setAttentionOpen(false); setOpenId(id); setView("review"); };
   const openTasks = (id: string) => { setOpenId(id); setView("tasks"); };
   const openDocs = (taskId: string | null, path: string | null = null) => {
     setDocsTaskId(taskId);
@@ -163,7 +179,8 @@ function HostView({ binding, remote, localServerId, workspaceId, theme, layout, 
   const projects = roster ? projectsOf(roster) : [];
   const visibleProjects = projects.filter(project => visible.some(workspace => workspace.projectId === project.id));
   const opened = roster?.workspaces.find(workspace => workspace.id === openId) ?? null;
-  const needs = needsYouCount(agents);
+  const running = runningAgentsCount(agents);
+  const needs = roster ? hostAttentionCount({ serverId, label: binding.label, roster, reads: attentionReads.data ?? noAttentionReads }) : 0;
   const reviewLabel = review.ready.length ? `Review · ${review.ready.length} ready` : review.changed.length ? `Review · ${review.changed.length} changed` : "Review";
 
   const header = <View style={{ gap: 6 }}>
@@ -172,11 +189,12 @@ function HostView({ binding, remote, localServerId, workspaceId, theme, layout, 
       <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 20, fontWeight: "700", flexShrink: 1 }}>{binding.label} agents</Text>
       <InfoTip label="About this tab" text={`This workspace orchestrates ${binding.label}, as its ${ORCHESTRATOR_HOST_FILE} says. Workspaces and agents are read live from ${binding.label}'s Paseo. Attention, Tasks, Review and Docs come from Mission Control on ${binding.label}, so they need it installed there.`} colors={colors} />
       <View style={{ flex: 1 }} />
+      <CompactLink label={needs ? hostAttentionLabel(needs) : "Attention"} icon="Bell" colors={colors} disabled={!roster} onPress={() => setAttentionOpen(true)} />
       <CompactLink label={reviewLabel} icon="FileDiff" colors={colors} disabled={!roster} onPress={() => setReviewOpen(true)} />
       <CompactLink label={query.isFetching ? "Refreshing…" : "Refresh"} accessibilityLabel={`Refresh ${binding.label}`} colors={colors} disabled={!online || query.isFetching} onPress={() => void query.refetch()} />
     </View>
     <Text style={{ color: online ? colors.foregroundMuted : colors.statusWarning, fontSize: 12 }}>
-      {[remote.status, roster ? `${roster.workspaces.length} workspaces` : null, roster ? `${agents.length} agents` : null, needs ? `${needs} need you` : null, roster ? `updated ${formatDateTime(roster.observedAt)}` : null].filter(Boolean).join(" · ")}
+      {[remote.status, roster ? `${roster.workspaces.length} workspaces` : null, roster ? `${agents.length} agents` : null, running ? `${running} running` : null, needs ? `${needs} waiting on you` : null, roster ? `updated ${formatDateTime(roster.observedAt)}` : null].filter(Boolean).join(" · ")}
     </Text>
     {!online ? <Text style={{ color: colors.statusWarning, fontSize: 12 }}>{binding.label} is {remote.status}. {roster ? "Showing the last list read." : "Connect it in Paseo to load its workspaces."}</Text> : null}
     {query.isError ? <Text accessibilityRole="alert" style={{ color: colors.statusDanger, fontSize: 12 }}>Couldn't read {binding.label}: {query.error instanceof Error ? query.error.message : String(query.error)}</Text> : null}
@@ -276,7 +294,7 @@ function HostView({ binding, remote, localServerId, workspaceId, theme, layout, 
     openAgent: (_serverId, agentId) => openAgent(agentId),
     openDocs: (_workspaceId, taskId) => openDocs(taskId),
     openReview,
-  }} />, <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{needs ? `${needs} of ${binding.label}'s agents need you: use Needs attention on the Workspaces tab to find them.` : `No agent on ${binding.label} is waiting on you.`}</Text>);
+  }} />, <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{needs ? `${needs} prompt${needs === 1 ? "" : "s"} or error${needs === 1 ? "" : "s"} on ${binding.label} wait on you: use Needs attention on the Workspaces tab to find them.` : `No agent on ${binding.label} is waiting on you.`}</Text>);
   else if (view === "tasks") body = !opened ? workspacePicker("tasks") : fromHost(() => <View style={{ flex: 1, minHeight: 0, gap: 8 }}>
     {changeWorkspace("Tasks", () => setOpenId(null))}
     <MissionTasksEditor key={`${serverId}:${opened.id}`} theme={theme} host={{ id: serverId, label: binding.label }} layout={layout} navigation={navigation}
@@ -307,6 +325,18 @@ function HostView({ binding, remote, localServerId, workspaceId, theme, layout, 
         <ReviewSections hostLabel={binding.label} ready={review.ready} changed={review.changed} loaded={Boolean(roster)} colors={colors} canNavigate={canNavigate}
           openReview={openReview} openWorkspace={id => { setReviewOpen(false); openWorkspace(id); }} openAgent={id => { setReviewOpen(false); openAgent(id); }}
           showDetails={id => { setReviewOpen(false); setOpenId(id); setView("workspaces"); }} />
+      </AppModal.Content>
+    </AppModal>
+    <AppModal colors={colors} title={`Waiting on you · ${binding.label}`} open={attentionOpen} onOpenChange={next => { if (!next) setAttentionOpen(false); }} maxWidth={760}
+      icon={<Icon name="Bell" size={18} color={colors.foreground} />}>
+      <AppModal.Content>
+        {copy ? <HostRpcProvider copy={copy}>
+          <Attention colors={colors} compact serverId={serverId} hosts={[remote]} rosters={[{ data: roster, isError: query.isError }]} memory={pageKey(scope, "attention-dialog")} needsYouOnly actions={{
+            openAgent: (_serverId, agentId) => { setAttentionOpen(false); openAgent(agentId); },
+            openDocs: (_workspaceId, taskId) => { setAttentionOpen(false); openDocs(taskId); },
+            openReview,
+          }} />
+        </HostRpcProvider> : <Text style={{ color: colors.statusWarning, fontSize: 13 }}>{"missing" in bridge ? copyProblem(bridge.missing, binding.label, online) : ""}</Text>}
       </AppModal.Content>
     </AppModal>
   </View>;

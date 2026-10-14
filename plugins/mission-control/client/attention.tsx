@@ -47,8 +47,10 @@ const Muted = ({ children, colors }: { children: ReactNode; colors: Colors }) =>
  * online host, this host's recorded questions, and its plan and review decisions), the approved tasks ready to deliver (Merge, or Open PR for
  * pull-request projects), the results of deliveries until dismissed, and the open pull requests.
  */
-export function Attention({ colors, compact, serverId, hosts, rosters, memory, actions }: {
+export function Attention({ colors, compact, serverId, hosts, rosters, memory, actions, needsYouOnly = false }: {
   colors: Colors; compact: boolean; serverId: string; hosts: readonly PluginHostSummary[]; rosters: readonly RosterState[]; memory: string; actions: AttentionActions;
+  // Only what blocks an agent (the orchestrator's Attention dialog), without delivery and pull requests.
+  needsYouOnly?: boolean;
 }) {
   const queryClient = useQueryClient();
   // The dialogs live here, so they stay open after the delivered task leaves the Ready list.
@@ -75,12 +77,14 @@ export function Attention({ colors, compact, serverId, hosts, rosters, memory, a
 
   return <ScrollView memoryKey={pageKey(memory, "scroll")} scrollEnabled={!compact} style={{ flex: compact ? undefined : 1, minHeight: 0 }} contentContainerStyle={{ gap: 16, paddingBottom: 6 }} nestedScrollEnabled>
     <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-      <Text style={{ color: colors.foregroundMuted, fontSize: 12, flex: 1, minWidth: 200 }}>Permission prompts and agent errors from every online host; questions, decisions, tasks to deliver and pull requests from {hostLabel}.</Text>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 12, flex: 1, minWidth: 200 }}>{needsYouOnly
+        ? `Permission prompts, questions, agent errors and plan and review decisions on ${hostLabel}. Your answer goes to ${hostLabel}'s own Mission Control.`
+        : `Permission prompts and agent errors from every online host; questions, decisions, tasks to deliver and pull requests from ${hostLabel}.`}</Text>
       <CompactLink label="Refresh" colors={colors} onPress={() => { void queryClient.invalidateQueries({ queryKey: ["mission-control"] }); }} />
     </View>
 
     <View style={{ gap: 8 }}>
-      <Heading title="Needs you" colors={colors} />
+      {needsYouOnly ? null : <Heading title="Needs you" colors={colors} />}
       {unread.length ? <Text style={{ color: colors.statusWarning, fontSize: 12 }}>Couldn't read the agents on {unread.join(", ")}, so their prompts aren't shown.</Text> : null}
       {prompts.map(({ host, roster, agent, request }) => {
         const task = taskLine({ taskId: agent.taskId, agentName: agent.name, taskTitles: host.serverId === serverId ? taskTitles : undefined, hostLabel: host.label, workspace: placeOf(roster, agent.workspaceId) });
@@ -89,6 +93,7 @@ export function Attention({ colors, compact, serverId, hosts, rosters, memory, a
       })}
       {waitingQuery.isError ? <Text style={{ color: colors.statusWarning, fontSize: 12 }}>Couldn't read the agents' questions on {hostLabel}: {waitingQuery.error instanceof Error ? waitingQuery.error.message : String(waitingQuery.error)}</Text> : null}
       {waiting.map(card => <WaitingCardView key={card.key} card={card} colors={colors} openAgent={actions.openAgent} onReplied={markReplied} />)}
+      {needsYouOnly && !prompts.length && !waiting.length ? <Muted colors={colors}>No permission prompts, questions or agent errors are waiting on {hostLabel}.</Muted> : null}
       <NeedsYou serverId={serverId} hostLabel={hostLabel} online={online} colors={colors} showHeading={false} brief actions={{
         describe: workspaceId => { const workspace = placeOf(localRoster, workspaceId); return workspace ? { hostLabel, projectName: workspace.projectName, workspaceName: workspace.name } : null; },
         openAgent: agentId => actions.openAgent(serverId, agentId),
@@ -97,6 +102,7 @@ export function Attention({ colors, compact, serverId, hosts, rosters, memory, a
       }} />
     </View>
 
+    {needsYouOnly ? null : <>
     {cards.length ? <View style={{ gap: 8 }}>
       <Heading title="Results" count={cards.length} colors={colors} />
       {cards.map(entry => <DeliveryResultCard key={entry.resultId} entry={entry} serverId={serverId} online={online} colors={colors} />)}
@@ -127,6 +133,7 @@ export function Attention({ colors, compact, serverId, hosts, rosters, memory, a
       })}
     </View>
     <PullRequests serverId={serverId} hostLabel={hostLabel} online={online} colors={colors} heading={count => <Heading title="Pull requests" count={count} colors={colors} />} />
+    </>}
     <MergeDialog serverId={serverId} online={online} colors={colors} target={mergeTarget} onClose={() => setMergeTarget(null)} />
     <PullRequestDialog serverId={serverId} online={online} colors={colors} target={pullRequestTarget} onClose={() => setPullRequestTarget(null)} />
   </ScrollView>;

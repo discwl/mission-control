@@ -7,7 +7,7 @@ const require = createRequire(import.meta.url);
 const ts = require("typescript");
 require.extensions[".ts"] = (module, file) => module._compile(ts.transpileModule(readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, file);
 const { toWorkspace } = require("./roster-model.ts");
-const { changeSummary, hostAgentsLabel, hostReviewItems, hostReviewLabel, needsYouCount, pullRequestSummary } = require("./host-review-model.ts");
+const { changeSummary, hostAgentsLabel, hostReviewItems, hostReviewLabel, needsYouCount, pullRequestSummary, runningAgentsCount } = require("./host-review-model.ts");
 
 function descriptor(overrides = {}) {
   return {
@@ -65,8 +65,9 @@ test("review lists workspaces labelled Review, then stopped workspaces with chan
 test("bubble labels count what needs the user and what is ready", () => {
   assert.equal(needsYouCount([agent({ requiresAttention: true }), agent({ requiresAttention: true, archivedAt: "x" }), agent()]), 1);
   assert.equal(hostAgentsLabel("Acme", null), "Acme agents");
-  assert.equal(hostAgentsLabel("Acme", 1), "Acme agents · 1 needs you");
-  assert.equal(hostAgentsLabel("Acme", 3), "Acme agents · 3 need you");
+  assert.equal(runningAgentsCount([agent({ status: "running" }), agent({ status: "initializing" }), agent({ status: "running", archivedAt: "x" }), agent()]), 2);
+  assert.equal(hostAgentsLabel("Acme", 0), "Acme agents");
+  assert.equal(hostAgentsLabel("Acme", 2), "Acme agents · 2 running");
   assert.equal(hostReviewLabel(null), "Review");
   assert.equal(hostReviewLabel({ ready: 2, changed: 5 }), "Review · 2 ready");
   assert.equal(hostReviewLabel({ ready: 0, changed: 5 }), "Review · 5 changed");
