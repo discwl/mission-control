@@ -69,6 +69,12 @@ test("reads a long chat's first prompts from the start of the timeline and its l
   assert.deepEqual(await readUserMessages(short), ["only"]);
 });
 
+test("prompts another agent sent count as context on Paseo 0.12; its notices about children don't", async () => {
+  const fromAgent = (event, text) => ({ item: { type: "tool_call", name: "agent_message", agentMessage: { event, sender: { id: "parent", title: "Planner" }, text } } });
+  const timeline = { async refetch() { return { hasNewer: false, entries: [fromAgent("message", "Review task 23"), fromAgent("finished", "Child done"), { item: { type: "user_message", text: "Also check the docs" } }] }; } };
+  assert.deepEqual(await readUserMessages(timeline), ["Review task 23", "Also check the docs"]);
+});
+
 test("reads only the most recent agents plus the ones being renamed", () => {
   const agents = Array.from({ length: 9 }, (_, index) => ({ id: `a${index}`, updatedAt: new Date(2026, 8, 1 + index).toISOString() }));
   const chosen = contextAgents(agents, new Set(["a0"]), 6).map(agent => agent.id);

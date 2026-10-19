@@ -86,7 +86,8 @@ export async function untrackedDiff(cwd: string, name: string): Promise<string> 
 function spawnGit(cwd: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const forward = cwd.replaceAll("\\", "/");
-    const child = spawn("git", ["-c", `safe.directory=${cwd}`, "-c", `safe.directory=${forward}`, "-c", "core.quotePath=true", "-C", cwd, ...args], {
+    // diff.relative=true would make a diff from a subfolder skip the rest of the repository and print subfolder paths.
+    const child = spawn("git", ["-c", `safe.directory=${cwd}`, "-c", `safe.directory=${forward}`, "-c", "core.quotePath=true", "-c", "diff.relative=false", "-C", cwd, ...args], {
       env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GIT_LITERAL_PATHSPECS: "1" },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -179,8 +180,12 @@ export async function collectSnapshot(directory: string, from: string | null = n
     if (early.code !== 0) throw new Error(early.stderr || "git diff failed");
     tracked = early.stdout;
   } else tracked = await runGit(cwd, ["diff", ...diffFlags, base, "--"]);
-  const untrackedNames = untrackedOut.split("\0").filter(Boolean);
-  const untracked = (await Promise.all(untrackedNames.slice(0, maxUntracked).map(name => untrackedDiff(cwd, name)))).filter(Boolean);
+  // Review's paths are relative to the repository root, as Git prints tracked changes and as Preview, Discard and
+  // Reveal resolve them. A workspace opened at a subfolder lists only its own untracked files, relative to itself,
+  // so they're listed again from the root; otherwise sub/notes.md would show as notes.md and actions would hit the root's.
+  const root = await realpath(repoRoot);
+  const untrackedNames = (root === cwd ? untrackedOut : await runGit(root, ["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean);
+  const untracked = (await Promise.all(untrackedNames.slice(0, maxUntracked).map(name => untrackedDiff(root, name)))).filter(Boolean);
   const raw = [tracked, ...untracked].join("\n");
   const files = parseDiff(raw).sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || a.path.localeCompare(b.path));
   const fingerprint = createHash("sha256").update(head ?? "unborn").update("\0").update(base).update("\0").update(raw).digest("hex");
@@ -214,7 +219,8 @@ export async function readMarkdownFile(directory: string, path: string): Promise
   // realpath follows links, so a link pointing outside the repository is rejected here.
   const file = await realpath(join(repoRoot, path));
   const inside = relative(repoRoot, file);
-  if (!inside || inside.startsWith("..") || isAbsolute(inside)) throw new Error("That file path is not inside this repository.");
+  // Only a ".." segment leaves the root; a name such as ..notes.md stays inside.
+  if (!inside || inside === ".." || inside.startsWith("..\\") || inside.startsWith("../") || isAbsolute(inside)) throw new Error("That file path is not inside this repository.");
   if (!(await lstat(file)).isFile()) throw new Error("That path is not a file.");
   const handle = await open(file, "r");
   try {

@@ -1,5 +1,6 @@
 import { realpath } from "node:fs/promises";
 import type { PaseoApi } from "@getpaseo/client";
+import { listIncludingBackground, ownHost } from "../shared/background";
 import type { TaskRecord } from "../shared/tasks";
 import { taskStartingPoint } from "./project-git";
 import { runGit } from "./review";
@@ -55,7 +56,8 @@ export async function templatedBranchConflict(sourceCwd: string, task: Pick<Task
 }
 
 async function findWorkspace(paseo: PaseoApi, directory: string) {
-  const { entries } = await paseo.workspaces.list({ page: { limit: 200 } });
+  // A background workspace (Paseo 0.12) for this worktree counts too; workspaces.open would skip it and add a second one.
+  const { entries } = await listIncludingBackground(ownHost, {}, filter => paseo.workspaces.list({ filter, page: { limit: 200 } }));
   for (const workspace of entries) {
     if (!workspace.workspaceDirectory || workspace.archivingAt) continue;
     try { if (samePath(await realpath(workspace.workspaceDirectory), directory)) return workspace.id; }

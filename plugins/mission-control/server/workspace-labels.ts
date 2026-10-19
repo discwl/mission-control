@@ -1,7 +1,9 @@
+import type { PaseoApi } from "@getpaseo/client";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { listIncludingBackground, ownHost } from "../shared/background";
 import type { TaskRecord } from "../shared/tasks";
 import {
   desiredWorkspaceStatuses, PAUSED_LABEL, workspaceStatusChanges, workspaceStatuses, workspaceStatusLabels,
@@ -117,11 +119,50 @@ export async function writeAppliedStatuses(applied: Record<string, WorkspaceStat
   await rename(temporary, file);
 }
 
+type PageRequest = { limit: number; cursor?: string };
+type Page<Entry> = { entries: readonly Entry[]; pageInfo: { nextCursor?: string | null } };
+type ListedWorkspace = { id: string; labels?: string[] | null };
+type ListedAgent = { agent: { workspaceId?: string | null; status: string; updatedAt: string; labels?: Record<string, string> | null; archivedAt?: string | null } };
+
+async function readAll<Entry>(read: (page: PageRequest) => Promise<Page<Entry>>): Promise<Entry[]> {
+  const entries: Entry[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await read({ limit: 200, ...(cursor ? { cursor } : {}) });
+    entries.push(...page.entries);
+    cursor = page.pageInfo.nextCursor ?? undefined;
+  } while (cursor);
+  return entries;
+}
+
+/** The sync's workspace and agent reads, from whichever directory listing is given. */
+function labelReads(
+  workspaces: (page: PageRequest) => Promise<Page<ListedWorkspace>>,
+  agents: (page: PageRequest) => Promise<Page<ListedAgent>>,
+): Pick<LabelClient, "activeWorkspaces" | "agents"> {
+  return {
+    activeWorkspaces: async () => new Map((await readAll(workspaces)).map(entry => [entry.id, entry.labels ?? []])),
+    agents: async () => (await readAll(agents)).flatMap(({ agent }): StatusAgent[] => agent.archivedAt ? [] : [{ workspaceId: agent.workspaceId ?? null, status: agent.status, updatedAt: agent.updatedAt, labels: agent.labels }]),
+  };
+}
+
+/**
+ * Reads through the host's own Paseo API. Unlike the client bundled with Mission Control, it can ask Paseo 0.12 for
+ * background workspaces and their agents, so those get status labels too.
+ */
+export function hostLabelReads(paseo: Pick<PaseoApi, "workspaces" | "agents">) {
+  return labelReads(
+    page => listIncludingBackground(ownHost, {}, filter => paseo.workspaces.list({ filter, page })),
+    page => listIncludingBackground(ownHost, {}, filter => paseo.agents.list({ filter, page })),
+  );
+}
+
 /**
  * INTERNAL PASEO API: PaseoApi 0.9.1 has no workspace labels, so this opens a short-lived DaemonClient against the
  * local daemon, like the agent rename does. It may break when Paseo changes @getpaseo/client/internal/daemon-client.
+ * Workspaces and agents are read through `paseo`, the host's own API, once a handler has supplied it.
  */
-export async function connectLabelClient(): Promise<LabelClient> {
+export async function connectLabelClient(paseo: Pick<PaseoApi, "workspaces" | "agents"> | null = null): Promise<LabelClient> {
   const client = new DaemonClient({
     url: await daemonWsUrl(),
     clientId: `plugin-mission-control-labels-${process.pid}`,
@@ -132,26 +173,7 @@ export async function connectLabelClient(): Promise<LabelClient> {
   await client.connect();
   return {
     listLabels: async () => (await client.listWorkspaceLabels()).labels,
-    async activeWorkspaces() {
-      const workspaces = new Map<string, string[]>();
-      let cursor: string | undefined;
-      do {
-        const page = await client.fetchWorkspaces({ page: { limit: 200, ...(cursor ? { cursor } : {}) } });
-        for (const entry of page.entries) workspaces.set(entry.id, entry.labels ?? []);
-        cursor = page.pageInfo.nextCursor ?? undefined;
-      } while (cursor);
-      return workspaces;
-    },
-    async agents() {
-      const agents: StatusAgent[] = [];
-      let cursor: string | undefined;
-      do {
-        const page = await client.fetchAgents({ page: { limit: 200, ...(cursor ? { cursor } : {}) } });
-        for (const { agent } of page.entries) if (!agent.archivedAt) agents.push({ workspaceId: agent.workspaceId ?? null, status: agent.status, updatedAt: agent.updatedAt, labels: agent.labels });
-        cursor = page.pageInfo.nextCursor ?? undefined;
-      } while (cursor);
-      return agents;
-    },
+    ...(paseo ? hostLabelReads(paseo) : labelReads(page => client.fetchWorkspaces({ page }), page => client.fetchAgents({ page }))),
     async setLabel(workspaceId, label, assigned) { await client.setWorkspaceLabel({ workspaceId, label, assigned }); },
     close: () => client.close(),
   };
@@ -163,8 +185,8 @@ const SYNC_EVERY_MS = 60_000;
  * Keeps this host's workspace status labels in sync: shortly after start, every minute, and when `poke` is called
  * after a task changes. Returns the stop function.
  */
-export function startWorkspaceLabelSync(tasks: (serverId: string) => Promise<TaskRecord[]>) {
-  const sync = localWorkspaceLabelSync(tasks);
+export function startWorkspaceLabelSync(tasks: (serverId: string) => Promise<TaskRecord[]>, hostPaseo: () => PaseoApi | null = () => null) {
+  const sync = localWorkspaceLabelSync(tasks, hostPaseo);
   let lastProblem = "";
   const tick = () => void sync.sync().then(() => { lastProblem = ""; }, error => {
     // The daemon may still be starting; say so once, not every minute.
@@ -178,10 +200,10 @@ export function startWorkspaceLabelSync(tasks: (serverId: string) => Promise<Tas
   return { poke: tick, stop: () => { clearTimeout(first); clearInterval(every); } };
 }
 
-/** The sync wired to this host's daemon, task records and plugin data. */
-export function localWorkspaceLabelSync(tasks: (serverId: string) => Promise<TaskRecord[]>) {
+/** The sync wired to this host's daemon, task records and plugin data. hostPaseo is the host's API once a handler has run. */
+export function localWorkspaceLabelSync(tasks: (serverId: string) => Promise<TaskRecord[]>, hostPaseo: () => PaseoApi | null = () => null) {
   return createWorkspaceLabelSync({
-    connect: connectLabelClient,
+    connect: () => connectLabelClient(hostPaseo()),
     serverId: () => daemonServerId(),
     tasks: serverId => tasks(serverId).catch(() => []),
     readApplied: () => readAppliedStatuses(),

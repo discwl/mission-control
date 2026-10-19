@@ -1,3 +1,4 @@
+import { agentMessageHeadline, agentMessageOf } from "../shared/agent-messages";
 import type { DecisionEntry } from "../shared/decisions";
 import type { QuestionEntry, QuestionRef } from "../shared/questions";
 import { hideCredentials } from "../shared/secret-mask";
@@ -106,8 +107,11 @@ function detailText(detail: unknown): string | null {
 export function conversationSteps(items: readonly TimelineItem[] | undefined, limit = 8): Step[] {
   const steps: Step[] = [];
   for (const item of items ?? []) {
+    // Paseo 0.12: a prompt from another agent, or a notice about a child agent, named for its sender.
+    const message = agentMessageOf(item);
     if (item.type === "user_message" && item.text?.trim()) steps.push({ kind: "you", text: masked(item.text, STEP_CHARS) });
     else if (item.type === "assistant_message" && item.text?.trim()) steps.push({ kind: "agent", text: clip(plainMarkdown(hideCredentials(item.text)), STEP_CHARS) });
+    else if (message) steps.push({ kind: "step", text: masked(`${agentMessageHeadline(message)}${message.text.trim() ? `: ${message.text.trim()}` : ""}`, STEP_CHARS) });
     else if (item.type === "tool_call") {
       const detail = detailText(item.detail);
       const outcome = item.status === "failed" ? " (failed)" : item.status === "canceled" ? " (canceled)" : item.status === "running" ? " (running)" : "";

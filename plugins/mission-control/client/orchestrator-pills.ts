@@ -1,4 +1,5 @@
 import type { PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
+import { listIncludingBackground, ownHost } from "../shared/background";
 import { hostAttentionCount, hostAttentionLabel, noAttentionReads, type HostAttentionReads } from "./host-attention";
 import { hostAgentsLabel, hostReviewItems, hostReviewLabel, runningAgentsCount } from "./host-review-model";
 import { requestHostAttention, requestHostReview } from "./host-review-request";
@@ -112,7 +113,8 @@ export function startOrchestratorPills(client: Pick<PluginClientContext, "paseo"
     if (running || stopped) return;
     running = true;
     try {
-      const { entries: listed } = await client.paseo.agents.list({ page: { limit: 200 } });
+      // Chats in a background workspace (Paseo 0.12) get bubbles too; they're left out of lists unless asked for.
+      const { entries: listed } = await listIncludingBackground(ownHost, {}, filter => client.paseo.agents.list({ filter, page: { limit: 200 } }));
       const active = listed.map(entry => entry.agent).filter(agent => agent.workspaceId && !agent.archivedAt && agent.status !== "closed");
       const bindings = await lookUp([...new Set(active.map(agent => agent.workspaceId!))].slice(0, 100));
       if (stopped) return;

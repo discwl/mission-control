@@ -10,7 +10,7 @@ const require = createRequire(import.meta.url);
 const ts = require("typescript");
 require.extensions[".ts"] = (module, file) => module._compile(ts.transpileModule(readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, file);
 const { desiredWorkspaceStatuses, parseWorkspaceStatus, statusForTask, workspaceStatusChanges } = require("../shared/workspace-status.ts");
-const { createWorkspaceLabelSync, readAppliedStatuses, writeAppliedStatuses } = require("./workspace-labels.ts");
+const { createWorkspaceLabelSync, hostLabelReads, readAppliedStatuses, writeAppliedStatuses } = require("./workspace-labels.ts");
 
 const serverId = "srv_here";
 const task = (taskId, status, extra = {}) => ({
@@ -146,6 +146,25 @@ test("overlapping syncs share one run", async () => {
   const [first, second] = await Promise.all([service.sync(), service.sync()]);
   assert.deepEqual(first, { changed: 1, failed: 0 });
   assert.deepEqual(second, { skipped: "running" });
+});
+
+test("through the host's own Paseo API, background workspaces and their agents are read too, page by page", async () => {
+  const reads = [];
+  const page = (entries, nextCursor) => ({ entries, pageInfo: { nextCursor } });
+  const paseo = {
+    workspaces: { async list({ filter, page: request }) {
+      reads.push(["workspaces", filter, request.cursor ?? null]);
+      return request.cursor ? page([{ id: "wks_background", labels: ["Review"], background: true }], null) : page([{ id: "wks_main" }], "next");
+    } },
+    agents: { async list({ filter, page: request }) {
+      reads.push(["agents", filter, request.cursor ?? null]);
+      return page([{ agent: { workspaceId: "wks_background", status: "running", updatedAt: "t1", labels: {} } }, { agent: { workspaceId: "wks_main", status: "idle", updatedAt: "t2", labels: {}, archivedAt: "t3" } }], null);
+    } },
+  };
+  const host = hostLabelReads(paseo);
+  assert.deepEqual([...(await host.activeWorkspaces())], [["wks_main", []], ["wks_background", ["Review"]]]);
+  assert.deepEqual(await host.agents(), [{ workspaceId: "wks_background", status: "running", updatedAt: "t1", labels: {} }], "archived agents are left out");
+  assert.deepEqual(reads.map(([kind, filter, cursor]) => [kind, filter.includeBackground, cursor]), [["workspaces", true, null], ["workspaces", true, "next"], ["agents", true, null]]);
 });
 
 test("applied statuses round-trip through the plugin data file and ignore unknown values", async () => {

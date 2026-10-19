@@ -50,6 +50,28 @@ test("the preview reader returns Markdown inside the repository and rejects ever
   await assert.rejects(readMarkdownFile(repo, "docs\\..\\..\\outside.md"), /not inside/);
   await assert.rejects(readMarkdownFile(repo, ".git/notes.md"), /not inside/);
   await assert.rejects(readMarkdownFile(repo, join(repo, "docs", "guide.md")), /not inside/);
+  await writeFile(join(repo, "..notes.md"), "# Dots\n");
+  assert.equal((await readMarkdownFile(repo, "..notes.md")).text, "# Dots\n", "a name starting with two dots is still inside");
+});
+
+test("a workspace opened at a subfolder reviews the whole repository with paths from its root", async t => {
+  const { repo, git } = await repository(t);
+  await mkdir(join(repo, "sub"));
+  await writeFile(join(repo, "sub", "kept.md"), "# Kept\n");
+  await writeFile(join(repo, "top.md"), "# Top\n");
+  git("add", "."); git("commit", "-q", "-m", "base");
+  // A subfolder's untracked file and the root's share a name: actions resolve from the root, so they must differ.
+  await writeFile(join(repo, "sub", "kept.md"), "# Kept\n\nMore.\n");
+  await writeFile(join(repo, "sub", "new.md"), "# New in sub\n");
+  await writeFile(join(repo, "new.md"), "# New at the root\n");
+  await writeFile(join(repo, "top.md"), "# Top\n\nChanged.\n");
+  // diff.relative must neither narrow the review to the subfolder nor change its paths.
+  git("config", "diff.relative", "true");
+  const snapshot = await collectSnapshot(join(repo, "sub"));
+  assert.deepEqual(snapshot.files.map(file => file.path).sort(), ["new.md", "sub/kept.md", "sub/new.md", "top.md"]);
+  assert.equal((await readMarkdownFile(join(repo, "sub"), "sub/new.md")).text, "# New in sub\n");
+  assert.equal((await readMarkdownFile(join(repo, "sub"), "new.md")).text, "# New at the root\n");
+  assert.deepEqual((await collectSnapshot(repo)).files.map(file => file.path).sort(), ["new.md", "sub/kept.md", "sub/new.md", "top.md"], "the same review as from the root");
 });
 
 test("only Markdown extensions count as Markdown", () => {

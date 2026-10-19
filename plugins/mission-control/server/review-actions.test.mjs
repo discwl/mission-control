@@ -113,6 +113,14 @@ test("absolute, traversal and Git metadata paths are refused", () => {
   assert.equal(actions.checkReviewPath("src\\file.txt"), "src/file.txt");
 });
 
+test("a name that starts with two dots is inside the repository, so it can be read and discarded", async t => {
+  const root = await fixture(t);
+  await writeFile(join(root, "..notes.txt"), "dots\n");
+  assert.equal(await actions.checkedReviewPath(root, "..notes.txt"), join(root, "..notes.txt"));
+  assert.equal((await actions.readReviewText(root, "..notes.txt")).text, "dots\n");
+  assert.deepEqual((await actions.planReviewDiscard(root, "..notes.txt", false)).paths, ["..notes.txt"]);
+});
+
 test("symlink ancestors cannot be read, revealed or discarded", async t => {
   const root = await fixture(t); await symlink(join(root, "src"), join(root, "linked"), process.platform === "win32" ? "junction" : "dir");
   await assert.rejects(actions.checkedReviewPath(root, "linked/file.txt"), /symbolic links/);

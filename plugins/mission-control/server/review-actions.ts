@@ -23,7 +23,8 @@ export async function checkedReviewPath(root: string, path: string): Promise<str
     try {
       if ((await lstat(current)).isSymbolicLink()) throw new Error("Actions on symbolic links are not supported.");
       const inside = relative(root, await realpath(current));
-      if (inside.startsWith("..") || isAbsolute(inside)) throw new Error("That path is not inside this repository.");
+      // Only a ".." segment leaves the root; a name such as ..notes.md stays inside.
+      if (inside === ".." || inside.startsWith("..\\") || inside.startsWith("../") || isAbsolute(inside)) throw new Error("That path is not inside this repository.");
     } catch (error) {
       if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
     }

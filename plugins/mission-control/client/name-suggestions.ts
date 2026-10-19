@@ -1,10 +1,12 @@
 import type { PaseoApi } from "@getpaseo/client";
 import { z } from "zod";
 import type { Ticket } from "../shared/tasks";
+import { promptText } from "../shared/agent-messages";
 import { askSmallModel, extractJson, pickSmallModel, resolveSmallModel, type SmallModel } from "../shared/small-model";
 
 // Name suggestions from chat context. Policy: docs/agent-workflow.md#naming-checkpoints.
-// The prompt holds only titles, linked task titles/ticket identities and user prompts; never replies or tool output.
+// The prompt holds only titles, linked task titles/ticket identities and prompts (the user's, or on Paseo 0.12 those
+// another agent sent); never replies or tool output.
 // The naming agent runs through shared/small-model, whose caveats apply.
 
 export type AgentContext = { id: string; name: string; messages: string[]; suggest: boolean };
@@ -133,11 +135,11 @@ type TimelinePage = { hasNewer: boolean; entries: { item: { type: string; text?:
 type TimelineReader = { refetch(options: { direction: "after" | "tail"; limit: number; projection: "projected" }): Promise<TimelinePage> };
 
 function userTexts(page: TimelinePage): string[] {
-  return page.entries.flatMap(({ item }) => item.type === "user_message" && typeof item.text === "string" ? [item.text] : []);
+  return page.entries.flatMap(({ item }) => { const text = promptText(item); return text === null ? [] : [text]; });
 }
 
 /**
- * User prompts from the start and the end of an agent's timeline, oldest first.
+ * Prompts from the start and the end of an agent's timeline, oldest first, including ones another agent sent.
  * "after" without a cursor reads from the first retained entry, so long chats still
  * give their first prompts. On short chats the two pages overlap; pickMessages dedupes.
  */

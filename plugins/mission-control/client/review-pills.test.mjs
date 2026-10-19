@@ -11,9 +11,12 @@ const compiled = ts.transpileModule(source, {
   fileName: fileURLToPath(new URL("./review-pills.ts", import.meta.url)),
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
+const background = { exports: {} };
+new Function("require", "module", "exports", ts.transpileModule(readFileSync(new URL("../shared/background.ts", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText)(require, background, background.exports);
 const loaded = { exports: {} };
 new Function("require", "module", "exports", compiled)(specifier => {
   if (specifier === "../shared/review") return { getReviewCounts: "review.counts" };
+  if (specifier === "../shared/background") return background.exports;
   if (specifier === "./panel-ids") return { agentReviewPanelId: "agent-review", reviewPanelId: "workspace-review" };
   throw new Error(`Unexpected import: ${specifier}`);
 }, loaded, loaded.exports);

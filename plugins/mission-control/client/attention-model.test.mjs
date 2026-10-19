@@ -73,6 +73,15 @@ test("the conversation shows the last messages and steps, trimmed, without reaso
   assert.ok(conversationSteps([{ type: "assistant_message", text: "x".repeat(1000) }])[0].text.length <= 280);
 });
 
+test("Paseo 0.12's agent messages show who sent them, not the tool name", () => {
+  const fromAgent = (event, text, title) => ({ type: "tool_call", name: "agent_message", status: "completed", agentMessage: { event, sender: { id: "parent", ...(title ? { title } : {}) }, text }, detail: { type: "plain_text", text } });
+  assert.deepEqual(conversationSteps([fromAgent("message", "Review task 23", "Planner"), fromAgent("finished", "", null), fromAgent("errored", "Tests failed", "Builder")]).map(step => [step.kind, step.text]), [
+    ["step", "Message from Planner: Review task 23"],
+    ["step", "An agent finished"],
+    ["step", "Builder stopped with an error: Tests failed"],
+  ]);
+});
+
 test("permission cards: task line, where it's at from the chat, and what it wants to do in plain words", () => {
   const task = taskLine({ taskId, agentName: "Builder", taskTitles, hostLabel: "personal", workspace });
   const card = permissionCard(shell, task, latestAgentQuote(timeline));

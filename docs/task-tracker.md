@@ -85,10 +85,28 @@ The backlog from 26 Sep 2026, ordered from easiest and most useful to hardest an
 - **Merge and pull-request tests fail on a busy machine:** with several agents testing at once, Git-heavy tests run past the 20-second reply window or a 1-second commit limit. Give the tests longer windows, or run those two files on their own in the workflow.
 - **Error card re-read (task 24 review, skipped by the user):** if a failed agent's Conversation is open and the agent fails again within about 20 seconds, the card reads the chat once more by itself. The fix is one line: reset the card's Conversation whenever the agent fails again.
 - **Last messages refresh (task 26 review, skipped by the user):** if you expand a helper's Last messages and then its parent agent stops, the open panel's next refresh (every 20 seconds, in views without live updates) can restart the parent. The fix is the same live-status check before each refresh, plus a test.
+- **Paseo 0.12 hardening (19 Oct review, not done yet):**
+  - Morning check: since 0.12 a rejected first prompt no longer throws, so the launch is saved as sent with no reason. Copy the agent's `lastError` into it (`server/morning.ts`).
+  - Small-model helpers: on Paseo 0.11 and older, a create that fails leaves a hidden naming agent behind. Pass Mission Control's own agent ID and archive it on failure (`shared/small-model.ts`).
+  - Merge notice: idle is checked before the merge, so the notice can interrupt a turn the agent started since. Send it with `activeTurnBehavior: "steer"`, or check again just before sending (`server/merge.ts`).
+  - Agent paging: sort pages by `created_at`, so agents updated between pages aren't skipped (the bug 0.12 fixed in `paseo agent ls`). `client/mission-panel.tsx`, `client/review-pills.ts` and `server/worktree.ts` read only the first 200 entries.
+- **Git cases Paseo 0.12 fixed in its own code (19 Oct review, not done yet):**
+  - Review's base is fixed when the worktree is created, so after the task branch merges the default branch, Review lists that branch's files too. Use the merge-base at scan time.
+  - A `diff.submodule` setting changes Review's output (`--submodule=short`), and `log.showSignature=true` adds a blank commit row and miscounts (`--no-show-signature`).
+  - `server/merge.ts` checks renames in one status column only.
+  - A kept branch's base comes from its oldest reflog entry, which can expire.
+  - `findWorkspace` compares a subfolder workspace's folder with the worktree root.
+  - `scripts/dev-flow.mjs` trims porcelain output and reads it without `-z`.
+- **Older issues found in the 0.12 review:**
+  - Mission Control's desktop dialogs use React Native's `Modal`, so Escape may also stop the agent behind them (untested; the SDK `Modal` avoids it).
+  - A Review snapshot has no overall size cap and could pass the relay's 32 MiB message limit.
+  - The bundled `@getpaseo/client` 0.9.1 misses 0.12's client memory fix, and the label sync opens one every minute.
+  - The Mission bubble on phones hasn't been checked on a device.
+- **Cross-host `paseo send` from agents (Paseo 0.12 CLI):** run inside an agent, a 0.12 `paseo send` always sends that agent's ID as the sender. Hosts older than 0.12 refuse it ("Update the Paseo host to send messages with agent provenance"). Orchestrators should clear `PASEO_AGENT_ID` for those sends until every host runs 0.12. `paseo run --host` checks the caller first and isn't affected.
 
 ## Known constraint
 
-Gortex can't discover task worktrees on this machine yet (v0.64.5 on Windows). Every Gortex hook call from inside a worktree holds Gortex's checkout lane, so Gortex is unavailable to other sessions while worktree agents run. It recovers about 2–3 minutes after they stop. Agents in this batch skip Gortex, as you asked on 26 Sep 2026.
+Gortex can't discover task worktrees on this machine yet (seen with v0.64.5 on Windows, and again with v0.64.8 on 19 Oct 2026, right after a linked worktree was created). Every Gortex hook call from inside a worktree holds Gortex's checkout lane, so Gortex is unavailable to other sessions while worktree agents run. It recovers about 2–3 minutes after they stop. Agents in this batch skip Gortex, as you asked on 26 Sep 2026.
 
 ## Task statuses and run stages
 

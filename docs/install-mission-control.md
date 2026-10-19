@@ -94,6 +94,8 @@ paseo plugin reload mission-control --json
 paseo plugin ls --json
 ```
 
+From Paseo 0.12, `paseo plugin reload` waits for the reload to finish and reports its result. Older CLIs can report a timeout after 60 seconds while the reload is still running and then succeeds. Before trying again, check that `paseo plugin ls --json` shows the plugin as `running`, or that `paseo plugin logs mission-control` ends with "Plugin ready". While a reload runs, `plugin ls` can briefly show the plugin as `failed`.
+
 Keep your own checkout path stable so installed skill links and project profiles remain valid. Resolve Git failures without discarding local changes.
 
 ## Short agent prompt for a new host

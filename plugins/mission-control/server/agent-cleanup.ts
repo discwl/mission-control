@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
 import { agentCleanupSettings, archiveAgentCleanup, cleanupHistorySchema, listAgentCleanupHistory, scanAgentCleanup, type CleanupHistory, type CleanupScope } from "../shared/agent-cleanup";
+import { listIncludingBackground, ownHost } from "../shared/background";
 import { createAgentCleanupEngine, type CleanupAgent, type CleanupSnapshot } from "./agent-cleanup-engine";
 import { daemonServerId } from "./agent-names";
 import { localServerId, scanTaskSources } from "./tasks";
@@ -30,12 +31,14 @@ async function record(entry: CleanupHistory) {
   await writeFile(temporary, JSON.stringify(entries, null, 2) + "\n", { mode: 0o600, flag: "wx" });
   await rename(temporary, historyFile);
 }
+// Both directories include Paseo 0.12's background workspaces and their agents. Without them a running child in a
+// background workspace would be invisible, and archiving its parent archives the child too.
 async function allAgents(paseo: Api, includeArchived = false) {
   const agents: Awaited<ReturnType<Api["agents"]["list"]>>["entries"][number]["agent"][] = [];
   let cursor: string | undefined;
   const seen = new Set<string>();
   for (let pageNumber = 0; pageNumber < 100; pageNumber++) {
-    const page = await paseo.agents.list({ filter: { includeArchived }, page: { limit: 200, ...(cursor ? { cursor } : {}) } });
+    const page = await listIncludingBackground(ownHost, { includeArchived }, filter => paseo.agents.list({ filter, page: { limit: 200, ...(cursor ? { cursor } : {}) } }));
     agents.push(...page.entries.map(entry => entry.agent));
     if (!page.pageInfo.hasMore) return agents;
     const next = page.pageInfo.nextCursor;
@@ -49,7 +52,7 @@ async function allWorkspaces(paseo: Api) {
   let cursor: string | undefined;
   const seen = new Set<string>();
   for (let pageNumber = 0; pageNumber < 100; pageNumber++) {
-    const page = await paseo.workspaces.list({ page: { limit: 200, ...(cursor ? { cursor } : {}) } });
+    const page = await listIncludingBackground(ownHost, {}, filter => paseo.workspaces.list({ filter, page: { limit: 200, ...(cursor ? { cursor } : {}) } }));
     workspaces.push(...page.entries);
     if (!page.pageInfo.hasMore) return workspaces;
     const next = page.pageInfo.nextCursor;

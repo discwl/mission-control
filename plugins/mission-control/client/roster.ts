@@ -2,6 +2,7 @@ import type { PaseoAgentListResult } from "@getpaseo/client";
 import { getPaseoClient } from "@getpaseo/plugin/client";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { listIncludingBackground } from "../shared/background";
 import { createLiveRosters } from "./live-roster";
 import { lookUpMissingParents, toAgent, toWorkspace, type Roster } from "./roster-model";
 
@@ -10,11 +11,13 @@ export { agentsForTask, contextLineFor, findAgent, subagentContextOf, type Agent
 // Agents are read in pages of 200, up to this many pages.
 const AGENT_PAGES = 5;
 
-async function readAgents(paseo: ReturnType<typeof getPaseoClient>) {
+// Every list here includes Paseo 0.12's background workspaces and their agents: Attention, the Workspaces view
+// and the agent trees must see them even though Paseo's sidebar hides them.
+async function readAgents(serverId: string, paseo: ReturnType<typeof getPaseoClient>) {
   const entries: PaseoAgentListResult["entries"] = [];
   let cursor: string | undefined;
   for (let page = 0; page < AGENT_PAGES; page++) {
-    const result = await paseo.agents.list({ page: { limit: 200, ...(cursor ? { cursor } : {}) } });
+    const result = await listIncludingBackground(serverId, {}, filter => paseo.agents.list({ filter, page: { limit: 200, ...(cursor ? { cursor } : {}) } }));
     entries.push(...result.entries);
     cursor = result.pageInfo.hasMore ? result.pageInfo.nextCursor ?? undefined : undefined;
     if (!cursor) return { entries, hasMore: false };
@@ -26,8 +29,8 @@ export async function readRoster(serverId: string): Promise<Roster> {
   const paseo = getPaseoClient(serverId);
   const [projectResult, workspaceResult, agentResult] = await Promise.all([
     paseo.projects.list(),
-    paseo.workspaces.list({ page: { limit: 200 } }),
-    readAgents(paseo),
+    listIncludingBackground(serverId, {}, filter => paseo.workspaces.list({ filter, page: { limit: 200 } })),
+    readAgents(serverId, paseo),
   ]);
   const agents = agentResult.entries.map(({ agent }) => toAgent(agent));
   const outside = await lookUpMissingParents(agents, async id => (await paseo.agents.ref(id).refresh())?.agent ?? null);
@@ -48,7 +51,10 @@ export async function readRoster(serverId: string): Promise<Roster> {
 /** A host's workspaces and first page of agents, without projects or parent lookups: enough for chat bubbles' counts. */
 export async function readHostActivity(serverId: string): Promise<Pick<Roster, "workspaces" | "agents">> {
   const paseo = getPaseoClient(serverId);
-  const [workspaceResult, agentResult] = await Promise.all([paseo.workspaces.list({ page: { limit: 200 } }), paseo.agents.list({ page: { limit: 200 } })]);
+  const [workspaceResult, agentResult] = await Promise.all([
+    listIncludingBackground(serverId, {}, filter => paseo.workspaces.list({ filter, page: { limit: 200 } })),
+    listIncludingBackground(serverId, {}, filter => paseo.agents.list({ filter, page: { limit: 200 } })),
+  ]);
   const agents = agentResult.entries.map(({ agent }) => toAgent(agent));
   return { workspaces: workspaceResult.entries.map(workspace => toWorkspace(workspace, agents)), agents };
 }
@@ -83,8 +89,8 @@ function listenToDirectory(serverId: string, changed: () => void): () => void {
       cleanups.push(() => { remove(); void subscription.release().catch(() => {}); });
     }).catch(() => { /* The query's backstop refresh still runs. */ });
   };
-  observe(paseo.agents.list({ subscribe: {} }));
-  observe(paseo.workspaces.list({ subscribe: {} }));
+  observe(listIncludingBackground(serverId, {}, filter => paseo.agents.list({ filter, subscribe: {} })));
+  observe(listIncludingBackground(serverId, {}, filter => paseo.workspaces.list({ filter, subscribe: {} })));
   return () => { closed = true; for (const cleanup of cleanups.splice(0)) cleanup(); };
 }
 

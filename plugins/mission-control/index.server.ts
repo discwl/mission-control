@@ -47,6 +47,7 @@ import { registerWorkflowInstructions } from "./server/workflow-instructions";
 import { registerAgentCleanup } from "./server/agent-cleanup";
 import { registerOrchestrator } from "./server/orchestrator";
 import { startWorkspaceLabelSync } from "./server/workspace-labels";
+import { rememberHostPaseo } from "./server/host-paseo";
 import { getMissionSummary } from "./shared/mission";
 import { renameAgent } from "./shared/agent-names";
 import { daemonServerId, renameAgentRecord, setAgentNameViaDaemon } from "./server/agent-names";
@@ -59,7 +60,9 @@ import { applyPluginUpdate, checkPluginUpdate } from "./shared/plugin-updates";
 import { createVaultStore } from "./server/vault";
 import { defaultVaultPath, getVaultStatus, initializeVault, listVaultFolder, readVaultFile, saveVaultFile, createVaultEntry, moveVaultEntry, trashVaultEntry, locateTaskInVault } from "./shared/vault";
 
-export default function contribute(server: PluginServerContext) {
+export default function contribute(context: PluginServerContext) {
+  // The status label sync runs outside handlers; it lists through the host's own Paseo API once a handler has seen it.
+  const { server, current: hostPaseo } = rememberHostPaseo(context);
   server.registerSettings(missionPreferences);
   const review = registerReview(server, defaultVaultPath);
   registerMorning(server);
@@ -207,7 +210,7 @@ export default function contribute(server: PluginServerContext) {
   );
   server.handle(saveTaskDocument, async input => saveTaskDocumentRecord(input));
   // Each workspace's status label (Ready, In Progress, Review, Blocked, Done) follows its tasks.
-  const statusLabels = startWorkspaceLabelSync(async serverId => (await taskSources(serverId)).map(source => source.task));
+  const statusLabels = startWorkspaceLabelSync(async serverId => (await taskSources(serverId)).map(source => source.task), hostPaseo);
   server.handle(updateTaskStatus, async input => {
     const task = await updateTaskStatusRecord(input);
     statusLabels.poke();

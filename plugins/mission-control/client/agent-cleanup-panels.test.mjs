@@ -23,7 +23,7 @@ function render(file, exportName) {
     "./compact-link": { CompactLink: "CompactLink" }, "./agent-tree": { AgentTree: "AgentTree", treeSummaryLine: () => "0 agents" },
     "./app-modal": { AppModal: Object.assign("Modal", { Content: "ModalContent" }) }, "./copy-task-id": { CopyTaskId: "CopyTaskId" }, "./breadcrumbs": { Breadcrumbs: "Breadcrumbs" }, "./project-git": { ProjectGit: "ProjectGit" }, "./task-flow": { TaskFlowSummary: "TaskFlowSummary", TaskFlowDetail: "TaskFlowDetail" },
     "../shared/preferences": { missionPreferences: {} }, "../shared/mission-sections": { missionSections: ["agents"], missionSectionLabels: { agents: "Agents" }, normalizeMissionSections: () => ["agents"] },
-    "../shared/mission": { getMissionSummary: {} }, "../shared/review": { getReviewCounts: {} }, "../shared/runs": { listTaskRuns: {} }, "../shared/tasks": { listTasks: {} },
+    "../shared/mission": { getMissionSummary: {} }, "../shared/review": { getReviewCounts: {} }, "../shared/runs": { listTaskRuns: {} }, "../shared/tasks": { listTasks: {} }, "../shared/background": {},
     "./date-time": {}, "./decision-card": { DecisionCard: "DecisionCard" }, "./attention-card": { useWaiting: () => query({ questions: [] }), WaitingCardView: "WaitingCard" }, "./attention-model": { waitingCards: () => [] }, "./needs-you": { useDecisions: () => query({ open: [] }) },
     "./permissions": { PermissionCard: "PermissionCard" }, "./plugin-client": { pluginClient: () => null }, "./review-comments": { useReviewComments: () => ({ comments: [] }) }, "./panel-ids": {}, "./roster": { useRoster: () => query({ agents: [] }), agentsForTask: () => [] },
     "../shared/subagents": {}, "../shared/agents-panel": {}, "./subagents": { useHelpers: () => [], useTaskTitles: () => ({}) },

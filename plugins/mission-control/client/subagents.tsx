@@ -8,6 +8,7 @@ import {
   childStatus, firstLine, helperQueryPlan, helpersByParent, listHelpers, listTaskTitles, mayQueryAgent, readablePurpose, readHelperMessages,
   subagentContextLine, subagentKindLabel, subagentSummary, type Helper, type QueryableAgent, type SubagentStatus,
 } from "../shared/subagents";
+import { firstPromptText } from "../shared/agent-messages";
 import { formatDateTime } from "./date-time";
 import { contextLineFor, subagentContextOf, useRoster, type Agent, type Roster } from "./roster";
 
@@ -57,15 +58,16 @@ type ChatAgent = QueryableAgent;
 
 /**
  * A separate agent's first prompt, as one line. It never changes, so it's read once. The chat is read
- * only as mayQueryAgent allows: a stopped agent's only when the user asks (asked).
+ * only as mayQueryAgent allows: a stopped agent's only when the user asks (asked). On Paseo 0.12 a prompt
+ * from the agent that started it is an agent message, not a user message.
  */
 function useFirstPrompt(serverId: string, agent: ChatAgent, asked: boolean) {
   return useQuery({
     queryKey: ["mission-control", "first-prompt", serverId, agent.id],
     queryFn: async () => {
       const page = await getPaseoClient(serverId).agents.ref(agent.id).timeline.refetch({ direction: "after", limit: 20, projection: "projected" });
-      const first = page.entries.find(({ item }) => item.type === "user_message");
-      return first && first.item.type === "user_message" ? firstLine(first.item.text) : null;
+      const text = firstPromptText(page.entries.map(({ item }) => item));
+      return text === null ? null : firstLine(text);
     },
     enabled: Boolean(serverId) && mayQueryAgent(agent, asked), staleTime: Infinity, gcTime: 30 * 60_000, retry: false,
   });

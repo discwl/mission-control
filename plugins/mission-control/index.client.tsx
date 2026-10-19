@@ -14,6 +14,8 @@ import { startOrchestratorPills } from "./client/orchestrator-pills";
 import { readHostActivity } from "./client/roster";
 import { MissionPanel } from "./client/mission-panel";
 import { startMissionButtons } from "./client/mission-buttons";
+import { panelLocation } from "./client/layout";
+import { windowLayout } from "./client/window-layout";
 import { NeedsYouTimelineCard } from "./client/needs-you-timeline";
 import { needsYouTimelineKind, needsYouTimelineSchema } from "./shared/needs-you-timeline";
 import { setPluginClient } from "./client/plugin-client";
@@ -107,7 +109,8 @@ export default function contribute(client: PluginClientContext) {
     lookUp: orchestratorBindings, readHost: readHostActivity,
     readAttention: serverId => { const found = findCopy(serverId); return readHostAttention(serverId, "copy" in found ? found.copy : null); },
   });
-  // The Mission tab belongs in Paseo's right panel (Explorer), beside the chat.
+  // The Mission tab belongs in Paseo's right panel (Explorer), beside the chat. Paseo's phone layout has no
+  // Explorer, so there it opens as a tab (see client/layout.ts).
   const removeMissionPanel = client.addWorkspacePanel({
     id: missionPanelId,
     title: "Mission",
@@ -123,17 +126,17 @@ export default function contribute(client: PluginClientContext) {
     context: "agent",
     onSubmit({ agent }) {
       if (!agent.workspaceId) throw new Error("This agent has no workspace.");
-      client.openPanel(missionPanelId, { workspaceId: agent.workspaceId, location: "explorer" });
+      client.openPanel(missionPanelId, { workspaceId: agent.workspaceId, location: panelLocation(windowLayout) });
     },
   });
-  const stopMissionButtons = startMissionButtons(client);
-  // Every agent of the workspace as a tree, in Explorer.
+  const stopMissionButtons = startMissionButtons(client, undefined, windowLayout);
+  // Every agent of the workspace as a tree, in Explorer; a tab on phones.
   const removeAgentsPanel = client.addWorkspacePanel({
     id: agentsPanelId,
     title: "Agents",
     icon: "Network",
     context: "workspace",
-    locations: ["explorer"],
+    locations: ["explorer", "workspace"],
     Component: AgentsPanel,
   });
   const removeAgentsCommand = client.addCommandCenterItem({
@@ -142,7 +145,7 @@ export default function contribute(client: PluginClientContext) {
     icon: "Network",
     keywords: ["agents", "sub-agents", "subagents", "crew", "tree", "helpers", "workspace"],
     context: "workspace",
-    onSelect({ openPanel }) { openPanel(agentsPanelId, { location: "explorer" }); },
+    onSelect({ openPanel }) { openPanel(agentsPanelId, { location: panelLocation(windowLayout) }); },
   });
   const agentsAutoOpen = startAgentsAutoOpen(client);
   function AgentsSettingsScreen(props: PluginSurfaceProps) {

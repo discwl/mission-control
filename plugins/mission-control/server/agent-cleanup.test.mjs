@@ -15,6 +15,7 @@ const contracts = load(compile(new URL("../shared/agent-cleanup.ts", import.meta
   "@getpaseo/plugin": { defineRpc: value => value, defineSettings: value => value },
   "./pull-request": { trackedPullRequestSchema: z.object({}).passthrough() },
 });
+const backgroundLists = load(compile(new URL("../shared/background.ts", import.meta.url)), {});
 const serverCode = compile(new URL("./agent-cleanup.ts", import.meta.url));
 const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
 const scope = { serverId: "test-host", workspaceId: "test-workspace" };
@@ -28,8 +29,10 @@ function runtime(options = {}) {
     async rename(from, to) { files.set(to, files.get(from)); files.delete(from); },
   };
   const task = { taskId: "test-task", title: "Synthetic delivered task", status: "delivered", updatedAt: old, assignments: [{ serverId: scope.serverId, workspaceId: scope.workspaceId }] };
+  // Like a Paseo 0.12 daemon, the fake lists a background workspace and its agents only when asked to.
+  const background = options.backgroundChild ? [agent({ id: "background-child", workspaceId: "background-workspace", status: "running", activeTurn: { id: "child-turn" }, labels: { "paseo.parent-agent-id": "test-agent" } })] : [];
   const exports = load(serverCode, {
-    "node:fs/promises": fs, "../shared/agent-cleanup": contracts, "./agent-cleanup-engine": { createAgentCleanupEngine },
+    "node:fs/promises": fs, "../shared/agent-cleanup": contracts, "../shared/background": backgroundLists, "./agent-cleanup-engine": { createAgentCleanupEngine },
     "./agent-names": { daemonServerId: async () => scope.serverId }, "./tasks": { localServerId: async () => scope.serverId, scanTaskSources: async () => ({ sources: [{ task }], problems: options.problems ?? [] }) },
     "./runs": { runRecordsOf: async () => [{ agentId: "test-agent", updatedAt: old }] },
     "./subagents": { createHelperService: () => ({ list: async () => ({ available: options.helpersAvailable !== false, helpers: options.helpers ?? [] }) }) },
@@ -39,14 +42,19 @@ function runtime(options = {}) {
       async list(input) {
         pages++; calls.push({ action: "list", input });
         if (options.resumeBeforeArchive && pages === 3) agents[0] = { ...agents[0], status: "running", activeTurn: { id: "synthetic-turn" } };
-        return { entries: agents.filter(item => input.filter.includeArchived || !item.archivedAt).map(agent => ({ agent })), pageInfo: { hasMore: options.incomplete === true, nextCursor: null } };
+        return { entries: [...agents, ...(input.filter.includeBackground ? background : [])].filter(item => input.filter.includeArchived || !item.archivedAt).map(agent => ({ agent })), pageInfo: { hasMore: options.incomplete === true, nextCursor: null } };
       },
       ref(id) { return {
         timeline: { async refetch() { calls.push({ action: "timeline", id }); if (options.timelineError) throw new Error("unavailable"); return { entries: options.timeline ?? [{ timestamp: old, item: { type: "assistant_message" } }] }; } },
         async archive() { calls.push({ action: "archive", id }); const archivedAt = new Date().toISOString(); agents = agents.map(item => item.id === id ? { ...item, archivedAt } : item); return { archivedAt }; },
       }; },
     },
-    workspaces: { list: async () => ({ entries: [{ id: scope.workspaceId, pinnedAt: null }], pageInfo: { hasMore: false } }) },
+    workspaces: {
+      async list(input) {
+        calls.push({ action: "workspaces", input });
+        return { entries: [{ id: scope.workspaceId, pinnedAt: null }, ...(input.filter?.includeBackground && background.length ? [{ id: "background-workspace", pinnedAt: null, background: true }] : [])], pageInfo: { hasMore: false } };
+      },
+    },
   };
   exports.registerAgentCleanup({ registerSettings: () => ({ read: async () => ({ status: "ready", values: { deliveredDays: 7, unlinkedDays: 14 } }) }), handle: (contract, handler) => handlers.set(contract.name, { contract, handler }) }, {
     decisions: { list: async () => ({ open: options.decisions ?? [] }) }, questions: { list: async () => ({ questions: [] }) }, pullRequests: { list: async () => ({ pullRequests: [] }) },
@@ -60,6 +68,14 @@ test("host scan is read-only and recent metadata does not replace actual convers
   const scan = await r.invoke("agents.cleanup.scan", scope);
   assert.equal(scan.rows[0].disposition, "eligible"); assert.equal(scan.rows[0].activityBasis, "conversation");
   assert.equal(r.calls.filter(call => call.action === "archive").length, 0); assert.equal(r.files.size, 0);
+});
+test("a running child in a background workspace keeps its parent, since Paseo 0.12 lists it only when asked", async () => {
+  const r = runtime({ backgroundChild: true });
+  const scan = await r.invoke("agents.cleanup.scan", scope);
+  assert.equal(scan.rows[0].disposition, "keep");
+  assert.match(scan.rows[0].reason, /work running/);
+  const lists = r.calls.filter(call => call.action === "list" || call.action === "workspaces");
+  assert.ok(lists.length >= 2 && lists.every(call => call.input.filter.includeBackground === true), "every directory read asks for background workspaces");
 });
 test("stopped or unavailable agents are not awakened by reading their timelines", async () => {
   for (const extra of [{ status: "closed" }, { status: "error" }, { providerUnavailable: true }, { activeTurn: { id: "turn" } }, { pendingPermissions: [{ id: "request" }] }, { archivedAt: old }]) {

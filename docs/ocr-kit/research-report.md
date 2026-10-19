@@ -148,7 +148,7 @@ The supplied host report schema preserves OCR's comment fields, then adds confid
 | Reusable prompt | Ordinary new-agent task | Best first trial; supplied in this kit. |
 | Provider skill | OCR's delegation skill; ordinary Claude/Codex skills | Reuse upstream instructions, add our evidence/coverage assignment. |
 | Paseo profile | Provider, model, mode, thinking and feature settings | Optional `OCR Reviewer` preset. Notes guide selection; they are not a system prompt. |
-| Paseo CLI | `paseo run --workspace <id> --provider claude <prompt>` | Creates a fresh agent; waits by default. `send` continues an existing session. |
+| Paseo CLI | `paseo run --workspace <id> --provider claude <prompt>` | Creates a fresh agent; waits by default. `send` continues an existing session. From Paseo 0.12, a `send` run inside an agent adds to the recipient's running turn instead of interrupting it (`--behavior interrupt` restores that). |
 | Paseo MCP | `create_agent`, profile/model discovery, lifecycle tools | Useful when asking your current agent to launch a reviewer. |
 | TypeScript SDK | `@getpaseo/client` | Later lightweight workflow runner, without a plugin. |
 | Plugin | 0.8 client/server contribution API | Needed only when you want persistent UI/actions, not for the initial review. |

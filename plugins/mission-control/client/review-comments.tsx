@@ -15,6 +15,7 @@ import {
 import { formatDateTime } from "./date-time";
 import { Chip, LinkButton, mono, plural, type Colors } from "./review-ui";
 import { flattenAgentTree, groupAgents, parentAgentIdOf } from "../shared/subagents";
+import { listIncludingBackground } from "../shared/background";
 
 export type ReviewAgent = { id: string; name: string; status: string; updatedAt: string; parentAgentId: string | null };
 type Action = "delete" | "resolve" | "reopen" | "confirm-sent" | "confirm-not-sent";
@@ -26,7 +27,8 @@ export function useWorkspaceAgents(serverId: string, workspaceId: string, online
   return useQuery({
     queryKey: ["mission-control", "review-agents", serverId, workspaceId],
     queryFn: async (): Promise<ReviewAgent[]> => {
-      const { entries } = await getPaseoClient(serverId).agents.list({ page: { limit: 200 } });
+      // A background workspace's agents are left out of Paseo 0.12's lists unless asked for.
+      const { entries } = await listIncludingBackground(serverId, {}, filter => getPaseoClient(serverId).agents.list({ filter, page: { limit: 200 } }));
       return entries.map(entry => entry.agent)
         .filter(agent => agent.workspaceId === workspaceId && !("archivedAt" in agent && agent.archivedAt) && agent.status !== "closed")
         .map(agent => ({ id: agent.id, name: agent.title || `${agent.provider} agent`, status: agent.status, updatedAt: agent.updatedAt, parentAgentId: parentAgentIdOf(agent) }))

@@ -359,7 +359,7 @@
 
 <!-- ============================================================ -->
 <h2 id="workspaces">Workspaces</h2>
-<p>The Workspaces tab lists every workspace on the selected host, grouped by project.</p>
+<p>The Workspaces tab lists every workspace on the selected host, grouped by project. That includes background workspaces, which Paseo 0.12 hides from its own sidebar unless <span class="ui">Show background</span> is on; Attention, the agent trees and agent cleanup see them too.</p>
 <figure>
   <img src="screenshots/workspaces-list.png" alt="The Workspaces tab with search, the Show, Label and Project filters, and project blocks">
   <figcaption>Search, filters, and projects with their Git bar. At this width the filters use two rows.</figcaption>
@@ -427,7 +427,7 @@
 <p>Agent cards on the workspace page, and task cards in the Tasks tab and the Mission panel, get a <span class="ui">Sub-agents (N)</span> row when there are any. Collapsed, it says how many there are and how many helpers are running ("2 helpers running"). Open it to see each sub-agent's name, what it was started for (a helper's description, or a separate agent's first prompt), its kind, status (running, finished, idle, error or stopped) and time. Separate agents have <span class="ui">Open agent</span>; a helper's <span class="ui">Last messages</span> shows its last few messages. Finished helpers stay a count until you open them.</p>
 <p>Where a separate agent appears without its parent, for example because the parent works in another workspace or is archived, a line under its name says whose it is: <strong>Sub-agent of &lt;parent&gt; · &lt;the parent's task&gt; · &lt;project / workspace&gt;</strong>. Click it to open the parent. If the parent agent no longer exists, the line says so and isn't a link. In lists that include both, the sub-agent sits under its parent instead. The same line appears in the agent choice for sending review comments and in the <span class="ui">Review names</span> dialogs.</p>
 <p>Helpers are read from this host's Paseo, so they appear only for the host running this Mission Control. On other hosts, or on a Paseo that can't list them, the row shows separate agents only.</p>
-<p>In the agent tree (the <a href="#agents-panel">Agents panel</a>, the workspace page and the Mission panel), a sub-agent sits under its parent on a rail, and the parent's row counts its sub-agents and helpers. A separate agent's <strong>Started for</strong> line shows the prompt it was started with, and its task's number and title. A working agent on an online host shows <strong>Active now</strong> instead of its last-activity age; the info tip next to its state gives the time its current turn started.</p>
+<p>In the agent tree (the <a href="#agents-panel">Agents panel</a>, the workspace page and the Mission panel), a sub-agent sits under its parent on a rail, and the parent's row counts its sub-agents and helpers. A separate agent's <strong>Started for</strong> line shows the prompt it was started with, and its task's number and title. On Paseo 0.12 that prompt can be a message from the agent that started it; it's read the same way, and Attention's conversation steps name the agent a message came from. A working agent on an online host shows <strong>Active now</strong> instead of its last-activity age; the info tip next to its state gives the time its current turn started.</p>
 <div class="callout"><p><strong>Looking never wakes a stopped agent.</strong> Paseo restarts a stopped agent to read its chat or list its helpers, so Mission Control asks only about live agents, checking each one's status with Paseo first. For a stopped agent, press <span class="ui">Show what it was started for</span> to read it on purpose.</p></div>
 
 <!-- ============================================================ -->
@@ -634,6 +634,8 @@
   <li><span class="ui">Mark reviewed</span> ticks off a block, and <span class="ui">Mark file reviewed</span> a whole file; the header counts your progress. <span class="ui">Next to review</span> jumps to the next file.</li>
   <li><strong>Comments:</strong> tap a line number to comment on it, or use <span class="ui">Comment on file</span>. Comments collect as unsent, and you send them to the agent together once it's idle.</li>
   <li><strong>Slow hosts:</strong> where every Git command starts slowly (for example, security software inspecting each launch), Review keeps reading in the background. The bubble shows <span class="ui">Review · counting…</span> and the tab shows <span class="ui">READING CHANGES</span> until the scan finishes; workspaces on the same checkout share one scan. <span class="ui">Review · unavailable</span> means Mission Control itself couldn't be reached, for example during a plugin reload.</li>
+  <li><strong>A workspace opened at a subfolder</strong> of a repository is reviewed as the whole repository, with every path given from the repository's root. Preview, Discard and Reveal act on exactly the file listed, even when the subfolder and the root both have a file with that name.</li>
+  <li><strong>Paseo's own review comments:</strong> comments sent with <span class="ui">Send feedback</span> in Paseo 0.12's diff pane go straight to the agent and are kept by the app. They don't appear in Mission Control's Review, and Mission Control's comments don't appear there.</li>
 </ul>
 
 <!-- ============================================================ -->
@@ -677,6 +679,7 @@
   <figcaption>The Mission panel inside a workspace.</figcaption>
 </figure>
 <p>Inside any Paseo workspace with agents, the <span class="ui">Mission</span> button in the header opens the Mission tab in Paseo's right-hand panel. The button reads <strong>N need you</strong> when a prompt or decision is waiting. You can also type <code>/mission</code> in a chat.</p>
+<p><strong>On a phone</strong>, or in any window narrower than 720 pixels, Paseo 0.12 shows no plugin buttons in the header and has no right-hand panel. Each active chat there gets a <span class="ui">Mission</span> bubble above the message box instead, with the same count, and Mission opens as a tab. So do its <span class="ui">Open Review</span> and <span class="ui">Open Agents</span> links and <code>/mission</code>. This hasn't been checked on a phone yet.</p>
 <ul>
   <li><strong>Needs you:</strong> this workspace's permission prompts and decisions.</li>
   <li><strong>Tasks:</strong> compact title/status summaries, latest recorded update and next action, an icon to copy the task ID, <span class="ui">Task details</span> and the named run-agent shortcut.</li>
@@ -692,7 +695,7 @@
   <img src="screenshots/agents-panel.png" alt="The Agents panel with filter chips, a parent agent and its sub-agents on a rail">
   <figcaption>Every agent in the workspace as a tree, with its sub-agents under it. This earlier capture predates the cleanup broom.</figcaption>
 </figure>
-<p>A workspace panel that shows every agent working in the workspace, and what each one needs. To open it, add a new tab in a workspace's Explorer and pick <span class="ui">Agents</span>, or run <span class="ui">Open Agents</span> from the Command Center. A setting (off by default) opens it once for each new workspace. It's modelled on the Agent Crew plugin, and goes further.</p>
+<p>A workspace panel that shows every agent working in the workspace, and what each one needs. To open it, add a new tab in a workspace's Explorer and pick <span class="ui">Agents</span>, or run <span class="ui">Open Agents</span> from the Command Center; on a phone it opens as a tab. A setting (off by default) opens it once for each new workspace. It's modelled on the Agent Crew plugin, and goes further.</p>
 <ul>
   <li><strong>The tree:</strong> agents started by another agent sit under their parent on a collapsible rail, with a count of descendants. A sub-agent working in another workspace stays with its parent's group, and a parent from another workspace shows dimmed, for context. The header counts the agents and the <strong>crews</strong> (parents with sub-agents).</li>
   <li><strong>Each row:</strong> a state dot and label, the agent's name, provider and model, workspace, its Mission Control task and role, a one-line "where it's at", the last error if any, and how long ago it was active. Helpers that Claude runs inside a turn appear under their agent too.</li>
@@ -944,7 +947,7 @@
 <h2 id="troubleshooting">Troubleshooting and where things live</h2>
 <table>
   <tr><th style="width: 34%">Situation</th><th>What to do</th></tr>
-  <tr><td>A change to Mission Control doesn't show</td><td>Reload the plugin: Settings → Plugins → Mission Control → Reload, or <code>paseo plugin reload mission-control</code>. <code>paseo plugin logs mission-control</code> should end with "Plugin ready".</td></tr>
+  <tr><td>A change to Mission Control doesn't show</td><td>Reload the plugin: Settings → Plugins → Mission Control → Reload, or <code>paseo plugin reload mission-control</code>. <code>paseo plugin logs mission-control</code> should end with "Plugin ready". Before Paseo 0.12 the command can time out after 60 seconds while the reload still finishes, so check the log before trying again.</td></tr>
   <tr><td>A task is missing from the list</td><td>Its <code>task.md</code> may be invalid (for example criteria over 4,000 characters). The list skips it and shows a warning naming the file.</td></tr>
   <tr><td>Starting a task seems slow</td><td>Creating a worktree can take a minute. The panel shows "Starting the task…" and updates by itself.</td></tr>
   <tr><td>Merge refuses</td><td>Its message says why: files changed since approval (request a fresh review), the agent is busy, or the main checkout has uncommitted changes. Fix that and press Check again.</td></tr>
@@ -965,7 +968,7 @@
   <li>Task worktrees: Paseo's worktree folder, one per task, removed when the task is merged and cleaned up.</li>
 </ul>
 
-<footer>Mission Control user guide · roadmap and Review update October 1, 2026 · wider inventory refreshed September 30, 2026 · previous edition September 29, 2026, 6:12 PM Pacific. Current local checkout; Paseo 0.10.2 label behavior verified. Screenshots are embedded real captures with the coverage limits stated above. They contain real workspace/task information; check before sharing. No native-device verification is claimed.</footer>
+<footer>Mission Control user guide · Paseo 0.12 update October 19, 2026 (text only; no new screenshots) · roadmap and Review update October 1, 2026 · wider inventory refreshed September 30, 2026 · previous edition September 29, 2026, 6:12 PM Pacific. Current local checkout; Paseo 0.10.2 label behavior verified. Screenshots are embedded real captures with the coverage limits stated above. They contain real workspace/task information; check before sharing. No native-device verification is claimed.</footer>
 </main>
 </div>
 </body>

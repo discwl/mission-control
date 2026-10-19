@@ -10,6 +10,7 @@ import { AppModal as Modal } from "./app-modal";
 import { missionPreferences } from "../shared/preferences";
 import { missionSections, missionSectionLabels, moveMissionSection, normalizeMissionSections, type MissionSection } from "../shared/mission-sections";
 import { ScrollView, Text, View } from "react-native";
+import { listIncludingBackground } from "../shared/background";
 import { getMissionSummary } from "../shared/mission";
 import { getReviewCounts } from "../shared/review";
 import { listTaskRuns, type RunRecord } from "../shared/runs";
@@ -57,7 +58,7 @@ function Stepper({ run, colors }: { run: RunRecord; colors: Colors }) {
 }
 
 /** Mission tab for Paseo's right-hand panel: what needs you, task progress, review and agents for one workspace. */
-export function MissionPanel({ theme, host, workspaceId, navigation }: PluginWorkspacePanelProps) {
+export function MissionPanel({ theme, host, workspaceId, navigation, layout }: PluginWorkspacePanelProps) {
   const colors = theme.colors;
   const serverId = host.id;
   const settings = useSettings(missionPreferences);
@@ -80,6 +81,8 @@ export function MissionPanel({ theme, host, workspaceId, navigation }: PluginWor
     finally { writingOrder.current = false; setPendingOrder(null); }
   }
   const online = useHosts().some(candidate => candidate.serverId === serverId && candidate.status === "online");
+  // Paseo's compact (phone) layout has no Explorer, so the panels this one links to open as tabs there.
+  const panelPlace = layout.compact ? "workspace" : "explorer";
   const readSummary = useRpc(getMissionSummary);
   const readTasks = useRpc(listTasks);
   const readRuns = useRpc(listTaskRuns);
@@ -92,7 +95,8 @@ export function MissionPanel({ theme, host, workspaceId, navigation }: PluginWor
   const agentsQuery = useQuery({
     queryKey: ["mission-control", "mission-agents", serverId, workspaceId],
     queryFn: async (): Promise<PanelAgent[]> => {
-      const { entries } = await getPaseoClient(serverId).agents.list({ page: { limit: 200 } });
+      // A background workspace's agents are left out of Paseo 0.12's lists unless asked for.
+      const { entries } = await listIncludingBackground(serverId, {}, filter => getPaseoClient(serverId).agents.list({ filter, page: { limit: 200 } }));
       return entries.map(entry => entry.agent)
         .filter(agent => agent.workspaceId === workspaceId && !agent.archivedAt && agent.status !== "closed")
         .map(agent => ({ id: agent.id, name: agent.title || `${agent.provider} agent`, provider: agent.provider, status: agent.status, role: agent.labels["mission-control.role"] || null, parentAgentId: parentAgentIdOf(agent), permissions: agent.pendingPermissions ?? [], updatedAt: agent.updatedAt }))
@@ -188,7 +192,7 @@ export function MissionPanel({ theme, host, workspaceId, navigation }: PluginWor
         {review === null ? muted("Not a Git workspace, or its changes could not be read.") : null}
         {review ? <Text style={{ color: colors.foreground, fontSize: 13 }}>{review.files === 0 ? "No changes to review." : review.toReview ? `${review.toReview} of ${review.files} files to review` : `All ${review.files} files reviewed`}</Text> : null}
         {unsent || sent ? <Text style={{ color: unsent ? colors.accent : colors.foregroundMuted, fontSize: 12 }}>💬 {unsent} not sent · {sent} sent, waiting to be resolved</Text> : null}
-        {client ? link("Open Review →", () => client.openPanel(reviewPanelId, { workspaceId, location: "explorer" })) : null}
+        {client ? link("Open Review →", () => client.openPanel(reviewPanelId, { workspaceId, location: panelPlace })) : null}
       </Section>,
     agents: <AgentTree serverId={serverId} localServerId={localServerId} workspaceId={workspaceId} online={online} colors={colors} brief
       canNavigate={Boolean(navigation) && online} openAgent={openAgent}
@@ -197,7 +201,7 @@ export function MissionPanel({ theme, host, workspaceId, navigation }: PluginWor
           <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 14, fontWeight: "700", flex: 1 }}>Agents ({counts.agents})</Text>
           {renameAll}
           <CompactLink label={refreshing ? "Refreshing…" : "Refresh"} colors={colors} disabled={refreshing || !online} onPress={refresh} />
-          {client ? link("Open Agents →", () => client.openPanel(agentsPanelId, { workspaceId, location: "explorer" })) : null}
+          {client ? link("Open Agents →", () => client.openPanel(agentsPanelId, { workspaceId, location: panelPlace })) : null}
         </View>
         {muted(treeSummaryLine(counts))}
       </View>} />,

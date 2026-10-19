@@ -216,13 +216,13 @@ $ReviewPrompt = Get-Content -Raw (Join-Path $env:USERPROFILE '.opencodereview\re
 paseo run --workspace $WorkspaceId --provider claude $ReviewPrompt
 ```
 
-For Codex, replace `claude` with `codex`. A bare `paseo run` from a human shell creates a new local workspace, so retain `--workspace`. There is no verified `--profile` flag here. With the optional schema:
+For Codex, replace `claude` with `codex`. A bare `paseo run` from a human shell creates a new local workspace, so retain `--workspace`. On Paseo 0.12 or later, `paseo workspace ls` leaves out background workspaces; add `--background` if the workspace isn't listed (older versions reject that flag). There is no verified `--profile` flag here. With the optional schema:
 
 ```powershell
 paseo run --workspace $WorkspaceId --provider codex --output-schema (Join-Path $env:USERPROFILE '.opencodereview\review-output.schema.json') $ReviewPrompt
 ```
 
-Do not combine `--output-schema` with `--background`; Paseo disallows that combination. The initial UI/pasted-prompt path does not need the schema flag. [Paseo CLI](https://github.com/getpaseo/paseo/blob/v0.8.0/public-docs/cli.md)
+Do not combine `--output-schema` with `--no-wait` (`--background` before Paseo 0.12, still accepted with a deprecation warning); Paseo disallows that combination. Paseo 0.10 and 0.11 don't accept `--no-wait`. The initial UI/pasted-prompt path does not need the schema flag. [Paseo CLI](https://github.com/getpaseo/paseo/blob/v0.8.0/public-docs/cli.md)
 
 ## Confirm that it worked
 
