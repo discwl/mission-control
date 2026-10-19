@@ -18,7 +18,7 @@ type Listed = { available: boolean; helpers: Helper[] };
 const requestTimeoutMs = 8_000;
 
 /**
- * INTERNAL PASEO API: PaseoApi 0.9.1 can't list the helpers that run inside an agent's turn
+ * INTERNAL PASEO API: PaseoApi can't list the helpers that run inside an agent's turn (still true in 0.12)
  * (Claude Code's Agent tool), so this opens a short-lived DaemonClient to the local daemon, as
  * setAgentNameViaDaemon does. It may break when Paseo changes @getpaseo/client/internal/daemon-client;
  * the service then reports helpers as unavailable.

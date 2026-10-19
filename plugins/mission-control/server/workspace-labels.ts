@@ -158,7 +158,7 @@ export function hostLabelReads(paseo: Pick<PaseoApi, "workspaces" | "agents">) {
 }
 
 /**
- * INTERNAL PASEO API: PaseoApi 0.9.1 has no workspace labels, so this opens a short-lived DaemonClient against the
+ * INTERNAL PASEO API: PaseoApi has no workspace labels (still true in 0.12), so this opens a short-lived DaemonClient against the
  * local daemon, like the agent rename does. It may break when Paseo changes @getpaseo/client/internal/daemon-client.
  * Workspaces and agents are read through `paseo`, the host's own API, once a handler has supplied it.
  */

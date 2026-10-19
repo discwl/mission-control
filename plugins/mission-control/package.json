@@ -19,8 +19,8 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@getpaseo/client": "0.9.1",
-    "@getpaseo/plugin": "0.9.1",
+    "@getpaseo/client": "0.12.0",
+    "@getpaseo/plugin": "0.12.0",
     "@tanstack/react-query": "^5.90.11",
     "@types/node": "26.6.2",
     "@types/react": "~19.2.0",

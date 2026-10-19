@@ -82,7 +82,7 @@ export async function daemonServerId(home = paseoHome()): Promise<string> {
 }
 
 /**
- * INTERNAL PASEO API: PaseoApi 0.9.1 has no agent rename, so this opens a short-lived
+ * INTERNAL PASEO API: PaseoApi has no agent rename (still true in 0.12), so this opens a short-lived
  * DaemonClient against the local daemon and calls updateAgent (the call behind MCP
  * update_agent). It may break when Paseo changes @getpaseo/client/internal/daemon-client.
  */

@@ -20,7 +20,7 @@ export function refusesBackground(error: unknown): boolean {
 export async function listIncludingBackground<Filter extends object, Result>(host: string, filter: Filter, list: (filter: Filter) => Promise<Result>, now: () => number = Date.now): Promise<Result> {
   const refused = refusedAt.get(host);
   if (refused !== undefined && now() - refused < retryAfterMs) return list(filter);
-  // The SDK types Mission Control builds against predate the field.
+  // Filter is generic, so the added field needs the cast.
   try { return await list({ ...filter, includeBackground: true } as Filter); }
   catch (error) {
     if (!refusesBackground(error)) throw error;
