@@ -1,5 +1,53 @@
 # Paseo plugin references for Development Flow
 
+## Official marketplace review (19 October 2026)
+
+Paseo's official marketplace ([paseo.sh/plugins](https://paseo.sh/plugins), registry [getpaseo/plugins](https://github.com/getpaseo/plugins)) listed 311 plugins on 19 October 2026. 104 are only color themes, and well over 100 of the other 207 appeared after the September review below. All 207 were screened against Mission Control's features and about 70 were read in depth at their pinned commits. Nothing was installed or run, so the plugins' own Windows behavior is unverified.
+
+**The main gap.** Mission Control registers no lifecycle hooks. Since 0.9.1 the plugin SDK has had `agent.turn_started`, `agent.turn_ended`, `agent.permission_requested`, `agent.permission_resolved`, `agent.archived`, `agent.created`, `workspace.created` and `workspace.archived` events, and `before` hooks for `agent.create`, `agent.session_open` and `workspace.create`. Most of the strongest plugins are built on them, and the five planned items below need them.
+
+**Planned, in order:**
+
+| # | What to build | Ideas from | Effort |
+|---|---|---|---|
+| 1 | Lifecycle events feed a per-task ledger in the vault (working, waiting on you, failed), giving agent time, waiting time and rework per ticket. Attention flags stalls: a permission waiting too long, no activity for 10 minutes, the same command failing three times. A daily digest groups work as needs your call, landed, under way and next, with what changed since you last looked | Progress (stevecastaneda), Flowly (jasprw), Lific (lardissone), Beads Management (hieunt286), Firstmate (gpambrozio), PR Radar (omercnet) | M |
+| 2 | Evidence is checked against the commands actually run. When validation is recorded, find the last test or build command after the last edit and its exit code; show verified, unverified or contradicted; refuse In review when contradicted. Parse test-runner reports (JUnit, vitest, jest, tsc) and show acceptance criteria as claimed versus checked | Turn report (nkwib), Generative UI (anh-chu), Paseo SLP (duongvm57) | M–L |
+| 3 | Answering from the phone: up to four answer buttons on questions and decisions, with Ask back; a reply to a busy agent is queued on its host and sent once, when its turn ends; Dismiss hides a card until something about it changes | Firstmate, Beads Management, Project Notes (zhjiang22), Agent Observatory (zhjiang22), Flowly | M |
+| 4 | A wake service on this PC for orchestrators: persistent watches of each remote host, one combined note to the orchestrator when it's idle and something changed, catch-up after the PC wakes, and remote text fenced against prompt injection | Paseo Mesh (jtsang4), Firstmate, Cross Daemon (maxwell-01) | M |
+| 5 | Every new task agent gets its task ID and the workflow script on its PATH (a `.cmd` shim on Windows) through `agent.create` and `agent.session_open`, so every provider reports against the right task without relying on the prompt | Tasks (anh-chu), Progress | M |
+
+**Also planned:**
+
+- An agent whose last reply asks you a question shows in Attention, even when it didn't record the question with `dev-flow.mjs ask` (Session triage, sm1ee; ideas only).
+- Tracker write-back at delivery, after approval: the agent's own tracker tools move the ticket to In Review and comment the pull request link. Start passes a ticket's images to the agent (Lific; Kaneo, carlonoelle).
+- Merge and Open PR warn when another live task worktree changed the same files (Turn report).
+- Tools & skills shows what each provider loads for a project, with the reason and a token estimate (Customize, koinzhang).
+- Orchestrator tools as an MCP server that knows which agent called it, alongside `scripts/remote.mjs` (Paseo Mesh).
+
+**Quick wins:**
+
+- Start task copies gitignored files listed in `.worktreeinclude` into the new worktree before the agent starts (worktreeinclude, cprecioso).
+- Agent cleanup keeps agents whose background shell commands are still running (Background jobs, anh-chu), shows the disk space each archive would free (Thread Memory Manager; ideas only), and gains undo and a keep-the-latest-N rule (Conversation Manager; ideas only).
+- Morning check gets a per-project query for which tickets are yours, and tags items YOURS or REVIEW (Jira, tranhuywin; TAPD Workbench, casonmo).
+- Review shows the outcome the agent reported for each sent comment (Review Deck 2.0, mentalfl0w).
+
+**Declined:** resuming agents after a usage limit resets, with keep-awake (Usage Auto Resume, Keep Awake); Azure DevOps pull-request feedback in Attention (Ado, jegork); and listing Mission Control in the marketplace.
+
+**Not taken:**
+
+- Fallback providers on a limit (Continuity, Switch provider): large, and transcripts would go to another provider.
+- Reading stopped agents' history from provider log files (History): the formats are private.
+- Side questions to a running agent, turn recaps, and host memory per agent.
+- Telegram, which refuses to load on Paseo 0.12.
+- Cross Daemon, which must be installed on every host.
+- Free Your Agents, which rewrites provider launch commands.
+- Reopen archived, which switches Claude to bypass permissions.
+- Linear, Kaneo and TAPD boards, chat restylers, themes and account switchers.
+
+**Licensing.** Most sources are MIT. Tasks, Generative UI and Background jobs (anh-chu), Linear (ethanl06), Turn Changes, Host monitor and Secrets are Apache-2.0. Goal Mode, Session triage, Side Chat, Conversation Manager, Thread Memory Manager, JSON Render and Jira (tranhuywin) state no license, so take ideas from them, not code.
+
+## Paseo Cafe catalog review (19 September 2026)
+
 Reviewed 19 September 2026. Purpose: select references for a future control center spanning hosts, projects, agents, human decisions, and development runs. Hermes remains on hold.
 
 **The previous docs only covered this partially.** The older LFG build specification explicitly names Agent Monitor and Review Deck. The newer workflow-reference review concentrates on Compound Engineering, Superpowers, Factory, GSD Core, and OpenSpec. The start-here roadmap mentioned a future panel but did not identify the Paseo plugins to study. This review fills that gap.
