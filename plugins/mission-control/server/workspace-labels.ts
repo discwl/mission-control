@@ -3,7 +3,7 @@ import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { listIncludingBackground, ownHost } from "../shared/background";
+import { agentPageOrder, listIncludingBackground, ownHost } from "../shared/background";
 import type { TaskRecord } from "../shared/tasks";
 import {
   desiredWorkspaceStatuses, PAUSED_LABEL, workspaceStatusChanges, workspaceStatuses, workspaceStatusLabels,
@@ -153,7 +153,7 @@ function labelReads(
 export function hostLabelReads(paseo: Pick<PaseoApi, "workspaces" | "agents">) {
   return labelReads(
     page => listIncludingBackground(ownHost, {}, filter => paseo.workspaces.list({ filter, page })),
-    page => listIncludingBackground(ownHost, {}, filter => paseo.agents.list({ filter, page })),
+    page => listIncludingBackground(ownHost, {}, filter => paseo.agents.list({ filter, sort: agentPageOrder, page })),
   );
 }
 
@@ -173,7 +173,7 @@ export async function connectLabelClient(paseo: Pick<PaseoApi, "workspaces" | "a
   await client.connect();
   return {
     listLabels: async () => (await client.listWorkspaceLabels()).labels,
-    ...(paseo ? hostLabelReads(paseo) : labelReads(page => client.fetchWorkspaces({ page }), page => client.fetchAgents({ page }))),
+    ...(paseo ? hostLabelReads(paseo) : labelReads(page => client.fetchWorkspaces({ page }), page => client.fetchAgents({ sort: agentPageOrder, page }))),
     async setLabel(workspaceId, label, assigned) { await client.setWorkspaceLabel({ workspaceId, label, assigned }); },
     close: () => client.close(),
   };

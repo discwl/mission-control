@@ -11,7 +11,7 @@ import { test } from "node:test";
 const require = createRequire(import.meta.url);
 const ts = require("typescript");
 require.extensions[".ts"] = (module, file) => module._compile(ts.transpileModule(readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, file);
-const { createMergeService, localFilesInTheWay, reviewCandidate, startingBranch } = require("./merge.ts");
+const { createMergeService, localFilesInTheWay, reviewCandidate, startingBranch, undoFailedMergeWrite } = require("./merge.ts");
 const { deliverTaskSource } = require("./tasks.ts");
 const { mergeReadyTaskSchema, mergeReplySchema, mergeResultSchema, mergeStatusSchema } = require("../shared/merge.ts");
 const { deliveryResultSchema } = require("../shared/pull-request.ts");
@@ -32,7 +32,7 @@ const markdown = fields => `---\n${Object.entries(fields).map(([key, value]) => 
  * vault, and stand-ins for Paseo and the decision store. `review()` records a review decision of the
  * worktree as it is at that moment, the way dev-flow request-decision does.
  */
-async function scenario(t, { agentStatus = "idle", writeTimeoutMs, beforeMerge, afterBranchRead, replyWithinMs, deliver = deliverTaskSource, archive, deliveryMode } = {}) {
+async function scenario(t, { agentStatus = "idle", writeTimeoutMs, beforeMerge, afterBranchRead, replyWithinMs, deliver = deliverTaskSource, archive, deliveryMode, indexRetryWait } = {}) {
   const base = await realpath(await mkdtemp(join(tmpdir(), "mission-merge-")));
   // A stopped hook or merge driver can hold the folder open for a moment on Windows.
   t.after(() => rm(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }));
@@ -81,7 +81,7 @@ async function scenario(t, { agentStatus = "idle", writeTimeoutMs, beforeMerge, 
   const paseo = {
     agents: { ref: id => ({
       refresh: async () => { if (id !== "agent-1") throw new Error(`Agent not found: ${id}`); return { agent }; },
-      send: async text => { events.push(["send", text]); },
+      send: async (text, options) => { events.push(["send", text, options]); },
     }) },
     // Like Paseo, archiving a worktree workspace removes its worktree.
     workspaces: { ref: id => ({ archive: async () => { events.push(["archive", id]); if (archive) return archive(); git(repo, "worktree", "remove", worktree); return { archivedAt: "2026-09-26T00:00:00Z", error: null }; } }) },
@@ -97,7 +97,7 @@ async function scenario(t, { agentStatus = "idle", writeTimeoutMs, beforeMerge, 
     clearReviewMarks: async workspaceId => { events.push(["marks", workspaceId]); },
     deliver: async (item, line) => { events.push(["deliver"]); return deliver(item, line); },
     now: () => new Date("2026-09-26T12:00:00Z"),
-    writeTimeoutMs, beforeMerge, afterBranchRead, replyWithinMs,
+    writeTimeoutMs, beforeMerge, afterBranchRead, replyWithinMs, indexRetryWait,
   });
   const check = async () => mergeStatusSchema.parse(await service.check({ serverId, taskId }, paseo));
   // text: what the user confirmed in the dialog, such as { commitMessage }.
@@ -141,6 +141,8 @@ test("a clean merge commits the worktree, merges with --no-ff and cleans up", as
   // The note goes before the archive, which closes the workspace's agents, and after the steps it reports.
   assert.deepEqual(events.map(event => event[0]), ["marks", "deliver", "send", "archive"]);
   assert.match(events[2][1], /merged task .* into master as .*\. The task is marked delivered\. Next, Mission Control will archive this worktree workspace, which closes this agent, and delete task\/1234abcd-add-greeting; its merge result shows how that went\./);
+  // An agent that started a turn since the checks gets the note in that turn, not instead of it.
+  assert.deepEqual(events[2][2], { messageId: `merge-${taskId}-${result.mergeCommit}`, activeTurnBehavior: "steer" });
   assert.equal(existsSync(worktree), false);
   assert.equal(git(repo, "branch", "--list", branch), "");
   assert.match(await readFile(join(folder, "task.md"), "utf8"), /^status: "delivered"$/m);
@@ -438,6 +440,104 @@ async function mergeTimesOut(t) {
   assert.equal(git(repo, "rev-parse", "HEAD"), mainHead);
   assert.equal(git(repo, "status", "--porcelain"), "");
 }
+
+test("a commit or merge that finds Git's index busy waits and is tried again", async t => {
+  // Another program holding the index makes Git's writes fail until it lets go; an index.lock stands in for it.
+  const locks = [], waits = [];
+  let armed = false;
+  const hold = async lock => { await writeFile(lock, ""); locks.push(lock); };
+  const s = await scenario(t, {
+    afterBranchRead: async () => { if (armed) await hold(s.git(s.worktree, "rev-parse", "--path-format=absolute", "--git-path", "index.lock")); },
+    beforeMerge: () => hold(join(s.repo, ".git", "index.lock")),
+    indexRetryWait: async () => { waits.push(locks.length); for (const lock of locks.splice(0)) await rm(lock); },
+  });
+  await writeFile(join(s.worktree, "greeting.txt"), "hello\n");
+  await s.review();
+  const status = await s.check();
+  assert.deepEqual(failing(status), []);
+  armed = true;
+  const result = await s.merge(status.plan.fingerprint);
+  assert.equal(result.outcome, "merged", JSON.stringify(result));
+  // One wait for the commit and one for the merge, each after Git found index.lock taken.
+  assert.deepEqual(waits, [1, 1]);
+  assert.equal(s.git(s.repo, "rev-parse", "HEAD^2"), result.committed);
+  assert.equal(s.git(s.repo, "status", "--porcelain"), "");
+});
+
+test("an index that stays busy is reported with the merge Git left in progress, not as put back", async t => {
+  // Git still records a merge in progress when it can't take index.lock, and merge --abort needs the lock too.
+  let waits = 0;
+  const s = await scenario(t, { beforeMerge: () => writeFile(join(s.repo, ".git", "index.lock"), ""), indexRetryWait: async () => { waits++; } });
+  await writeFile(join(s.worktree, "greeting.txt"), "hello\n");
+  await s.review();
+  const mainHead = s.git(s.repo, "rev-parse", "HEAD");
+  const status = await s.check();
+  const result = await s.merge(status.plan.fingerprint);
+  assert.equal(result.outcome, "conflict", JSON.stringify(result));
+  assert.equal(result.state, "not-restored");
+  assert.match(result.detail, /^Git couldn't write its index, so task\/1234abcd-add-greeting wasn't merged: error: Unable to write index\. Another program, such as an indexer or an editor's Git view, probably had it open\. The main checkout isn't back to where it was \([0-9a-f]{7}, clean, no merge in progress\)\. Check it before doing anything else\. The task's uncommitted work stays committed on task\/1234abcd-add-greeting as [0-9a-f]{7}\.$/);
+  // The merge's wait, then three tries of merge --abort to undo it and three more to put the checkout back.
+  assert.equal(waits, 5);
+  assert.equal(s.git(s.repo, "rev-parse", "HEAD"), mainHead);
+  assert.equal(existsSync(join(s.repo, ".git", "MERGE_HEAD")), true);
+  assert.deepEqual(s.events, []);
+});
+
+test("a merge that wrote files but couldn't write Git's index is undone, only when every change is the task's", async t => {
+  const { repo, worktree, git } = await scenario(t);
+  await writeFile(join(repo, "gone.txt"), "old\n");
+  git(repo, "add", "gone.txt"); git(repo, "commit", "-q", "-m", "gone");
+  git(worktree, "merge", "-q", "master");
+  await writeFile(join(worktree, "base.txt"), "base\ntask\n");
+  await rm(join(worktree, "gone.txt"));
+  await mkdir(join(worktree, "docs"));
+  await writeFile(join(worktree, "docs", "added.txt"), "added\n");
+  git(worktree, "add", "-A"); git(worktree, "commit", "-q", "-m", "task");
+  const before = git(repo, "rev-parse", "HEAD"), tip = git(worktree, "rev-parse", "HEAD");
+  const options = { wait: async () => {} };
+  // What Git leaves when writing the index fails after it wrote the merged files: no commit and no MERGE_HEAD.
+  async function halfMerged(added = "added\n") {
+    await writeFile(join(repo, "base.txt"), "base\ntask\n");
+    await rm(join(repo, "gone.txt"), { force: true });
+    await mkdir(join(repo, "docs"), { recursive: true });
+    await writeFile(join(repo, "docs", "added.txt"), added);
+  }
+  async function untouched() {
+    assert.equal(await readFile(join(repo, "base.txt"), "utf8"), "base\ntask\n");
+    assert.equal(existsSync(join(repo, "gone.txt")), false);
+    assert.equal(existsSync(join(repo, "docs", "added.txt")), true);
+  }
+
+  // A change that isn't the task's: nothing is undone.
+  await halfMerged();
+  await writeFile(join(repo, "notes.txt"), "mine\n");
+  assert.equal(await undoFailedMergeWrite(repo, before, tip, options), false);
+  await untouched();
+  await rm(join(repo, "notes.txt"));
+  // An added file that isn't exactly the task's version: nothing is undone.
+  await halfMerged("changed since\n");
+  assert.equal(await undoFailedMergeWrite(repo, before, tip, options), false);
+  await untouched();
+  // A merge in progress with changes is a real one, for merge --abort.
+  await halfMerged();
+  await writeFile(join(repo, ".git", "MERGE_HEAD"), `${tip}\n`);
+  assert.equal(await undoFailedMergeWrite(repo, before, tip, options), false);
+  await untouched();
+  await rm(join(repo, ".git", "MERGE_HEAD"));
+
+  assert.equal(await undoFailedMergeWrite(repo, before, tip, options), true);
+  assert.equal(git(repo, "status", "--porcelain", "--untracked-files=all"), "");
+  assert.equal(await readFile(join(repo, "base.txt"), "utf8"), "base\n");
+  assert.equal(await readFile(join(repo, "gone.txt"), "utf8"), "old\n");
+  assert.equal(existsSync(join(repo, "docs", "added.txt")), false);
+  assert.equal(git(repo, "rev-parse", "HEAD"), before);
+
+  // Git found the index busy before writing anything, but still recorded a merge in progress: it's aborted.
+  await writeFile(join(repo, ".git", "MERGE_HEAD"), `${tip}\n`);
+  assert.equal(await undoFailedMergeWrite(repo, before, tip, options), true);
+  assert.equal(existsSync(join(repo, ".git", "MERGE_HEAD")), false);
+  assert.equal(git(repo, "status", "--porcelain", "--untracked-files=all"), "");
+});
 
 test("a busy agent, a moved checkout and an empty branch are refused", async t => {
   const busy = await scenario(t, { agentStatus: "running" });

@@ -58,6 +58,28 @@ async function gitOut(cwd: string, args: string[], options: GitOptions = {}) {
 const statusOf = (cwd: string, untracked: "no" | "normal" | "all") => gitOut(cwd, ["status", "--porcelain", "-z", `--untracked-files=${untracked}`], { trim: false });
 const nulList = (text: string) => text.split("\0").filter(Boolean);
 
+/**
+ * Git writes the index through index.lock. On Windows, another program that has the index open for a moment (an
+ * indexer, an editor's Git view) makes that fail with one of these errors, and the same write works a few seconds later.
+ */
+const indexBusy = /unable to write (new[ _])?index file|unable to write index\b|could not write (new )?index|unable to write [^\n]*[\\/]index\r?$|index\.lock'?: File exists/im;
+const indexTries = 3;
+const waitForIndex = () => new Promise<void>(resolve => setTimeout(resolve, 3_000));
+
+/**
+ * Runs a Git write up to three times while it fails only because the index was busy. After the wait, `undo` puts
+ * back whatever a failed try left (that may need the index too) and says whether trying again is safe; by default
+ * it is, as Git didn't write anything.
+ */
+async function retryWhileIndexBusy(write: () => Promise<Git>, wait: () => Promise<void>, undo: () => Promise<boolean> = async () => true): Promise<Git> {
+  for (let tries = 1; ; tries++) {
+    const result = await write();
+    if (result.code === 0 || tries === indexTries || !indexBusy.test(result.stderr)) return result;
+    await wait();
+    if (!(await undo())) return result;
+  }
+}
+
 const samePath = (a: string, b: string) => (process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b);
 const short = (commit: string) => commit.slice(0, 7);
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
@@ -188,12 +210,61 @@ async function removeMergeTempFiles(cwd: string, since: number) {
 }
 
 /**
+ * Puts the main checkout back after a merge that found Git's index busy, so it can be tried again. Git fails in one
+ * of two ways then. Before writing anything, it still records a merge in progress (MERGE_HEAD) with no changes, which
+ * merge --abort clears. After writing the merged files, it records nothing: the checkout was clean before the merge,
+ * so its changes are the merge's own, but only changes to the task's files are undone. Tracked files go back to HEAD,
+ * and a file the merge added is deleted when it holds exactly the task's version. False, with nothing undone, when
+ * anything else changed; true once the checkout is clean again with no merge in progress.
+ */
+export async function undoFailedMergeWrite(main: string, before: string, tip: string, options: { wait?: () => Promise<void>; timeoutMs?: number } = {}): Promise<boolean> {
+  const { wait = waitForIndex, timeoutMs } = options;
+  const inProgress = async () => Boolean(await gitOut(main, ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"], { acceptable: [0, 1] }));
+  const unrecorded = async () => (await gitOut(main, ["rev-parse", "HEAD"])) === before && !(await inProgress());
+  if ((await gitOut(main, ["rev-parse", "HEAD"])) !== before) return false;
+  const status = await statusOf(main, "all");
+  if (await inProgress()) {
+    if (status) return false;
+    const aborted = await retryWhileIndexBusy(() => git(main, ["merge", "--abort"], { timeout: timeoutMs }), wait);
+    return aborted.code === 0 && (await unrecorded()) && !(await statusOf(main, "normal"));
+  }
+  if (!status) return true;
+  const mergeBase = await gitOut(main, ["merge-base", before, tip]);
+  const taskFiles = new Set(nulList(await gitOut(main, ["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", mergeBase, tip])));
+  const restore: string[] = [];
+  const added: string[] = [];
+  for (const entry of nulList(status)) {
+    const path = entry.slice(3);
+    // The index write failed, so only the files changed, and only the task's.
+    if (!taskFiles.has(path)) return false;
+    if (entry.startsWith("??")) added.push(path);
+    else if (entry[0] === " " && "MDT".includes(entry[1])) restore.push(path);
+    else return false;
+  }
+  // An added file must hold exactly the task's version, as `git add` would store it.
+  for (let index = 0; index < added.length; index += 100) {
+    const batch = added.slice(index, index + 100);
+    const local = await git(main, ["hash-object", "--", ...batch]);
+    const task = await git(main, ["rev-parse", ...batch.map(path => `${tip}:${path}`)]);
+    if (local.code !== 0 || task.code !== 0 || local.stdout.trim().split(/\r?\n/).join("\n") !== task.stdout.trim().split(/\r?\n/).join("\n")) return false;
+  }
+  // --worktree alone leaves the index as it is.
+  for (let index = 0; index < restore.length; index += 100) {
+    const batch = restore.slice(index, index + 100);
+    const restored = await retryWhileIndexBusy(() => git(main, ["restore", "--source=HEAD", "--worktree", "--", ...batch], { env: { GIT_LITERAL_PATHSPECS: "1" }, timeout: timeoutMs }), wait);
+    if (restored.code !== 0) return false;
+  }
+  for (const path of added) await unlink(join(main, path));
+  return (await unrecorded()) && !(await statusOf(main, "normal"));
+}
+
+/**
  * Commits a worktree's uncommitted work (`git add -A`, then commit with `message`); on any failure or time-out
  * the index is restored byte for byte. The commit must hold exactly `tree`, the checked (and reviewed) files.
- * `nothingDone` ends each refusal, such as "Nothing was merged."
+ * `nothingDone` ends each refusal, such as "Nothing was merged." A busy index is waited for with `indexRetryWait`.
  */
-export async function commitTaskWork(directory: string, options: { message: string; branch: string; tree: string; timeoutMs: number; nothingDone: string }): Promise<{ committed: string } | { refused: string }> {
-  const { message, branch, tree, timeoutMs, nothingDone } = options;
+export async function commitTaskWork(directory: string, options: { message: string; branch: string; tree: string; timeoutMs: number; nothingDone: string; indexRetryWait?: () => Promise<void> }): Promise<{ committed: string } | { refused: string }> {
+  const { message, branch, tree, timeoutMs, nothingDone, indexRetryWait = waitForIndex } = options;
   const before = await gitOut(directory, ["rev-parse", "HEAD"]);
   // The worktree's staging area, byte for byte, so a failed commit can put it back exactly.
   const index = resolve(directory, await gitOut(directory, ["rev-parse", "--git-path", "index"]));
@@ -204,8 +275,11 @@ export async function commitTaskWork(directory: string, options: { message: stri
     const started = Date.now();
     let failed: string | null = null;
     try {
-      const added = await git(directory, ["add", "-A"], { timeout: timeoutMs });
-      const commit = added.code === 0 ? await git(directory, ["commit", "--quiet", "-m", message], { timeout: timeoutMs }) : added;
+      // A write that found the index busy changed nothing, unless the commit was made anyway.
+      const write = (args: string[]) => retryWhileIndexBusy(() => git(directory, args, { timeout: timeoutMs }), indexRetryWait,
+        async () => (await gitOut(directory, ["rev-parse", "HEAD"])) === before);
+      const added = await write(["add", "-A"]);
+      const commit = added.code === 0 ? await write(["commit", "--quiet", "-m", message]) : added;
       if (commit.code !== 0) failed = `Couldn't commit the task's uncommitted work: ${commit.stderr || commit.stdout.trim() || "git commit failed"}.`;
     } catch (error) {
       if (!(error instanceof GitStopped)) throw error;
@@ -283,6 +357,8 @@ type Deps = {
   now?: () => Date;
   // How long a commit or merge may run before it is stopped and undone.
   writeTimeoutMs?: number;
+  // The wait before a commit, merge or abort that found Git's index busy is tried again; 3 s unless a test replaces it.
+  indexRetryWait?: () => Promise<void>;
   // How long start() waits for the merge before replying that it is still running.
   replyWithinMs?: number;
   // Tests only: runs after the checks and any commit, just before `git merge`.
@@ -315,6 +391,7 @@ export type EvaluateMode = { kind: "merge" } | { kind: "pull-request"; targetBra
 export function createMergeService(deps: Deps) {
   const readRuns = deps.runs ?? runRecordsOf;
   const writeTimeout = deps.writeTimeoutMs ?? 120_000;
+  const indexRetryWait = deps.indexRetryWait ?? waitForIndex;
   const replyWithin = deps.replyWithinMs ?? replyWithinMs;
   const results = deps.results ?? createDeliveryResults();
   const running = new Set<string>();
@@ -545,7 +622,7 @@ export function createMergeService(deps: Deps) {
     return { tasks: tasks.sort((a, b) => (a.approvedAt ?? "").localeCompare(b.approvedAt ?? "")), warning };
   }
 
-  const commitWork = (directory: string, plan: MergePlan, tree: string, message: string) => commitTaskWork(directory, { message, branch: plan.taskBranch, tree, timeoutMs: writeTimeout, nothingDone: "Nothing was merged." });
+  const commitWork = (directory: string, plan: MergePlan, tree: string, message: string) => commitTaskWork(directory, { message, branch: plan.taskBranch, tree, timeoutMs: writeTimeout, nothingDone: "Nothing was merged.", indexRetryWait });
 
   async function mergeLocked(input: MergeInput, paseo: PaseoApi, report: (step: string) => void): Promise<MergeResult> {
     const evaluation = await evaluate(input.serverId, input.taskId, paseo);
@@ -568,7 +645,9 @@ export function createMergeService(deps: Deps) {
       report("Unstaging changes that were undone in the files");
       try {
         for (let index = 0; index < evaluation.undone.length; index += 100) {
-          await gitOut(plan.worktreeDirectory, ["reset", "--quiet", "--", ...evaluation.undone.slice(index, index + 100)], { acceptable: [0, 1], env: { GIT_LITERAL_PATHSPECS: "1" }, timeout: writeTimeout });
+          const batch = evaluation.undone.slice(index, index + 100);
+          const unstaged = await retryWhileIndexBusy(() => git(plan.worktreeDirectory!, ["reset", "--quiet", "--", ...batch], { env: { GIT_LITERAL_PATHSPECS: "1" }, timeout: writeTimeout }), indexRetryWait);
+          if (unstaged.code !== 0 && unstaged.code !== 1) throw new Error(unstaged.stderr || "git reset failed");
         }
       } catch (error) {
         return { outcome: "refused", reason: `Couldn't unstage ${listed(evaluation.undone, 10)}, whose content already matches ${plan.taskBranch}: ${failure(error)}. Your files are unchanged. Nothing was merged.`, checks: status.checks };
@@ -587,9 +666,16 @@ export function createMergeService(deps: Deps) {
     let merged: Git | null = null;
     let stopped: GitStopped | null = null;
     await deps.beforeMerge?.();
+    // A merge that found the index busy may have written files without recording anything; they go back first.
+    const undoWrite = () => undoFailedMergeWrite(main, before, tip, { wait: indexRetryWait, timeoutMs: writeTimeout }).catch(() => false);
     // The exact commit the checks approved, not the branch name: a commit added to the branch since then isn't merged.
-    try { merged = await git(main, ["merge", "--no-ff", "--no-edit", "--no-autostash", "-m", plan.mergeMessage, "-m", `Task ${input.taskId}.`, tip], { timeout: writeTimeout }); }
-    catch (error) {
+    try {
+      merged = await retryWhileIndexBusy(() => git(main, ["merge", "--no-ff", "--no-edit", "--no-autostash", "-m", plan.mergeMessage, "-m", `Task ${input.taskId}.`, tip], { timeout: writeTimeout }), indexRetryWait, async () => {
+        if (!(await undoWrite())) return false;
+        report(`Merging into ${plan.targetBranch} again: another program had Git's index open`);
+        return true;
+      });
+    } catch (error) {
       if (!(error instanceof GitStopped)) throw error;
       stopped = error;
       // Git may still be merging: don't release its lock, abort or reset on a guess. Report the state as unknown.
@@ -604,17 +690,21 @@ export function createMergeService(deps: Deps) {
     const done = !mergeHead && after !== before && (await parentsOf(main, after)).join(" ") === `${before} ${tip}`;
     if (!done) {
       const files = nulList(await gitOut(main, ["diff", "--name-only", "--diff-filter=U", "-z"]));
-      if (mergeHead) await git(main, ["merge", "--abort"], { timeout: writeTimeout });
+      const busyIndex = !stopped && !files.length && indexBusy.test(merged?.stderr ?? "");
+      if (mergeHead) await retryWhileIndexBusy(() => git(main, ["merge", "--abort"], { timeout: writeTimeout }), indexRetryWait);
       // Git stopped mid-merge before recording it: the checkout was clean, so its changes are the merge's own.
-      else if (stopped && after === before && (await statusOf(main, "no"))) await git(main, ["reset", "--merge", "--quiet"], { timeout: writeTimeout });
+      else if (stopped && after === before && (await statusOf(main, "no"))) await retryWhileIndexBusy(() => git(main, ["reset", "--merge", "--quiet"], { timeout: writeTimeout }), indexRetryWait);
+      else if (busyIndex) await undoWrite();
       if (stopped) await removeMergeTempFiles(main, started);
-      const restored = (await gitOut(main, ["rev-parse", "HEAD"])) === before && !(await statusOf(main, "normal"));
+      const stillMerging = Boolean(await gitOut(main, ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"], { acceptable: [0, 1] }));
+      const restored = (await gitOut(main, ["rev-parse", "HEAD"])) === before && !(await statusOf(main, "normal")) && !stillMerging;
       const kept = committed ? ` The task's uncommitted work stays committed on ${plan.taskBranch} as ${short(committed)}.` : "";
       const reason = stopped ? `Merging ${plan.taskBranch} into ${plan.targetBranch} stopped: ${stopped.message}.`
         : files.length ? `Merging ${plan.taskBranch} into ${plan.targetBranch} conflicts in ${plural(files.length, "file")}.`
-          : `Git couldn't merge ${plan.taskBranch}: ${merged?.stderr || merged?.stdout.trim() || "unknown error"}.`;
-      const detail = restored ? `${reason} The merge was aborted and ${plan.targetBranch} is as it was.${kept}`
-        : `${reason} The main checkout isn't back to where it was (${short(before)}, clean). Check it before doing anything else.${kept}`;
+          : busyIndex ? `Git couldn't write its index, so ${plan.taskBranch} wasn't merged: ${merged?.stderr.replace(/\.$/, "")}. Another program, such as an indexer or an editor's Git view, probably had it open.`
+            : `Git couldn't merge ${plan.taskBranch}: ${merged?.stderr || merged?.stdout.trim() || "unknown error"}.`;
+      const detail = restored ? `${reason} The merge was aborted and ${plan.targetBranch} is as it was.${busyIndex ? " Try again in a moment." : ""}${kept}`
+        : `${reason} The main checkout isn't back to where it was (${short(before)}, clean${stillMerging ? ", no merge in progress" : ""}). Check it before doing anything else.${kept}`;
       return { outcome: "conflict", state: restored ? "aborted" : "not-restored", files, committed, detail };
     }
 
@@ -646,7 +736,8 @@ export function createMergeService(deps: Deps) {
       const next = moved
         ? `${plan.taskBranch} gained ${plural(newer, "commit")} after the checks that ${newer === 1 ? "wasn't" : "weren't"} merged, so this worktree workspace and its branch are kept.`
         : `Next, Mission Control will archive this worktree workspace, which closes this agent, and delete ${plan.taskBranch}; its merge result shows how that went.`;
-      await paseo.agents.ref(plan.agentId).send(`Mission Control merged task ${input.taskId} (${plan.taskTitle}) into ${plan.targetBranch} as ${short(after)}. ${delivered} ${next} Nothing more is needed; please don't change anything.`, { messageId: `merge-${input.taskId}-${after}` });
+      // An agent that started a turn since the checks gets the note in that turn instead of having it cut short.
+      await paseo.agents.ref(plan.agentId).send(`Mission Control merged task ${input.taskId} (${plan.taskTitle}) into ${plan.targetBranch} as ${short(after)}. ${delivered} ${next} Nothing more is needed; please don't change anything.`, { messageId: `merge-${input.taskId}-${after}`, activeTurnBehavior: "steer" });
       return "Sent a short note that the task was merged.";
     });
     await step("Archive worktree workspace", async () => {

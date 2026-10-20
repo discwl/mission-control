@@ -156,8 +156,8 @@ test("through the host's own Paseo API, background workspaces and their agents a
       reads.push(["workspaces", filter, request.cursor ?? null]);
       return request.cursor ? page([{ id: "wks_background", labels: ["Review"], background: true }], null) : page([{ id: "wks_main" }], "next");
     } },
-    agents: { async list({ filter, page: request }) {
-      reads.push(["agents", filter, request.cursor ?? null]);
+    agents: { async list({ filter, sort, page: request }) {
+      reads.push(["agents", filter, request.cursor ?? null, sort]);
       return page([{ agent: { workspaceId: "wks_background", status: "running", updatedAt: "t1", labels: {} } }, { agent: { workspaceId: "wks_main", status: "idle", updatedAt: "t2", labels: {}, archivedAt: "t3" } }], null);
     } },
   };
@@ -165,6 +165,8 @@ test("through the host's own Paseo API, background workspaces and their agents a
   assert.deepEqual([...(await host.activeWorkspaces())], [["wks_main", []], ["wks_background", ["Review"]]]);
   assert.deepEqual(await host.agents(), [{ workspaceId: "wks_background", status: "running", updatedAt: "t1", labels: {} }], "archived agents are left out");
   assert.deepEqual(reads.map(([kind, filter, cursor]) => [kind, filter.includeBackground, cursor]), [["workspaces", true, null], ["workspaces", true, "next"], ["agents", true, null]]);
+  // Agents are paged by creation time, which never changes, so none moves past the cursor between pages.
+  assert.deepEqual(reads.at(-1)[3], [{ key: "created_at", direction: "desc" }]);
 });
 
 test("applied statuses round-trip through the plugin data file and ignore unknown values", async () => {

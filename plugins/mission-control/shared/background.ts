@@ -9,6 +9,12 @@ const refusedAt = new Map<string, number>();
 /** The refusal key for lists through the installation's own host: the client's `paseo`, or a handler's. */
 export const ownHost = "own-host";
 
+/**
+ * The order agent lists are paged in. An agent's creation time never changes, so between pages no agent can move past
+ * the cursor and be skipped or listed twice. Paseo 0.12 pages its own agent lists this way.
+ */
+export const agentPageOrder: { key: "created_at"; direction: "desc" }[] = [{ key: "created_at", direction: "desc" }];
+
 export function refusesBackground(error: unknown): boolean {
   return /update the host to use background workspaces/i.test(error instanceof Error ? error.message : String(error));
 }

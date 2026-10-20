@@ -69,13 +69,23 @@ export type SmallModelRequest = {
 /** Runs one short-lived agent in `workspaceId`, returns its final answer's text, then archives it. */
 export async function askSmallModel(paseo: PaseoApi, workspaceId: string, model: SmallModel, request: SmallModelRequest): Promise<string> {
   const modeId = await modeFor(paseo, model.provider);
-  const agent = await paseo.workspaces.ref(workspaceId).agents.create({
-    config: { provider: model.provider, systemPrompt: request.systemPrompt, ...(modeId ? { modeId } : {}), ...(model.thinkingOptionId ? { thinkingOptionId: model.thinkingOptionId } : {}) },
-    title: request.title,
-    prompt: request.prompt,
-    outputSchema: request.outputSchema,
-    labels: { "mission-control.role": request.role },
-  });
+  // Mission Control's own ID, so an agent that Paseo 0.11 and older leave behind when create fails can still be
+  // archived. Where there's no crypto.randomUUID (some app runtimes), Paseo picks the ID.
+  const agentId = globalThis.crypto?.randomUUID?.();
+  let agent;
+  try {
+    agent = await paseo.workspaces.ref(workspaceId).agents.create({
+      ...(agentId ? { agentId } : {}),
+      config: { provider: model.provider, systemPrompt: request.systemPrompt, ...(modeId ? { modeId } : {}), ...(model.thinkingOptionId ? { thinkingOptionId: model.thinkingOptionId } : {}) },
+      title: request.title,
+      prompt: request.prompt,
+      outputSchema: request.outputSchema,
+      labels: { "mission-control.role": request.role },
+    });
+  } catch (error) {
+    if (agentId) await paseo.agents.ref(agentId).archive().catch(() => undefined);
+    throw error;
+  }
   try {
     const result = await agent.waitForFinish(request.timeoutMs ?? 180_000);
     if (result.status !== "idle") throw new Error(result.error || (result.status === "permission" ? `The ${request.noun} asked for a permission. Nothing was changed.` : `The ${request.noun} stopped (${result.status}).`));

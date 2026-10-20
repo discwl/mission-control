@@ -1,4 +1,5 @@
 import type { PaseoAgentPermissionResponse, PaseoApi } from "@getpaseo/client";
+import { answerPermission, unconfirmedAnswer } from "./permission-answer";
 import type { PermissionRequest } from "./permission-detail";
 
 export type NativeQuestion = {
@@ -101,6 +102,7 @@ export async function respondToNativeQuestion(paseo: PaseoApi, serverId: string,
     const pending = current.pendingPermissions.find(item => item.id === request.id);
     if (!pending) throw new Error("This question is no longer waiting for an answer. It may have been answered in chat.");
     if (questionRequestVersion(pending) !== questionRequestVersion(request)) throw new Error("The questions changed. Review the updated questions before submitting.");
-    await agent.respondToPermission({ requestId: request.id, response });
+    // The card keeps the answers when this throws, so they can be sent again.
+    if ((await answerPermission(agent, request.id, response)) === "pending") throw new Error(unconfirmedAnswer);
   } finally { submissions.delete(key); }
 }

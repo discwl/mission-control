@@ -1,4 +1,5 @@
 import { CompactLink } from "./compact-link";
+import { answerPermission, unconfirmedAnswer } from "./permission-answer";
 import { PermissionQuestionCard } from "./permission-question-card";
 import { questionRequestVersion } from "./permission-questions";
 import { getPaseoClient, type PluginSurfaceProps } from "@getpaseo/plugin/client";
@@ -38,13 +39,12 @@ export function PermissionCard({ serverId, agentId, agentName, place, task, open
     setBusy(true);
     setError(null);
     try {
-      await getPaseoClient(serverId).agents.ref(agentId).respondToPermission({
-        requestId: request.id,
-        response: choice.behavior === "allow"
-          ? { behavior: "allow", ...(choice.id ? { selectedActionId: choice.id } : {}) }
-          : { behavior: "deny", ...(choice.id ? { selectedActionId: choice.id } : {}) },
-      });
+      // Waits until Paseo no longer lists the prompt, so a lost answer shows as such instead of as done.
+      const outcome = await answerPermission(getPaseoClient(serverId).agents.ref(agentId), request.id, choice.behavior === "allow"
+        ? { behavior: "allow", ...(choice.id ? { selectedActionId: choice.id } : {}) }
+        : { behavior: "deny", ...(choice.id ? { selectedActionId: choice.id } : {}) });
       void queryClient.invalidateQueries({ queryKey: ["mission-control"] });
+      if (outcome === "pending") setError(unconfirmedAnswer);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally { setBusy(false); }

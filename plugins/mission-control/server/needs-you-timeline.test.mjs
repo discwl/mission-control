@@ -8,11 +8,11 @@ require.extensions[".ts"] = (module, file) => module._compile(ts.transpileModule
 const { createNeedsYouTimeline } = require("./needs-you-timeline.ts");
 const question = (overrides = {}) => ({ question: { serverId: "local", workspaceId: "work", agentId: "agent", questionId: "question-1", status: "open", askedAt: "2026-10-01T10:00:00Z", ...overrides } });
 function fixture(overrides = {}) {
-  const rows = [], reads = [];
+  const rows = [], reads = [], appends = [];
   const agent = { workspaceId: "work", status: "idle", pendingPermissions: [], lastUserMessageAt: "2026-10-01T09:00:00Z", ...overrides };
-  let fail = false;
-  const paseo = { agents: { ref: agentId => ({ refresh: async () => { reads.push(agentId); return { agent }; }, timeline: { append: async row => { if (fail) throw new Error("append unavailable"); rows.push({ agentId, row }); } } }) } };
-  return { rows, reads, agent, paseo, service: createNeedsYouTimeline(async () => "local"), fail: value => { fail = value; } };
+  let fail = false, clock = 0;
+  const paseo = { agents: { ref: agentId => ({ refresh: async () => { reads.push(agentId); return { agent }; }, timeline: { append: async row => { appends.push(row.id); if (fail) throw new Error(typeof fail === "string" ? fail : "append unavailable"); rows.push({ agentId, row }); } } }) } };
+  return { rows, reads, appends, agent, paseo, service: createNeedsYouTimeline(async () => "local", () => clock), fail: value => { fail = value; }, advance: ms => { clock += ms; } };
 }
 test("existing questions are published without sending or waking a worker, once across concurrent reads", async () => {
   const f = fixture();
@@ -40,13 +40,31 @@ test("wrong host, moved, archived, closed, answered and native permission reques
   await f.service.questions([question({ serverId: "remote" }), question({ status: "answered" })], f.paseo);
   assert.deepEqual(f.reads, []);
 });
-test("append failures leave Attention usable and can be retried", async t => {
+test("append failures leave Attention usable and are retried after a wait", async t => {
   t.mock.method(console, "warn", () => {});
   const f = fixture(); f.fail(true);
   await f.service.questions([question()], f.paseo);
   f.fail(false);
   await f.service.questions([question()], f.paseo);
+  assert.equal(f.rows.length, 0, "not tried again on the next poll");
+  f.advance(60_000);
+  await f.service.questions([question()], f.paseo);
   assert.equal(f.rows.length, 1);
+});
+test("an agent Paseo hasn't loaded since a restart is retried after growing waits and logged once", async t => {
+  const warnings = [];
+  t.mock.method(console, "warn", message => warnings.push(message));
+  const f = fixture(); f.fail("Request failed: Unknown agent 'agent' requestType=agent.timeline.append.request code=handler_error");
+  // Polls every 15 seconds for 10 minutes: tries at 0, 1, 3 and 7 minutes.
+  for (let second = 0; second < 600; second += 15) { await f.service.questions([question()], f.paseo); f.advance(15_000); }
+  assert.equal(f.appends.length, 4);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /Unknown agent .* \(trying again in 1 min\)$/);
+  // Once someone opens the chat the agent loads, and the next try publishes the row.
+  f.fail(false); f.advance(8 * 60_000);
+  await f.service.questions([question()], f.paseo);
+  assert.equal(f.rows.length, 1);
+  assert.equal(warnings.length, 1);
 });
 test("plan and review use decision identities and never publish resolved or unlinked requests", async () => {
   const f = fixture();

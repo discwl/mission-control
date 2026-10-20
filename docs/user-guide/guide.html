@@ -565,6 +565,7 @@
 
 <h3 id="prompts">Permission prompts</h3>
 <p>When an agent needs permission for a tool, the prompt appears here with the task line, where the agent is (its latest message), and a <strong>Wants to</strong> line in plain words, for example the command it wants to run. The buttons are the agent's own choices (for example allow once, allow always, or deny), and <span class="ui">Details</span> shows the full command. Prompts also appear in the <a href="#mission-panel">Mission panel</a> of the agent's workspace.</p>
+<p>After you choose, Mission Control waits until Paseo no longer lists the prompt, so an answer lost on the way doesn't look answered. If the prompt is still waiting after 15 seconds, the card says so and keeps your choice; try again, or open the agent.</p>
 
 <h3 id="merge">Ready to deliver</h3>
 <p>A task whose review you approved, and which ran in its own worktree, appears under <strong>Ready to deliver</strong>. Until it's delivered, its changes live only on the task's own branch. How it's delivered depends on its project's <a href="#delivery">Delivery setting</a>: <span class="ui">Merge</span> into your main checkout for personal projects, or <span class="ui">Open PR</span> for work repositories.</p>
@@ -578,7 +579,7 @@
   <li>Commits the task's changes on its branch.</li>
   <li>Merges that branch into master, keeping a merge commit.</li>
   <li>Archives the task's workspace and deletes its branch.</li>
-  <li>Marks the task delivered and tells its agent.</li>
+  <li>Marks the task delivered and tells its agent. If the agent started working again after the checks, the note joins what it's doing instead of interrupting it.</li>
 </ol>
 <p>The commit message follows the repository's own conventions. When its <code>paseo.json</code> has commit message instructions (the same ones Paseo's Commit button uses, such as Conventional Commits), a small, fast model writes the message from the task's title, ticket and handoff summary. The confirmation shows it, and you can edit it before anything is committed. Without instructions, or if writing fails, the message is the task's title and ID.</p>
 <p>Before anything happens, it checks that it's safe, and says exactly why if it isn't:</p>
@@ -599,6 +600,7 @@
   <figcaption>A longer merge carries on in the background; you can close the dialog.</figcaption>
 </figure>
 <p>If Git reports a conflict, Merge undoes it and leaves master as it was. It shows <strong>Merge needs you</strong> with the conflicting files; the task's work stays committed on its branch, ready for you (or the coordinator) to merge by hand. Merge never pushes, rewrites history or touches other branches.</p>
+<p>On Windows, another program (such as an indexer or an editor's Git view) sometimes holds Git's index for a moment, and Git then can't write it. The commit, the merge and its undo wait a few seconds and try again, up to three times. A merge that left files behind is put back first, but only when every change is the task's own. If Git still can't write the index, the result card says so; when the main checkout couldn't be put back either, it says what's left to check.</p>
 <div class="callout"><p><strong>After merging Mission Control itself,</strong> reload the plugin (Settings → Plugins → Reload) to see the changes.</p></div>
 
 <h4>Open PR</h4>
@@ -774,6 +776,7 @@
   <li>It writes a report to <code>C:\dev-vault\Daily</code>, and also reviews yesterday's handoffs, open decisions, and blocked or idle tasks.</li>
   <li>Tick the items you want and press <span class="ui">Import selected into Mission Control</span>. Each becomes an Inbox task titled <code>KEY · title</code>, with the ticket's criteria and a link back. Importing the same item twice doesn't create a duplicate.</li>
 </ol>
+<p>If the agent can't start, for example because the model isn't available, the line under the button says <strong>couldn't start</strong> with Paseo's reason.</p>
 <div class="callout"><p><strong>Where it runs.</strong> Jira and Azure DevOps are connected on your work hosts, so real imports need Mission Control on those hosts. <span class="ui">Use test fixture</span> runs the same flow with sample items.</p></div>
 
 <!-- ============================================================ -->

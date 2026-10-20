@@ -2,7 +2,7 @@ import type { PaseoAgentListResult } from "@getpaseo/client";
 import { getPaseoClient } from "@getpaseo/plugin/client";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
-import { listIncludingBackground } from "../shared/background";
+import { agentPageOrder, listIncludingBackground } from "../shared/background";
 import { createLiveRosters } from "./live-roster";
 import { lookUpMissingParents, toAgent, toWorkspace, type Roster } from "./roster-model";
 
@@ -17,7 +17,7 @@ async function readAgents(serverId: string, paseo: ReturnType<typeof getPaseoCli
   const entries: PaseoAgentListResult["entries"] = [];
   let cursor: string | undefined;
   for (let page = 0; page < AGENT_PAGES; page++) {
-    const result = await listIncludingBackground(serverId, {}, filter => paseo.agents.list({ filter, page: { limit: 200, ...(cursor ? { cursor } : {}) } }));
+    const result = await listIncludingBackground(serverId, {}, filter => paseo.agents.list({ filter, sort: agentPageOrder, page: { limit: 200, ...(cursor ? { cursor } : {}) } }));
     entries.push(...result.entries);
     cursor = result.pageInfo.hasMore ? result.pageInfo.nextCursor ?? undefined : undefined;
     if (!cursor) return { entries, hasMore: false };

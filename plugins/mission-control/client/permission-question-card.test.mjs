@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { test } from "node:test";
-import * as questions from "./permission-questions.ts";
-import * as detail from "./permission-detail.ts";
 
 const require = createRequire(import.meta.url), ts = require("typescript");
+require.extensions[".ts"] = (module, file) => module._compile(ts.transpileModule(readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, file);
+const questions = require("./permission-questions.ts"), detail = require("./permission-detail.ts"), answers = require("./permission-answer.ts");
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const q = (overrides = {}) => ({ header: "Scope", question: "Which scope?", options: [{ label: "Small", description: "One change" }, { label: "Full" }], isOther: true, ...overrides });
 const request = (items = [q()]) => ({ id: "request-1", kind: "question", provider: "codex", name: "request_user_input_async", input: { questions: items, providerKey: "keep" } });
@@ -20,9 +20,15 @@ function runtime(file = "permission-question-card.tsx", handlers = {}) {
     useEffect(effect) { effects.push(effect); },
   };
   const jsx = (type, props, key) => ({ type, props, key });
+  // Once answered, Paseo stops listing the request.
+  let answered = false;
   const api = { agents: { ref(agentId) { calls.push(["ref", agentId]); return {
-    async refresh() { calls.push(["refresh"]); return handlers.refresh ? handlers.refresh() : { agent: { status: "idle", pendingPermissions: [currentProps.request] } }; },
-    async respondToPermission(value) { calls.push(["respond", value]); return handlers.respond?.(value); },
+    async refresh() {
+      calls.push(["refresh"]);
+      if (answered) return { agent: { status: "idle", pendingPermissions: [] } };
+      return handlers.refresh ? handlers.refresh() : { agent: { status: "idle", pendingPermissions: [currentProps.request] } };
+    },
+    async respondToPermission(value) { calls.push(["respond", value]); await handlers.respond?.(value); answered = true; },
   }; } } };
   const compiled = ts.transpileModule(readFileSync(new URL(file, import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
   const module = { exports: {} };
@@ -34,6 +40,7 @@ function runtime(file = "permission-question-card.tsx", handlers = {}) {
     if (id === "@tanstack/react-query") return { useQueryClient: () => ({ invalidateQueries: value => calls.push(["invalidate", value]) }) };
     if (id === "./permission-questions") return questions;
     if (id === "./permission-detail") return detail;
+    if (id === "./permission-answer") return answers;
     if (id === "./permission-question-card") return { PermissionQuestionCard: "QuestionForm" };
     if (id === "./compact-link") return { CompactLink: "CompactLink" };
     if (id === "./attention-model") return { latestAgentQuote: () => "Ready for your choice.", permissionCard: () => ({ task: { title: "Task" }, badge: "PERMISSION" }) };

@@ -47,8 +47,8 @@ test("the answer's parts are cleaned, and a small model's variant keys are accep
 });
 
 /** A stand-in Paseo with Haiku, whose agent answers `answer` and records what it was given. */
-function fakePaseo(answer, { models = [{ id: "claude-haiku-4-5", label: "Haiku 4.5" }], status = "idle" } = {}) {
-  const seen = { created: null, archived: false, workspaceId: null };
+function fakePaseo(answer, { models = [{ id: "claude-haiku-4-5", label: "Haiku 4.5" }], status = "idle", createFails = false } = {}) {
+  const seen = { created: null, archived: false, workspaceId: null, archivedById: [] };
   const paseo = {
     providers: {
       listModels: async provider => ({ models: provider === "claude" ? models : [] }),
@@ -56,8 +56,10 @@ function fakePaseo(answer, { models = [{ id: "claude-haiku-4-5", label: "Haiku 4
     },
     workspaces: { ref: workspaceId => ({ agents: { create: async options => {
       seen.workspaceId = workspaceId; seen.created = options;
+      if (createFails) throw new Error("Request timed out");
       return { waitForFinish: async () => ({ status, lastMessage: answer, error: null }), timeline: { refetch: async () => ({ entries: [] }) }, archive: async () => { seen.archived = true; } };
     } } }) },
+    agents: { ref: id => ({ archive: async () => { seen.archivedById.push(id); return { archivedAt: "2026-10-20T00:00:00Z" }; } }) },
   };
   return { paseo, seen };
 }
@@ -85,6 +87,14 @@ test("writing fails clearly without a small model, on a permission request, or w
   assert.equal(asked.seen.archived, true);
   await assert.rejects(writeDeliveryText(fakePaseo('{"commitMessage":""}').paseo, "wks", request, { taskId }), /none of the text asked for/);
   await assert.rejects(writeDeliveryText(fakePaseo("Sure! Here's a commit message.").paseo, "wks", request, { taskId }), /did not return JSON/);
+});
+
+test("when create fails, the agent Paseo may have made anyway is archived by Mission Control's own ID", async () => {
+  // Paseo 0.11 and older could create the agent and still fail the request, leaving it hidden but running.
+  const failed = fakePaseo("{}", { createFails: true });
+  await assert.rejects(writeDeliveryText(failed.paseo, "wks", request, { taskId }), /Request timed out/);
+  assert.match(failed.seen.created.agentId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  assert.deepEqual(failed.seen.archivedById, [failed.seen.created.agentId]);
 });
 
 test("only a fence or quotes wrapping the whole text are removed; closing marks that belong to it stay (review finding)", () => {

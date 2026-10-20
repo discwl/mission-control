@@ -124,7 +124,7 @@ export function MorningCheck({ ownServerId, host, workspace, colors, navigation 
       </View>
       {status?.launch ? <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
         <Text style={{ color: status.launch.error ? colors.statusWarning : colors.foregroundMuted, fontSize: 12 }}>
-          Last started {formatDateTime(status.launch.createdAt)}{status.launch.fixture ? " with the test fixture" : ""} · {status.launch.error ? `not confirmed: ${status.launch.error}` : status.agent ? `agent ${status.agent.busy ? "working" : status.agent.status}` : "agent closed or archived"}
+          Last started {formatDateTime(status.launch.createdAt)}{status.launch.fixture ? " with the test fixture" : ""} · {status.launch.error ? `${status.launch.phase === "sent" ? "couldn't start" : "not confirmed"}: ${status.launch.error}` : status.agent ? `agent ${status.agent.busy ? "working" : status.agent.status}` : "agent closed or archived"}
         </Text>
         {navigation && (status.agent || status.launch.phase === "sending") ? <CompactLink colors={colors} label={"Open agent →"} accessibilityRole="button" onPress={() => openAgent(status.agent?.id ?? status.launch!.agentId)} /> : null}
       </View> : null}

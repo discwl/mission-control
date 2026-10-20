@@ -37,6 +37,7 @@ The backlog from 26 Sep 2026, ordered from easiest and most useful to hardest an
 | — | Tasks tab opens on the board | Build | — | XS | — | Done in `62e4b7d` (the narrow workspace panel keeps the list) |
 | — | User guide (standalone HTML) | Docs | — | M | — | Done: `docs/user-guide/mission-control-user-guide.html`, with 26 screenshots; rebuild with `node docs/user-guide/build-guide.mjs` |
 | — | Rename the Mission tasks panel to Tasks | Build | — | XS | — | Done in `9f627b4` |
+| — | Robustness after Paseo 0.12: Needs you retries, confirmed permission answers, Git index retry, 0.12 hardening | Build | — | M | — | Done on 20 Oct; see the follow-ups below |
 
 ## How the requests map to tasks
 
@@ -80,16 +81,17 @@ The backlog from 26 Sep 2026, ordered from easiest and most useful to hardest an
 - **Morning check duplicate (task 19 review):** if a task's `task.md` can't be read at all (for example it's missing), the Morning import doesn't know that task's ticket, so importing it creates a second task. Treat such a file as an unknown ticket so the existing refusal names it.
 - **Retry after a conflict with a written message (task 23 review):** Merge and Open PR recognize their own earlier commit of a task's work by the default message, or, for a message written from paseo.json or edited, only through the kept result card. If that card was dismissed (or dropped after 50 results, or lost on a restart mid-run), the retry asks for a fresh review instead of carrying on. It's safe, but an extra review. Record Mission Control's commits somewhere that outlives the card, such as the task's run.
 - **Server bundle rule:** Paseo refuses `client/` modules in the plugin server bundle, and only a real plugin reload catches it. Reload and check for "Plugin ready" after every merge.
-- **Git index writes fail now and then on this machine (29 Sep):** during task 23's merge, `git merge` and `git checkout` failed with "unable to write new index file" and worked on a retry a few seconds later, probably because another process (the Gortex indexer or Paseo's diff counts) had `.git/index` open. The Merge button's commit, merge and abort steps should retry that error a few times.
+- **Git index writes fail now and then on this machine (29 Sep):** during task 23's merge, `git merge` and `git checkout` failed with "unable to write new index file" and worked on a retry a few seconds later, probably because another process (the Gortex indexer or Paseo's diff counts) had `.git/index` open. Done on 20 Oct: the Merge button's commit, merge and abort wait 3 seconds and try again, up to three times. A merge that left files without recording itself is put back first, only when every change is the task's; when Git can't take the lock it records a merge in progress with no changes, which merge --abort clears.
 - **Reading an agent's chat wakes it (29 Sep):** Paseo restarts a stopped agent to serve its chat history. Tasks 24 and 26 stop doing it automatically; the Review names dialog still reads the chats of every agent when you ask it for suggestions, so it should skip or warn about closed agents.
 - **Merge and pull-request tests fail on a busy machine:** with several agents testing at once, Git-heavy tests run past the 20-second reply window or a 1-second commit limit. Give the tests longer windows, or run those two files on their own in the workflow.
 - **Error card re-read (task 24 review, skipped by the user):** if a failed agent's Conversation is open and the agent fails again within about 20 seconds, the card reads the chat once more by itself. The fix is one line: reset the card's Conversation whenever the agent fails again.
 - **Last messages refresh (task 26 review, skipped by the user):** if you expand a helper's Last messages and then its parent agent stops, the open panel's next refresh (every 20 seconds, in views without live updates) can restart the parent. The fix is the same live-status check before each refresh, plus a test.
-- **Paseo 0.12 hardening (19 Oct review, not done yet):**
-  - Morning check: since 0.12 a rejected first prompt no longer throws, so the launch is saved as sent with no reason. Copy the agent's `lastError` into it (`server/morning.ts`).
-  - Small-model helpers: on Paseo 0.11 and older, a create that fails leaves a hidden naming agent behind. Pass Mission Control's own agent ID and archive it on failure (`shared/small-model.ts`).
-  - Merge notice: idle is checked before the merge, so the notice can interrupt a turn the agent started since. Send it with `activeTurnBehavior: "steer"`, or check again just before sending (`server/merge.ts`).
-  - Agent paging: sort pages by `created_at`, so agents updated between pages aren't skipped (the bug 0.12 fixed in `paseo agent ls`). `client/mission-panel.tsx`, `client/review-pills.ts` and `server/worktree.ts` read only the first 200 entries.
+- **Paseo 0.12 hardening (19 Oct review, done on 20 Oct):**
+  - Morning check: a first prompt Paseo rejects is saved as the reason the check couldn't start (the agent's `lastError`).
+  - Small-model helpers pass Mission Control's own agent ID and archive it when create fails.
+  - The merge notice is sent with `activeTurnBehavior: "steer"`, so it joins a turn the agent started since the checks.
+  - Agent lists are paged by `created_at`. Still open: `client/mission-panel.tsx`, `client/review-pills.ts` and `server/worktree.ts` read only the first 200 entries.
+  - Also: Needs you rows that can't be published to an agent's chat (an agent Paseo hasn't loaded since a restart says "Unknown agent") are retried after 1, 2, 4… up to 30 minutes and logged once, not every 15 seconds. Permission answers wait until Paseo no longer lists the prompt and say so after 15 seconds.
 - **Git cases Paseo 0.12 fixed in its own code (19 Oct review, not done yet):**
   - Review's base is fixed when the worktree is created, so after the task branch merges the default branch, Review lists that branch's files too. Use the merge-base at scan time.
   - A `diff.submodule` setting changes Review's output (`--submodule=short`), and `log.showSignature=true` adds a blank commit row and miscounts (`--no-show-signature`).
@@ -100,7 +102,7 @@ The backlog from 26 Sep 2026, ordered from easiest and most useful to hardest an
 - **Older issues found in the 0.12 review:**
   - Mission Control's desktop dialogs use React Native's `Modal`, so Escape may also stop the agent behind them (untested; the SDK `Modal` avoids it).
   - A Review snapshot has no overall size cap and could pass the relay's 32 MiB message limit.
-  - The bundled `@getpaseo/client` 0.9.1 misses 0.12's client memory fix, and the label sync opens one every minute.
+  - Done in `55facf2`: the bundled `@getpaseo/client` is 0.12.0, with 0.12's client memory fix for the label sync's client opened every minute.
   - The Mission bubble on phones hasn't been checked on a device.
 - **Cross-host `paseo send` from agents (Paseo 0.12 CLI):** run inside an agent, a 0.12 `paseo send` always sends that agent's ID as the sender. Hosts older than 0.12 refuse it ("Update the Paseo host to send messages with agent provenance"). Orchestrators should clear `PASEO_AGENT_ID` for those sends until every host runs 0.12. `paseo run --host` checks the caller first and isn't affected.
 

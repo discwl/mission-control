@@ -46,7 +46,7 @@ async function fixture(t) {
   await writeFile(join(kit, "scripts", "morning-check.mjs"), "");
   const tasks = await taskStore(t, vault);
   const store = createMorningStore({ vaultRoot: vault, sources: tasks.scanTaskSources, createTask: tasks.createTaskRecord, kitRoot: async projectId => projectId === "prj_test" ? kit : null });
-  const state = { creates: [], agents: new Map(), failCreate: false, createDelay: 0 };
+  const state = { creates: [], agents: new Map(), failCreate: false, createDelay: 0, rejectPrompt: null };
   const paseo = {
     workspaces: { ref: id => ({
       refresh: async () => ({ wks_test: { id, projectId: "prj_test", archivingAt: null }, wks_bare: { id, projectId: "prj_other", archivingAt: null } })[id] ?? null,
@@ -54,8 +54,12 @@ async function fixture(t) {
         if (state.createDelay) await new Promise(resolve => setTimeout(resolve, state.createDelay));
         if (state.failCreate) throw new Error("provider offline");
         state.creates.push({ workspaceId: id, ...options });
-        state.agents.set(options.agentId, { id: options.agentId, title: options.title, status: "running", activeTurn: { id: "turn" }, pendingPermissions: [], archivedAt: null });
-        return { id: options.agentId };
+        // Since Paseo 0.12, an agent whose first prompt is rejected is still created, in error.
+        const agent = state.rejectPrompt
+          ? { id: options.agentId, title: options.title, status: "error", lastError: state.rejectPrompt, activeTurn: null, pendingPermissions: [], archivedAt: null }
+          : { id: options.agentId, title: options.title, status: "running", activeTurn: { id: "turn" }, pendingPermissions: [], archivedAt: null };
+        state.agents.set(options.agentId, agent);
+        return { ...agent };
       } },
     }) },
     agents: { ref: id => ({ refresh: async () => {
@@ -234,6 +238,18 @@ test("Run Morning check starts one agent with the skill and refuses while it wor
   await assert.rejects(f.store.start({ serverId, workspaceId: "wks_test", provider: "codex/gpt", fixture: false }, f.paseo), /has no Morning check yet/);
   assert.equal(f.state.creates.length, 2);
   assert.deepEqual((await readdir(join(f.vault, "Daily"))).filter(name => name.endsWith(".tmp") || name.endsWith(".lock")), []);
+});
+
+test("a first prompt Paseo rejects is saved as why the Morning check couldn't start", async t => {
+  const f = await fixture(t);
+  const start = () => f.store.start({ serverId, workspaceId: "wks_test", provider: "claude/opus", fixture: true }, f.paseo);
+  f.state.rejectPrompt = "Model claude/opus isn't available";
+  const status = await start();
+  assert.deepEqual([status.launch.phase, status.launch.error, status.agent.status, status.agent.busy], ["sent", "Model claude/opus isn't available", "error", false]);
+  // The agent that ended in error doesn't block the next try, which records no error.
+  f.state.rejectPrompt = null;
+  const next = await start();
+  assert.deepEqual([next.launch.phase, next.launch.error, next.agent.busy], ["sent", null, true]);
 });
 
 test("a Morning check agent that errored or closed doesn't block the next one; a working one does", async t => {

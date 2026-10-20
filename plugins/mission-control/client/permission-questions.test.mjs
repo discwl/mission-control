@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { test } from "node:test";
-import {
+
+const require = createRequire(import.meta.url);
+const ts = require("typescript");
+require.extensions[".ts"] = (module, file) => module._compile(ts.transpileModule(readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, file);
+const {
   nativeQuestions, emptyAnswer, selectQuestionOption, selectCustomAnswer, writeQuestionAnswer,
   questionAnswered, questionResponse, dismissQuestionResponse, questionRequestVersion, respondToNativeQuestion,
-} from "./permission-questions.ts";
+} = require("./permission-questions.ts");
+const flush = () => new Promise(resolve => setImmediate(resolve));
 
 const question = (overrides = {}) => ({ header: "Direction", question: "Which approach?", options: [{ label: "Small", description: "Keep the scope small." }, { label: "Full" }], multiSelect: false, isOther: true, ...overrides });
 const request = (questions = [question()]) => ({ id: "req-1", provider: "codex", kind: "question", name: "request_user_input_async", input: { questions, providerMetadata: { token: "preserve-me" } } });
@@ -78,18 +85,35 @@ test("dismissal matches native optional-text semantics and otherwise denies the 
   assert.deepEqual(dismissQuestionResponse(optional, nativeQuestions(optional)).updatedInput.answers, { Direction: "" });
 });
 
+/** Once answered, Paseo stops listing the request, unless `lost` (the answer never reached the agent). */
 function client(req, handlers = {}) {
   const calls = [];
+  let answered = false;
   return { calls, api: { agents: { ref(id) { calls.push(["ref", id]); return {
-    async refresh() { calls.push(["refresh"]); return handlers.refresh ? handlers.refresh() : { agent: { pendingPermissions: [req], status: "idle" } }; },
-    async respondToPermission(value) { calls.push(["respond", value]); return handlers.respond?.(value); },
+    async refresh() {
+      calls.push(["refresh"]);
+      if (answered) return { agent: { pendingPermissions: [], status: "idle" } };
+      return handlers.refresh ? handlers.refresh() : { agent: { pendingPermissions: [req], status: "idle" } };
+    },
+    async respondToPermission(value) { calls.push(["respond", value]); await handlers.respond?.(value); answered = !handlers.lost; },
   }; } } } };
 }
 
-test("submission rechecks the exact agent before delivering the native answer", async () => {
+test("submission rechecks the exact agent before delivering the native answer, then confirms it landed", async () => {
   const req = request(), state = client(req), response = { behavior: "allow", updatedInput: { ...req.input, answers: { Direction: "Small" } } };
   await respondToNativeQuestion(state.api, "remote-host", "remote-agent", req, response);
-  assert.deepEqual(state.calls, [["ref", "remote-agent"], ["refresh"], ["respond", { requestId: req.id, response }]]);
+  assert.deepEqual(state.calls, [["ref", "remote-agent"], ["refresh"], ["respond", { requestId: req.id, response }], ["refresh"]]);
+});
+
+test("an answer Paseo never applies is reported, and the question can be answered again", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const req = request(), lost = client(req, { lost: true });
+  const sending = assert.rejects(respondToNativeQuestion(lost.api, "host", "agent", req, { behavior: "deny" }), /hasn't confirmed this answer after 15 seconds/);
+  for (let waited = 0; waited <= 16_000; waited += 500) { await flush(); t.mock.timers.tick(500); }
+  await sending;
+  const retry = client(req);
+  await respondToNativeQuestion(retry.api, "host", "agent", req, { behavior: "deny" });
+  assert.equal(retry.calls.filter(([kind]) => kind === "respond").length, 1);
 });
 
 test("answers made in chat, changed questions and unavailable agents reject stale submissions", async () => {

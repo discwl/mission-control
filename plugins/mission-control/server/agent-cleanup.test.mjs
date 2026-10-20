@@ -76,6 +76,8 @@ test("a running child in a background workspace keeps its parent, since Paseo 0.
   assert.match(scan.rows[0].reason, /work running/);
   const lists = r.calls.filter(call => call.action === "list" || call.action === "workspaces");
   assert.ok(lists.length >= 2 && lists.every(call => call.input.filter.includeBackground === true), "every directory read asks for background workspaces");
+  // Paged by creation time, which never changes, so no agent moves past the cursor between pages.
+  assert.ok(r.calls.filter(call => call.action === "list").every(call => JSON.stringify(call.input.sort) === '[{"key":"created_at","direction":"desc"}]'));
 });
 test("stopped or unavailable agents are not awakened by reading their timelines", async () => {
   for (const extra of [{ status: "closed" }, { status: "error" }, { providerUnavailable: true }, { activeTurn: { id: "turn" } }, { pendingPermissions: [{ id: "request" }] }, { archivedAt: old }]) {

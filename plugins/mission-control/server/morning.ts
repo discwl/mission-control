@@ -190,12 +190,14 @@ export function createMorningStore(overrides: Partial<Deps> = {}) {
       await saveLaunch(folder, launch);
       try {
         const config = { provider: input.provider, ...(input.modeId ? { modeId: input.modeId } : {}), ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}) };
-        await paseo.workspaces.ref(input.workspaceId).agents.create({
+        const agent = await paseo.workspaces.ref(input.workspaceId).agents.create({
           agentId: launch.agentId, idempotencyKey: launch.launchId, config, title: "Morning check",
           labels: { "mission-control.role": "morning-check" },
           prompt: morningPrompt({ hostId, serverId: input.serverId, agentId: launch.agentId, kitRoot, fixture: input.fixture, workflowInstructions: guidance }),
         });
-        launch = { ...launch, phase: "sent", updatedAt: new Date().toISOString() };
+        // Since Paseo 0.12, an agent whose first prompt is rejected is still created, in error, instead of failing here.
+        const failed = agent?.status === "error" ? agent.lastError || "The agent stopped with an error before it started the check." : null;
+        launch = { ...launch, phase: "sent", error: failed, updatedAt: new Date().toISOString() };
       } catch (error) {
         // Leave the phase at 'sending': a lost response may still have started the agent.
         launch = { ...launch, error: error instanceof Error ? error.message : String(error), updatedAt: new Date().toISOString() };
