@@ -1,5 +1,6 @@
 import type { PluginClientContext, PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { MissionControl } from "./client/mission-control";
+import { registerFleetClient } from "./client/fleet";
 import { WorkspaceTasks } from "./client/workspace-tasks";
 import { resolveTaskPrompt } from "./shared/runs";
 import { WorkspaceReview } from "./client/review-panel";
@@ -36,6 +37,7 @@ import { setUnifiedExplorer } from "./client/layout";
 
 export default function contribute(client: PluginClientContext) {
   setPluginClient(client);
+  const stopFleet = registerFleetClient(client);
   // addFilePanel and the unified compact Explorer shipped together in Paseo 0.13.
   setUnifiedExplorer(typeof client.addFilePanel === "function");
   const removeNeedsYouTimeline = client.addTimelineRenderer({ kind: needsYouTimelineKind, version: 1, schema: needsYouTimelineSchema, Component: NeedsYouTimelineCard });
@@ -176,6 +178,7 @@ export default function contribute(client: PluginClientContext) {
   const removeSetupSettings = client.addSettingsScreen({ id: "setup", title: "Setup", icon: "PackageCheck", Component: SetupSettings });
   const removeAgentsSettings = client.addSettingsScreen({ id: "agents-panel", title: "Agents panel", icon: "Network", Component: AgentsSettingsScreen });
   return () => {
+    stopFleet();
     removeNeedsYouTimeline();
     removeAgentsSettings();
     agentsAutoOpen.dispose();

@@ -48,6 +48,7 @@ import { registerWorkflowInstructions } from "./server/workflow-instructions";
 import { registerAgentCleanup } from "./server/agent-cleanup";
 import { registerOrchestrator } from "./server/orchestrator";
 import { registerOrchestratorWork } from "./server/orchestrator-work";
+import { registerFleet } from "./server/fleet-runtime";
 import { startWorkspaceLabelSync } from "./server/workspace-labels";
 import { rememberHostPaseo } from "./server/host-paseo";
 import { getMissionSummary } from "./shared/mission";
@@ -107,6 +108,7 @@ export default function contribute(context: PluginServerContext) {
   server.handle(resendDecision, (input, { paseo }) => decisions.resend(input, paseo));
   // Questions agents recorded with dev-flow ask, shown in Attention as Waiting for you, and the user's replies.
   const questions = createQuestionStore({ sources: taskSources });
+  const stopFleet = registerFleet(server, { decisions: id => decisions.list(id, Infinity), questions: id => questions.list(id) });
   server.handle(listWaiting, async ({ serverId }, { paseo }) => {
     const result = await questions.list(serverId);
     await needsYouTimeline.questions(result.questions, paseo);
@@ -240,5 +242,5 @@ export default function contribute(context: PluginServerContext) {
   const updater = createPluginUpdater();
   server.handle(checkPluginUpdate, () => updater.check());
   server.handle(applyPluginUpdate, ({ target }) => updater.apply(target));
-  return () => { statusLabels.stop(); };
+  return () => { stopFleet(); statusLabels.stop(); };
 }

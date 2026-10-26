@@ -1,0 +1,64 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+const require = createRequire(import.meta.url);
+const ts = require("typescript");
+require.extensions[".ts"] = (module, file) => module._compile(ts.transpileModule(readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, file);
+const transport = require("./fleet-transport.ts");
+const directory = require("./fleet-host.ts");
+const bindings = require("./orchestrator.ts");
+const names = require("./agent-names.ts");
+const { registerFleet } = require("./fleet-runtime.ts");
+const { readCompatibleFleet } = require("./fleet-compat.ts");
+const at = "2026-10-26T12:00:00Z";
+const raw = (id, workspaceId, labels = {}) => ({ id, name: id, title: id, workspaceId, labels, status: "idle", archivedAt: null, updatedAt: at });
+const remote = () => ({ serverId: "remote", observedAt: at, agents: [], workspaces: [], tasks: [], warnings: [], complete: true, stoppedAgentIds: [] });
+
+test("fleet RPCs discover setup-created coordinators and empty host folders; enrollment is explicit and identity-bound", async t => {
+  const folder = await mkdtemp(join(tmpdir(), "mc-fleet-runtime-"));
+  const previous = process.env.PASEO_HOME; process.env.PASEO_HOME = folder;
+  t.after(async () => { if (previous === undefined) delete process.env.PASEO_HOME; else process.env.PASEO_HOME = previous; await rm(folder, { recursive: true, force: true }); });
+  t.mock.method(transport, "withFleetConnection", async action => action({}, {}, "personal"));
+  t.mock.method(names, "daemonServerId", async () => "personal");
+  let complete = true;
+  t.mock.method(transport, "readRemoteFleet", async (_client, serverId) => ({ ...remote(), serverId, complete }));
+  t.mock.method(directory, "fleetDirectory", async () => ({ agents: [raw("setup", "development"), raw("coordinator", "folder", { "paseo.parent-agent-id": "setup" }), raw("helper", "folder", { "paseo.parent-agent-id": "coordinator" })], workspaces: [{ id: "folder" }, { id: "empty-folder" }, { id: "development" }], complete: true }));
+  t.mock.method(bindings, "readOrchestratorBindings", async (_api, ids) => { assert.ok(ids.includes("empty-folder")); return { bindings: { folder: { serverId: "remote", label: "Remote" }, "empty-folder": { serverId: "empty", label: "Empty" } }, problems: {} }; });
+  const handlers = new Map(); const hooks = new Map();
+  const stop = registerFleet({ handle: (contract, handler) => handlers.set(contract.name, handler), on: (name, handler) => hooks.set(name, handler) }, { decisions: async () => ({ open: [], recent: [] }), questions: async () => ({ questions: [] }) }); t.after(stop);
+  let snapshot = await handlers.get("orchestrator.fleet.read")({ refresh: true });
+  assert.deepEqual(snapshot.coordinators.map(item => item.agentId), ["coordinator"]);
+  assert.deepEqual(snapshot.hosts.map(item => item.serverId), ["remote", "empty"]);
+  assert.equal(snapshot.state.coordinators.length, 0);
+  const configure = handlers.get("orchestrator.supervisor.configure");
+  const input = { agentId: "coordinator", remoteServerId: "remote", enabled: true, intervalMinutes: 5, maxWakeupsPerDay: 6, expectedRevision: snapshot.state.revision };
+  await assert.rejects(configure({ ...input, remoteServerId: "other" }), /no longer belongs/);
+  complete = false; await assert.rejects(configure(input), /complete current/); complete = true;
+  await assert.rejects(handlers.get("orchestrator.queue.set")({ coordinatorId: "coordinator", remoteServerId: "remote", taskId: "unowned", enabled: true, priority: 5, expectedRevision: snapshot.state.revision }), /not linked/);
+  const enabled = await configure(input); assert.equal(enabled.coordinators[0].enabled, true);
+  await assert.rejects(configure(input), /changed/);
+  await hooks.get("agent.turn_ended")({ agent: { id: "coordinator" }, outcome: { kind: "canceled", reason: "user" } });
+  snapshot = await handlers.get("orchestrator.fleet.read")({ refresh: true });
+  assert.equal(snapshot.state.coordinators[0].enabled, false); assert.ok(snapshot.state.stoppedAgentIds.includes("coordinator"));
+  await assert.rejects(handlers.get("orchestrator.host.snapshot")({ serverId: "another" }, { paseo: {} }), /different host/);
+});
+
+test("old-host compatibility reads only managed workspaces and remains ineligible for automation", async t => {
+  t.mock.method(directory, "fleetDirectory", async () => ({ agents: [raw("worker", "managed", { "paseo.parent-agent-id": "coordinator", "paseo.parent-server-id": "personal" }), raw("unrelated", "other")], workspaces: [{ id: "managed", name: "Work", projectDisplayName: "Project", labels: [], status: "idle" }, { id: "other", name: "Other", projectDisplayName: "Project", labels: [], status: "idle" }], complete: true }));
+  const calls = [];
+  const client = { invokePluginRpc: async (pluginId, method, input) => {
+    calls.push({ pluginId, method, input });
+    if (method === "decisions.list") return { open: [], recent: [] };
+    if (method === "attention.waiting") return { questions: [], taskTitles: {} };
+    if (method === "tasks.list") return { tasks: [], problems: [] };
+    throw new Error(`Unexpected call ${method}`);
+  } };
+  const result = await readCompatibleFleet({}, client, "remote", { localServerId: "personal", coordinators: [{ agentId: "coordinator", remoteServerId: "remote", links: [] }] });
+  assert.equal(result.complete, false); assert.match(result.warnings[0], /update/i);
+  assert.deepEqual(calls.filter(item => item.method === "tasks.list").map(item => item.input.workspaceId), ["managed"]);
+  assert.ok(calls.every(item => item.pluginId === "mission-control"));
+});
