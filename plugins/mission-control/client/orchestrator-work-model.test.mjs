@@ -12,6 +12,36 @@ const agent = (id, workspaceId, extra = {}) => ({ id, workspaceId, status: "idle
 const link = (id, workspaceId) => ({ serverId: "local", agentId: "chat", remoteServerId: "remote", remoteAgentId: id, remoteWorkspaceId: workspaceId, taskId: null, linkedAt: at("10") });
 const work = id => ({ id, labels: ["Review"], activityAt: at("23") });
 
+const owner = { serverId: "local", agentId: "chat", remoteServerId: "remote" };
+const native = (id, parent = "chat", server = "local") => agent(id, id, { parentAgentId: parent, labels: { "paseo.parent-agent-id": parent, ...(server ? { "paseo.parent-server-id": server } : {}) } });
+
+test("native children belong to the exact origin server and chat without saved links", () => {
+  const agents = [native("mine"), native("other-chat", "elsewhere"), native("other-host", "chat", "elsewhere"), native("ambiguous", "chat", null), agent("same-folder", "mine")];
+  assert.deepEqual([...linkedWorkers(agents, [], owner)], ["mine"]);
+  const items = hostReviewItems([...new Set(agents.map(a => a.workspaceId))].map(work), agents).ready;
+  const result = scopedReviews(items, agents, [], true, "activity", owner);
+  assert.deepEqual(result.map(x => x.workspace.id), ["mine"]);
+  assert.deepEqual(result[0].agents.map(a => a.id), ["mine"]);
+});
+test("native descendants stay on the destination and foreign saved links cannot leak", () => {
+  const agents = [native("root"), native("child", "root", "remote"), native("grandchild", "child", null), native("foreign", "root", "another-server"), agent("linked", "linked"), agent("other", "other")];
+  const links = [link("linked", "linked"), { ...link("other", "other"), agentId: "different-chat" }, { ...link("foreign", "foreign"), remoteServerId: "different-host" }];
+  assert.deepEqual([...linkedWorkers(agents, links, owner)].sort(), ["child", "grandchild", "linked", "root"]);
+});
+test("refreshing native relationships removes detached children and changing scope never retains host rows", () => {
+  const agents = [native("mine"), native("other", "another-chat")];
+  const items = hostReviewItems([work("mine"), work("other")], agents).ready;
+  assert.equal(scopedReviews(items, agents, [], false, "activity", owner).length, 2);
+  assert.deepEqual(scopedReviews(items, agents, [], true, "activity", owner).map(x => x.workspace.id), ["mine"]);
+  assert.equal(linkedWorkers([agent("mine", "mine")], [], owner).size, 0);
+  assert.equal(linkedWorkers(agents, [], { ...owner, agentId: "another-chat" }).has("mine"), false);
+});
+test("same-host legacy parents are allowed only on the same host", () => {
+  const agents = [native("child", "chat", null)];
+  assert.equal(linkedWorkers(agents, [], owner).size, 0);
+  assert.equal(linkedWorkers(agents, [], { ...owner, serverId: "remote" }).has("child"), true);
+});
+
 test("activity excludes metadata updates and rejects invalid timestamps", () => {
   assert.equal(agentActivityAt(agent("a", "w")), null);
   assert.equal(agentActivityAt(agent("a", "w", { lastUserMessageAt: at("10"), activeTurnStartedAt: at("11"), attentionTimestamp: "invalid" })), at("11"));

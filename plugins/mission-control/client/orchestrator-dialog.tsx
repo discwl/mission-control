@@ -16,7 +16,7 @@ import { hostReviewItems } from "./host-review-model";
 import { HostRpcProvider, useMissionControlCopy } from "./host-rpc";
 import { MissionDocs } from "./mission-docs";
 import { MissionReview } from "./mission-review";
-import { agentActivityAt, compareAgents, linkedWorkers, scopedReviews, type ReviewSort } from "./orchestrator-work-model";
+import { agentActivityAt, compareAgents, linkedWorkers, scopedReviews, workerRelationship, type ReviewSort } from "./orchestrator-work-model";
 import { rosterQuery, useLiveRoster, type Agent } from "./roster";
 
 type Destination = (workspaceId: string, serverId: string, kind: "agent" | "workspace", id: string) => void;
@@ -56,7 +56,7 @@ function OrchestratorDialog(props: PluginButtonContentProps & { binding: Orchest
   const linksQuery = useQuery({ queryKey: linkKey, queryFn: () => readLinks(owner), enabled: Boolean(agentId), retry: false, refetchInterval: 10_000 });
   const links = linksQuery.data?.links ?? [];
   const agents = roster?.agents ?? [];
-  const linked = linkedWorkers(agents, links);
+  const linked = linkedWorkers(agents, links, owner);
   const direct = new Set(links.map(link => link.remoteAgentId));
   const [onlyLinked, setOnlyLinked] = useState(true);
   const [sort, setSort] = useState<ReviewSort>("activity");
@@ -70,8 +70,8 @@ function OrchestratorDialog(props: PluginButtonContentProps & { binding: Orchest
   const opened = roster?.workspaces.find(workspace => workspace.id === reviewId);
   const all = roster ? hostReviewItems(roster.workspaces, agents) : { ready: [], changed: [] };
   const review = {
-    ready: scopedReviews(all.ready, agents, links, onlyLinked, sort),
-    changed: scopedReviews(all.changed, agents, links, onlyLinked, sort),
+    ready: scopedReviews(all.ready, agents, links, onlyLinked, sort, owner),
+    changed: scopedReviews(all.changed, agents, links, onlyLinked, sort, owner),
   };
   const message = (text: string, warning = false) => <Text style={{ color: warning ? colors.statusWarning : colors.foregroundMuted, fontSize: 13 }}>{text}</Text>;
   const date = (at: string | null) => at ? formatDateTime(at) : "Unknown";
@@ -143,16 +143,16 @@ function OrchestratorDialog(props: PluginButtonContentProps & { binding: Orchest
           {[...agents].filter(agent => agent.workspaceId && (!agent.archivedAt || direct.has(agent.id)) && `${agent.name} ${roster?.workspaces.find(workspace => workspace.id === agent.workspaceId)?.name ?? ""}`.toLowerCase().includes(search.toLowerCase())).sort((a, b) => compareAgents(a, b, sort)).map(agent => <View key={agent.id} style={{ gap: 4, padding: 8, borderColor: colors.border, borderWidth: 1, borderRadius: 6 }}>
             <Text style={{ color: colors.foreground, fontWeight: "600" }}>{agent.name}</Text>
             {message(`${roster?.workspaces.find(workspace => workspace.id === agent.workspaceId)?.name ?? agent.workspaceId} · ${agent.status} · Last activity: ${date(agentActivityAt(agent))}`)}
-            <CompactLink label={busy === agent.id ? "Saving…" : direct.has(agent.id) ? "Unlink from this chat" : linked.has(agent.id) ? "Linked through parent" : "Link to this chat"} colors={colors}
+            <CompactLink label={busy === agent.id ? "Saving…" : direct.has(agent.id) ? "Unlink from this chat" : linked.has(agent.id) ? workerRelationship(agent, links, owner) : "Link to this chat"} colors={colors}
               disabled={!online || Boolean(busy) || linksQuery.isPending || linksQuery.isError || (linked.has(agent.id) && !direct.has(agent.id))} onPress={() => void toggle(agent)} />
           </View>)}
         </View> : null}
         {!linksQuery.isPending && !linksQuery.isError && linked.size > 0 ? <View style={{ gap: 8 }}>
           <Text accessibilityRole="header" style={{ color: colors.foreground, fontWeight: "700" }}>Managed workers · {agents.filter(agent => linked.has(agent.id)).length}</Text>
-          {message("Workers linked to this chat, including running workers without review-ready changes. Workspace changes may also include work from other agents.")}
+          {message("Native children and linked workers of this chat, including their descendants and running workers. Workspace changes may also include work from other agents.")}
           {agents.filter(agent => linked.has(agent.id)).sort((a, b) => compareAgents(a, b, sort)).map(agent => <View key={agent.id} style={{ gap: 4, padding: 8, borderColor: colors.border, borderWidth: 1, borderRadius: 6 }}>
             <Text style={{ color: colors.foreground, fontWeight: "600" }}>{agent.name}</Text>
-            {message(`${roster?.workspaces.find(workspace => workspace.id === agent.workspaceId)?.name ?? agent.workspaceId ?? "Workspace unavailable"} · ${agent.status} · Last activity: ${date(agentActivityAt(agent))}`)}
+            {message(`${workerRelationship(agent, links, owner)} · ${roster?.workspaces.find(workspace => workspace.id === agent.workspaceId)?.name ?? agent.workspaceId ?? "Workspace unavailable"} · ${agent.status} · Last activity: ${date(agentActivityAt(agent))}`)}
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
               <CompactLink label="Open agent" colors={colors} disabled={!online} onPress={() => navigate("agent", agent.id)} />
               {agent.workspaceId ? <CompactLink label="Review workspace" colors={colors} disabled={!online} onPress={() => openReview(agent.workspaceId!)} /> : null}
@@ -161,8 +161,8 @@ function OrchestratorDialog(props: PluginButtonContentProps & { binding: Orchest
           {links.some(link => !agents.some(agent => agent.id === link.remoteAgentId)) ? message("Some linked workers are unavailable in the current host roster. Refresh the host before changing their links.", true) : null}
         </View> : null}
         {onlyLinked && linksQuery.isPending ? message("Loading this chat's workers…") : onlyLinked && linksQuery.isError ? null : <>
-          {onlyLinked && !links.length ? message("No workers are linked to this chat yet. Use Link workers to select existing workers. All host work shows the rest of this host's workspaces.") : onlyLinked && roster && review.ready.length + review.changed.length === 0 ? message("This chat's linked workspaces have no review-ready changes yet. All host work shows other workspaces on this host.") : null}
-          {!onlyLinked || (links.length > 0 && (!roster || review.ready.length + review.changed.length > 0)) ? <ReviewSections key={onlyLinked ? "chat" : "host"} hostLabel={binding.label} ready={review.ready} changed={review.changed} loaded={Boolean(roster)} colors={colors} linkedAgentIds={linked} canNavigate={online}
+          {onlyLinked && !linked.size ? message("No native children or linked workers were found for this chat. Use Link workers for existing work. All host work shows the rest of this host's workspaces.") : onlyLinked && roster && review.ready.length + review.changed.length === 0 ? message("This chat's linked workspaces have no review-ready changes yet. All host work shows other workspaces on this host.") : null}
+          {!onlyLinked || (linked.size > 0 && (!roster || review.ready.length + review.changed.length > 0)) ? <ReviewSections key={onlyLinked ? "chat" : "host"} hostLabel={binding.label} ready={review.ready} changed={review.changed} loaded={Boolean(roster)} colors={colors} linkedAgentIds={linked} canNavigate={online}
             openReview={openReview} openWorkspace={id => navigate("workspace", id)} openAgent={id => navigate("agent", id)} showDetails={id => { setSearch(roster?.workspaces.find(workspace => workspace.id === id)?.name ?? ""); setLinking(true); }} /> : null}
         </>}
       </View> : null}

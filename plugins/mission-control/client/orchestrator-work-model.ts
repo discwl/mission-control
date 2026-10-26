@@ -16,21 +16,42 @@ export function compareAgents(a: Agent, b: Agent, sort: ReviewSort = "activity")
   return time(at(b)) - time(at(a)) || a.id.localeCompare(b.id);
 }
 
-/** Explicit links and their known descendants only. Shared task, branch, or folder is not ownership. */
-export function linkedWorkers(agents: readonly Agent[], links: readonly OrchestratorWork[]): Set<string> {
-  const ids = new Set(links.map(link => link.remoteAgentId));
+export type WorkerOwner = { serverId: string; agentId: string; remoteServerId: string };
+
+/** Missing parent server labels mean same-host only, never an inferred remote parent. */
+export function isNativeWorker(agent: Agent, owner: WorkerOwner): boolean {
+  const parentId = agent.labels?.["paseo.parent-agent-id"]?.trim();
+  const parentServerId = agent.labels?.["paseo.parent-server-id"]?.trim() || owner.remoteServerId;
+  return Boolean(owner.agentId && parentId === owner.agentId && parentServerId === owner.serverId);
+}
+
+function ownedLinks(links: readonly OrchestratorWork[], owner?: WorkerOwner): readonly OrchestratorWork[] {
+  return owner ? links.filter(link => link.serverId === owner.serverId && link.agentId === owner.agentId && link.remoteServerId === owner.remoteServerId) : links;
+}
+
+export function workerRelationship(agent: Agent, links: readonly OrchestratorWork[], owner: WorkerOwner): string {
+  if (isNativeWorker(agent, owner)) return "Native child";
+  return ownedLinks(links, owner).some(link => link.remoteAgentId === agent.id) ? "Linked worker" : "Descendant";
+}
+
+/** Explicit links, native children of this exact chat, and their local descendants. */
+export function linkedWorkers(agents: readonly Agent[], links: readonly OrchestratorWork[], owner?: WorkerOwner): Set<string> {
+  const ids = new Set(ownedLinks(links, owner).map(link => link.remoteAgentId));
+  if (owner) for (const agent of agents) if (isNativeWorker(agent, owner)) ids.add(agent.id);
   let added = true;
   while (added) {
     added = false;
-    for (const agent of agents) if (agent.parentAgentId && ids.has(agent.parentAgentId) && !ids.has(agent.id)) {
+    for (const agent of agents) if (agent.parentAgentId && ids.has(agent.parentAgentId) && !ids.has(agent.id)
+      && (!owner || !agent.labels?.["paseo.parent-server-id"]?.trim() || agent.labels["paseo.parent-server-id"].trim() === owner.remoteServerId)) {
       ids.add(agent.id); added = true;
     }
   }
   return ids;
 }
 
-export function scopedReviews(items: readonly ReviewItem[], agents: readonly Agent[], links: readonly OrchestratorWork[], onlyLinked: boolean, sort: ReviewSort): ReviewItem[] {
-  const ids = linkedWorkers(agents, links);
+export function scopedReviews(items: readonly ReviewItem[], agents: readonly Agent[], links: readonly OrchestratorWork[], onlyLinked: boolean, sort: ReviewSort, owner?: WorkerOwner): ReviewItem[] {
+  links = ownedLinks(links, owner);
+  const ids = linkedWorkers(agents, links, owner);
   // Keep a finished/missing worker's recorded workspace. A known moved worker follows its current workspace.
   const workspaces = new Set(links.map(link => agents.find(agent => agent.id === link.remoteAgentId)?.workspaceId || link.remoteWorkspaceId));
   for (const agent of agents) if (ids.has(agent.id) && agent.workspaceId) workspaces.add(agent.workspaceId);

@@ -43,6 +43,26 @@ function nodes(node, type) {
   if (Array.isArray(node)) return node.flatMap(child => nodes(child, type));
   return [...(node.type === type ? [node] : []), ...nodes(node.props?.children, type)];
 }
+test("native children appear without links and another server's same chat ID is excluded", () => {
+  for (const compact of [false, true]) {
+    const f = harness("review", compact);
+    f.links.links = [];
+    f.roster.agents[0].labels = { "paseo.parent-agent-id": "chat", "paseo.parent-server-id": "local" };
+    f.roster.agents[1].labels = { "paseo.parent-agent-id": "chat", "paseo.parent-server-id": "other-origin" };
+    let tree = f.render();
+    assert.deepEqual(nodes(tree, "ReviewSections")[0].props.ready.map(x => x.workspace.id), ["mine"]);
+    assert.match(JSON.stringify(tree), /Native child/);
+    nodes(tree, "Link").find(n => n.props.label === "All host work").props.onPress();
+    tree = f.render();
+    assert.equal(nodes(tree, "ReviewSections")[0].props.ready.length, 2);
+    nodes(tree, "Link").find(n => n.props.label === "This chat's work").props.onPress();
+    assert.equal(nodes(f.render(), "ReviewSections")[0].props.ready.length, 1);
+    f.roster.agents[0].labels = {};
+    assert.equal(nodes(f.render(), "ReviewSections").length, 0);
+    f.unmount(); requests.setOrchestratorDialogOpen(f.key, false);
+  }
+});
+
 test("running managed workers remain visible without review-ready workspaces", () => {
   const h = harness("review");
   h.roster.workspaces.forEach(workspace => workspace.labels = []);
@@ -142,7 +162,7 @@ test("a chat with no worker links returns to an honest empty scope after viewing
   nodes(tree, "Link").find(node => node.props.label === "This chat's work").props.onPress();
   tree = f.render();
   assert.equal(nodes(tree, "ReviewSections").length, 0);
-  assert.ok(nodes(tree, "Text").some(node => String(node.props.children).startsWith("No workers are linked")));
+  assert.ok(nodes(tree, "Text").some(node => String(node.props.children).startsWith("No native children or linked workers")));
 });
 
 test("Review defaults to this chat, switches to all work, and reads links using host plus chat identity", () => {
