@@ -30,31 +30,35 @@ import { AgentsPanel } from "./client/agents-panel";
 import { AgentsSettings } from "./client/agents-settings";
 import { startAgentsAutoOpen } from "./client/agents-auto-open";
 import { agentsPanelId } from "./shared/agents-panel";
+import { ReviewFileScreen, reviewFileScreenId } from "./client/review-file-screen";
+import { SidebarRow } from "@getpaseo/plugin/client/ui";
+import { setUnifiedExplorer } from "./client/layout";
 
 export default function contribute(client: PluginClientContext) {
   setPluginClient(client);
+  // addFilePanel and the unified compact Explorer shipped together in Paseo 0.13.
+  setUnifiedExplorer(typeof client.addFilePanel === "function");
   const removeNeedsYouTimeline = client.addTimelineRenderer({ kind: needsYouTimelineKind, version: 1, schema: needsYouTimelineSchema, Component: NeedsYouTimelineCard });
-  const removeSurface = client.addSurface("mission-control", MissionControl);
-  const removeSidebarItem = client.addSidebarItem({
-    id: "mission-control",
-    title: "Mission Control",
-    icon: "PanelsTopLeft",
-    surface: "mission-control",
+  const removeSurface = client.addScreen({ id: "mission-control", title: "Mission Control", Component: MissionControl });
+  const removeSidebarItem = client.addSidebarHeaderItem({
+    id: "mission-control", title: "Mission Control",
+    Component: ({ currentScreen, openScreen }) => <SidebarRow icon="PanelsTopLeft" active={currentScreen?.screenId === "mission-control"} onPress={() => openScreen({ screenId: "mission-control" })} />,
   });
+  const removeFileScreen = client.addScreen({ id: reviewFileScreenId, title: "Working file", Component: ReviewFileScreen });
   const removeReturnCommand = client.addCommandCenterItem({
     id: "back-to-mission-control",
     title: "Back to Mission Control",
     icon: "PanelsTopLeft",
     keywords: ["return", "back", "mission", "control"],
     context: "global",
-    onSelect() { client.openSurface("mission-control"); },
+    onSelect() { client.openScreen({ screenId: "mission-control" }); },
   });
   const removeReturnSlash = client.addSlashCommand({
     name: "mission-control",
     description: "Return to your last Mission Control page",
     argumentHint: "",
     context: "workspace",
-    onSubmit() { client.openSurface("mission-control"); },
+    onSubmit() { client.openScreen({ screenId: "mission-control" }); },
   });
   const removeTasksPanel = client.addWorkspacePanel({
     id: "workspace-tasks",
@@ -73,17 +77,16 @@ export default function contribute(client: PluginClientContext) {
     Component: WorkspaceReview,
   });
   // Same view, opened for one agent so its comments go to that agent by default.
-  const removeAgentReviewPanel = client.addWorkspacePanel({
+  const removeAgentReviewPanel = (client.addAgentPanel ? client.addAgentPanel.bind(client) : (panel: Parameters<typeof client.addAgentPanel>[0]) => client.addWorkspacePanel({ ...panel, context: "agent" }))({
     id: agentReviewPanelId,
     title: "Review",
     icon: "FileDiff",
-    context: "agent",
     locations: ["workspace", "explorer"],
     Component: WorkspaceReview,
   });
   const removeReviewSlash = client.addSlashCommand({
     name: "review",
-    description: "Review this workspace's uncommitted changes",
+    description: "Review this task's changes and recent commits",
     argumentHint: "",
     context: "agent",
     onSubmit({ openPanel }) {
@@ -109,8 +112,8 @@ export default function contribute(client: PluginClientContext) {
     lookUp: orchestratorBindings, readHost: readHostActivity,
     readAttention: serverId => { const found = findCopy(serverId); return readHostAttention(serverId, "copy" in found ? found.copy : null); },
   });
-  // The Mission tab belongs in Paseo's right panel (Explorer), beside the chat. Paseo's phone layout has no
-  // Explorer, so there it opens as a tab (see client/layout.ts).
+  // Mission stays beside the chat in Explorer, including Paseo 0.13's compact layout.
+  // Older clients retain the phone workspace-tab fallback.
   const removeMissionPanel = client.addWorkspacePanel({
     id: missionPanelId,
     title: "Mission",
@@ -201,6 +204,7 @@ export default function contribute(client: PluginClientContext) {
     removeTaskCommand();
     removeTasksPanel();
     removeSidebarItem();
+    removeFileScreen();
     removeSurface();
   };
 }

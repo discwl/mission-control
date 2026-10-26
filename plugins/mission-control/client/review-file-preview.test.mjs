@@ -13,13 +13,14 @@ function runtime(result = {}) {
   new Function("require", "module", "exports", compiled)(id => {
     if (id === "react") return { useState(initial) { const slot = index++; if (!(slot in values)) values[slot] = initial; return [values[slot], value => { values[slot] = value; }]; } };
     if (id === "react/jsx-runtime") return { jsx, jsxs: jsx };
-    if (id === "react-native") return { Image: "Image", Text: "Text" };
+    if (id === "react-native") return { Image: "Image", Text: "Text", View: "View" };
     if (id === "@getpaseo/plugin/client/react-native") return { ScrollView: "ScrollView" };
     if (id === "@getpaseo/plugin/client" || id === "./host-rpc") return { useRpc: name => async input => { calls.push({ name, input }); return result.data; } };
     if (id === "@tanstack/react-query") return { useQuery: options => { queries.push(options); return result; } };
     if (id === "../shared/review") return { readReviewWorkingFile: "working-file", isMarkdownPath: path => /\.md$/i.test(path) };
     if (id === "./app-modal") return { AppModal: Object.assign(() => null, { Content: "Content" }) };
     if (id === "./markdown-preview") return { MarkdownPreview: "MarkdownPreview" };
+    if (id === "./compact-link") return { CompactLink: "CompactLink" };
     if (id === "./review-ui") return { mono: {} };
     throw new Error(`Unexpected import ${id}`);
   }, module, module.exports);

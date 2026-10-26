@@ -1,4 +1,5 @@
 import type { Agent, Workspace, WorkspacePullRequest } from "./roster-model";
+import { agentActivityAt, compareAgents, latestTime } from "./orchestrator-work-model";
 
 // What an orchestrator workspace shows about its remote host, without the Paseo client, so tests can load it.
 
@@ -28,12 +29,12 @@ export function hostReviewItems(workspaces: readonly Workspace[], agents: readon
   const ready: ReviewItem[] = [];
   const changed: ReviewItem[] = [];
   for (const workspace of workspaces) {
-    const own = agents.filter(agent => agent.workspaceId === workspace.id && !agent.archivedAt).sort((a, b) => time(b.updatedAt) - time(a.updatedAt));
+    const own = agents.filter(agent => agent.workspaceId === workspace.id && !agent.archivedAt).sort(compareAgents);
     const working = own.some(agent => agent.status === "running" || agent.status === "initializing");
     if (hasLabel(workspace, REVIEW_LABELS)) ready.push({ workspace, agents: own, working });
     else if (!working && hasChanges(workspace) && !hasLabel(workspace, SETTLED_LABELS)) changed.push({ workspace, agents: own, working });
   }
-  const newest = (a: ReviewItem, b: ReviewItem) => time(b.workspace.activityAt) - time(a.workspace.activityAt);
+  const newest = (a: ReviewItem, b: ReviewItem) => time(latestTime(b.agents.map(agentActivityAt))) - time(latestTime(a.agents.map(agentActivityAt))) || a.workspace.id.localeCompare(b.workspace.id);
   return { ready: ready.sort(newest), changed: changed.sort(newest) };
 }
 

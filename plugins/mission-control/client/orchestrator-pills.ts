@@ -1,14 +1,16 @@
 import type { PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
 import { listIncludingBackground, ownHost } from "../shared/background";
 import { hostAttentionCount, hostAttentionLabel, noAttentionReads, type HostAttentionReads } from "./host-attention";
-import { hostAgentsLabel, hostReviewItems, hostReviewLabel, runningAgentsCount } from "./host-review-model";
-import { requestHostAttention, requestHostReview } from "./host-review-request";
+import { hostAgentsLabel, runningAgentsCount } from "./host-review-model";
+import { requestHostDestination, takeHostDestination } from "./host-review-request";
+import { createOrchestratorDialogIcon } from "./orchestrator-dialog";
+import { orchestratorDialogKey, setOrchestratorDialogOpen } from "./orchestrator-dialog-request";
 import type { BindingLookup } from "./orchestrator-bindings";
 import { hostAgentsPanelId } from "./panel-ids";
 import type { Agent, Workspace } from "./roster-model";
 
 type HostActivity = { workspaces: Workspace[]; agents: Agent[] };
-type HostCounts = { at: number; running: number; attention: number; ready: number; changed: number };
+type HostCounts = { at: number; running: number; attention: number };
 type Entry = {
   workspaceId: string;
   serverId: string;
@@ -22,7 +24,7 @@ type Entry = {
 
 /**
  * In a workspace that orchestrates a remote host (its folder has a host file), each active chat gets
- * bubbles: "<host> agents" opens the Host agents tab, Review opens that tab's review list, and
+ * bubbles: "<host> agents" opens the Host agents tab, Review opens this chat's review dialog, and
  * "Attention · N", shown only while something blocks an agent there, opens its Attention dialog. Their counts
  * come from the remote host, read at most once a minute; an unreachable host keeps its last counts.
  */
@@ -41,19 +43,34 @@ export function startOrchestratorPills(client: Pick<PluginClientContext, "paseo"
   let stopped = false;
   let running = false;
 
+  function openDialog(workspaceId: string, agentId: string, serverId: string, kind: "review" | "attention") {
+    const entry = entries.get(agentId);
+    if (stopped || entry?.workspaceId !== workspaceId || entry.serverId !== serverId) return;
+    setOrchestratorDialogOpen(orchestratorDialogKey(workspaceId, agentId, serverId, kind), true);
+  }
+
   function labels(entry: Pick<Entry, "serverId" | "hostLabel">) {
     const host = counts.get(entry.serverId);
     return {
       agents: hostAgentsLabel(entry.hostLabel, host?.running ?? null),
-      review: hostReviewLabel(host ?? null),
+      // The dialog defaults to this chat's links; don't put a host-wide count on that button.
+      review: "Review",
       attention: host?.attention ? hostAttentionLabel(host.attention) : null,
     };
   }
 
-  function attentionPill(entry: Pick<Entry, "agentId" | "workspaceId" | "hostLabel">, label: string, openTab: () => void) {
+  function openDestination(workspaceId: string, serverId: string, kind: "agent" | "workspace", id: string) {
+    requestHostDestination(workspaceId, { serverId, kind, id });
+    try { client.openPanel(hostAgentsPanelId, { workspaceId, location: "workspace" }); }
+    catch (error) { takeHostDestination(workspaceId, serverId); throw error; }
+  }
+
+  function attentionPill(entry: Pick<Entry, "agentId" | "workspaceId" | "hostLabel" | "serverId">, label: string) {
     return { label, registration: client.addComposerPill({
       id: `host-attention-${entry.agentId}`, workspaceId: entry.workspaceId, agentId: entry.agentId,
-      button: { title: `What ${entry.hostLabel}'s agents are waiting on you for`, label, icon: "Bell", behavior: { kind: "action", onPress: () => { requestHostAttention(entry.workspaceId); openTab(); } } },
+      button: { title: `What ${entry.hostLabel}'s agents are waiting on you for`, label,
+        icon: createOrchestratorDialogIcon({ serverId: entry.serverId, label: entry.hostLabel }, "attention", openDestination),
+        behavior: { kind: "action", onPress: () => openDialog(entry.workspaceId, entry.agentId, entry.serverId, "attention") } },
     }) };
   }
 
@@ -61,8 +78,11 @@ export function startOrchestratorPills(client: Pick<PluginClientContext, "paseo"
     const next = labels(entry);
     if (entry.agents.label !== next.agents) { entry.agents.registration.update({ label: next.agents }); entry.agents.label = next.agents; }
     if (entry.review.label !== next.review) { entry.review.registration.update({ label: next.review }); entry.review.label = next.review; }
-    if (!next.attention) { entry.attention?.registration.remove(); entry.attention = null; }
-    else if (!entry.attention) entry.attention = attentionPill(entry, next.attention, () => client.openPanel(hostAgentsPanelId, { workspaceId: entry.workspaceId, location: "workspace" }));
+    if (!next.attention) {
+      setOrchestratorDialogOpen(orchestratorDialogKey(entry.workspaceId, entry.agentId, entry.serverId, "attention"), false);
+      entry.attention?.registration.remove(); entry.attention = null;
+    }
+    else if (!entry.attention) entry.attention = attentionPill(entry, next.attention);
     else if (entry.attention.label !== next.attention) { entry.attention.registration.update({ label: next.attention }); entry.attention.label = next.attention; }
   }
 
@@ -71,20 +91,23 @@ export function startOrchestratorPills(client: Pick<PluginClientContext, "paseo"
     const openTab = () => client.openPanel(hostAgentsPanelId, { workspaceId, location: "workspace" });
     return {
       workspaceId, serverId, hostLabel, agentId,
-      attention: next.attention ? attentionPill({ agentId, workspaceId, hostLabel }, next.attention, openTab) : null,
+      attention: next.attention ? attentionPill({ agentId, workspaceId, hostLabel, serverId }, next.attention) : null,
       agents: { label: next.agents, registration: client.addComposerPill({
         id: `host-agents-${agentId}`, workspaceId, agentId,
         button: { title: `${hostLabel}'s workspaces and agents`, label: next.agents, icon: "Server", behavior: { kind: "action", onPress: openTab } },
       }) },
       review: { label: next.review, registration: client.addComposerPill({
         id: `host-review-${agentId}`, workspaceId, agentId,
-        button: { title: `What ${hostLabel}'s agents have ready to review`, label: next.review, icon: "FileDiff", behavior: { kind: "action", onPress: () => { requestHostReview(workspaceId); openTab(); } } },
+        button: { title: `Review this chat's work on ${hostLabel}`, label: next.review,
+          icon: createOrchestratorDialogIcon({ serverId, label: hostLabel }, "review", openDestination),
+          behavior: { kind: "action", onPress: () => openDialog(workspaceId, agentId, serverId, "review") } },
       }) },
     };
   }
 
   function remove(agentId: string) {
     const entry = entries.get(agentId);
+    if (entry) for (const kind of ["review", "attention"] as const) setOrchestratorDialogOpen(orchestratorDialogKey(entry.workspaceId, entry.agentId, entry.serverId, kind), false);
     entry?.agents.registration.remove();
     entry?.review.registration.remove();
     entry?.attention?.registration.remove();
@@ -97,10 +120,9 @@ export function startOrchestratorPills(client: Pick<PluginClientContext, "paseo"
     reading.add(serverId);
     try {
       const [host, reads] = await Promise.all([readHost(serverId), readAttention(serverId).catch(() => noAttentionReads)]);
-      const review = hostReviewItems(host.workspaces, host.agents);
       const label = [...entries.values()].find(entry => entry.serverId === serverId)?.hostLabel ?? serverId;
       counts.set(serverId, {
-        at: now(), running: runningAgentsCount(host.agents), ready: review.ready.length, changed: review.changed.length,
+        at: now(), running: runningAgentsCount(host.agents),
         attention: hostAttentionCount({ serverId, label, roster: host, reads }),
       });
       if (!stopped) for (const entry of entries.values()) if (entry.serverId === serverId) relabel(entry);

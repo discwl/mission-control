@@ -16,6 +16,7 @@ import { listRunRecords, taskAgentPrompt } from "./runs";
 import { createTaskWorktree, type CreatedWorktree } from "./worktree";
 import { ProcessStopped, runProcess } from "./process-tree";
 import { hideCredentials } from "../shared/secret-mask";
+import { requireLaunchParent } from "./launch-parent";
 
 // Paseo owns one RPC server per host. Share exclusion across module reloads and
 // launcher instances; a process exit releases it without leaving a stale file.
@@ -230,7 +231,7 @@ export function createTaskLauncher(overrides: Partial<LauncherDeps> = {}) {
       return failure && current.action === "start" ? { ...current, message: `The last start didn't finish: ${failure}` } : current;
     }
   }
-  type DispatchInput = TaskBinding & { expectedRevision: string; provider?: string; isolate?: boolean; modeId?: string; thinkingOptionId?: string; branch?: string; branchType?: BranchType };
+  type DispatchInput = TaskBinding & { parent?: { serverId: string; agentId: string }; expectedRevision: string; provider?: string; isolate?: boolean; modeId?: string; thinkingOptionId?: string; branch?: string; branchType?: BranchType };
   /** Launches, replying with the final status or, when the launch outlasts replyWithinMs, the status so far. */
   async function dispatch(input: DispatchInput, paseo: PaseoApi) {
     const replyBy = Date.now() + deps.replyWithinMs;
@@ -253,6 +254,7 @@ export function createTaskLauncher(overrides: Partial<LauncherDeps> = {}) {
     let { context, snapshot, status: current, bound } = await inspect(input, paseo);
     if (current.revision !== input.expectedRevision) throw new Error("Task or agent changed. Refresh before starting it.");
     if (!["start", "resume", "recover"].includes(current.action)) throw new Error(current.message);
+    if (input.parent && current.action === "start") await requireLaunchParent(input.parent, paseo);
     if (input.isolate && current.action === "start") {
       if (!context.canIsolate) throw new Error("This task can't start in its own worktree. Start it in this workspace instead.");
       const preview = current.branch;
@@ -277,7 +279,7 @@ export function createTaskLauncher(overrides: Partial<LauncherDeps> = {}) {
     else {
       const creatingAgent = !context.run;
       if (creatingAgent && !input.provider?.includes("/")) throw new Error("Choose a provider and model.");
-      record = { ...bound, launchId: randomUUID(), agentId: context.run?.agentId || randomUUID(), runId: context.run?.runId || `run_${randomUUID()}`, provider: input.provider || snapshot?.provider || "unknown", modeId: creatingAgent ? input.modeId ?? null : null, thinkingOptionId: creatingAgent ? input.thinkingOptionId ?? null : null, creatingAgent, phase: "preparing", createdAt: now, updatedAt: now, runUpdatedAt: context.run?.updatedAt ?? null, lastUserMessageAt: snapshot?.lastUserMessageAt ?? null, error: null };
+      record = { ...bound, ...(creatingAgent && input.parent ? { parent: input.parent } : {}), launchId: randomUUID(), agentId: context.run?.agentId || randomUUID(), runId: context.run?.runId || `run_${randomUUID()}`, provider: input.provider || snapshot?.provider || "unknown", modeId: creatingAgent ? input.modeId ?? null : null, thinkingOptionId: creatingAgent ? input.thinkingOptionId ?? null : null, creatingAgent, phase: "preparing", createdAt: now, updatedAt: now, runUpdatedAt: context.run?.updatedAt ?? null, lastUserMessageAt: snapshot?.lastUserMessageAt ?? null, error: null };
     }
     record = launchRecordSchema.parse(record);
     await saveLaunch(context.folder, record);
@@ -286,8 +288,9 @@ export function createTaskLauncher(overrides: Partial<LauncherDeps> = {}) {
       if (!run) run = await ensureRun(context, record);
       if (run.runId !== record.runId || run.agentId !== record.agentId) throw new Error("Launch and run agent identities do not match.");
       if (record.creatingAgent) {
+        if (record.parent) await requireLaunchParent(record.parent, paseo);
         const config = { provider: record.provider, ...(record.modeId ? { modeId: record.modeId } : {}), ...(record.thinkingOptionId ? { thinkingOptionId: record.thinkingOptionId } : {}) };
-        await paseo.workspaces.ref(bound.workspaceId).agents.create({ agentId: record.agentId, idempotencyKey: record.launchId, config, title: context.task.title, labels: { "mission-control.task-id": input.taskId, "mission-control.role": "builder" } });
+        await paseo.workspaces.ref(bound.workspaceId).agents.create({ agentId: record.agentId, idempotencyKey: record.launchId, ...(record.parent ? { parent: record.parent } : {}), config, title: context.task.title, labels: { "mission-control.task-id": input.taskId, "mission-control.role": "builder" } });
       }
       const agent = paseo.agents.ref(record.agentId);
       const refreshed = await refreshAgent(paseo, record.agentId);

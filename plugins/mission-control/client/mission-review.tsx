@@ -1,4 +1,6 @@
 import { useRpc } from "./host-rpc";
+import type { PluginTab } from "@getpaseo/plugin/client";
+import { useReviewSession } from "./review-session";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { FlatList, Pressable, ScrollView, Text, View } from "react-native";
@@ -25,6 +27,7 @@ import {
 import { formatDateTime } from "./date-time";
 import { ReviewFileMenu, ReviewItemActions, type ReviewItemTarget } from "./review-file-actions";
 import { ReviewFilePreview } from "./review-file-preview";
+import { openReviewFile } from "./review-file-screen";
 import { MarkdownPreview } from "./markdown-preview";
 import { CompactLink } from "./compact-link";
 import { Breadcrumbs } from "./breadcrumbs";
@@ -40,7 +43,7 @@ type Row =
   | { key: string; type: "unified"; line: DiffLine; contentId: string }
   | { key: string; type: "comment"; comment: ReviewComment }
   | { key: string; type: "composer"; anchor: CommentAnchor; commentId?: string; initial?: string };
-type Draft = { path: string; anchor: CommentAnchor | null; commentId?: string; initial?: string };
+type Draft = { path: string; anchor: CommentAnchor | null; commentId?: string; initial?: string; body?: string; fingerprint?: string };
 type LinePress = (line: DiffLine, contentId: string, side?: "old" | "new") => void;
 
 const numberStyle = [mono, { width: 40, paddingRight: 6, textAlign: "right" as const }];
@@ -193,12 +196,16 @@ function scopeLabel(snapshot: ReviewSnapshot | null) {
   return snapshot.base === "head" ? `uncommitted changes vs ${snapshot.head!.slice(0, 7)}` : "all files; the repository has no commits yet";
 }
 
-export function MissionReview({ serverId, localServerId = serverId, online, workspace, colors, compact, onChangeWorkspace, agentId: preferredAgentId }: {
+export function MissionReview({ serverId, localServerId = serverId, online, workspace, colors, compact, onChangeWorkspace, onNavigate, agentId: preferredAgentId, tab, sessionId = "workspace" }: {
   serverId: string; online: boolean; workspace: { id: string; name: string; projectName: string; hostLabel: string };
-  colors: Colors; compact: boolean; onChangeWorkspace?: () => void; agentId?: string;
+  colors: Colors; compact: boolean; onChangeWorkspace?: () => void; onNavigate?: () => void; agentId?: string;
   // The host this Mission Control runs on, whose vault names the tasks in sub-agents' context lines.
   localServerId?: string;
+  tab?: PluginTab; sessionId?: string;
 }) {
+  const identity = JSON.stringify([serverId, workspace.id, preferredAgentId ?? sessionId]);
+  const memory = useReviewSession(identity, tab);
+  const saved = memory.initial;
   const read = useRpc(getReviewSnapshot);
   // Poll for changes, but keep showing the snapshot the user is reviewing until they refresh.
   const query = useQuery({
@@ -207,21 +214,30 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
     enabled: online, refetchInterval: online ? 10_000 : false, staleTime: 0, retry: false,
   });
   const [pinned, setPinned] = useState<ReviewSnapshot | null>(null);
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
-  const [filter, setFilter] = useState<"all" | Severity>("all");
-  const [mode, setMode] = useState<"blocks" | "full">("blocks");
-  const [layout, setLayout] = useState<"split" | "unified">("split");
-  const [pane, setPane] = useState<"files" | "comments">("files");
-  const [fileView, setFileView] = useState<"list" | "tree">("tree");
-  const [blockIndex, setBlockIndex] = useState(0);
-  const [showDetail, setShowDetail] = useState(false);
-  const [showReviewed, setShowReviewed] = useState(false);
-  const [showResolved, setShowResolved] = useState(false);
+  const [selectedPath, setSelectedPath] = useState<string | null>(saved?.selectedPath ?? null);
+  const [filter, setFilter] = useState<"all" | Severity>(saved?.filter ?? "all");
+  const [mode, setMode] = useState<"blocks" | "full">(saved?.mode ?? "blocks");
+  const [layout, setLayout] = useState<"split" | "unified">(saved?.layout ?? "split");
+  const [pane, setPane] = useState<"files" | "comments">(saved?.pane ?? "files");
+  const [fileView, setFileView] = useState<"list" | "tree">(saved?.fileView ?? "tree");
+  const [blockIndex, setBlockIndex] = useState(saved?.blockIndex ?? 0);
+  const [showDetail, setShowDetail] = useState(saved?.showDetail ?? false);
+  const [showReviewed, setShowReviewed] = useState(saved?.showReviewed ?? false);
+  const [showResolved, setShowResolved] = useState(saved?.showResolved ?? false);
   const [scopeOpen, setScopeOpen] = useState(false);
-  const [draft, setDraft] = useState<Draft | null>(null);
-  const [agentChoice, setAgentChoice] = useState<string | null>(preferredAgentId ?? null);
+  const [draft, writeDraft] = useState<Draft | null>(saved?.draft ?? null);
+  function setDraft(next: Draft | null) {
+    // Finish or cancel the current note before replacing its file/line identity.
+    writeDraft(previous => next && previous && (previous.body ?? previous.initial ?? "").trim() ? previous : next ? { ...next, fingerprint: pinned?.fingerprint } : null);
+  }
+  const [agentChoice, setAgentChoice] = useState<string | null>(saved?.agentChoice ?? preferredAgentId ?? null);
   // Stays on while moving between Markdown files; other files always show changes.
-  const [showPreview, setShowPreview] = useState(false);
+  const [showPreview, setShowPreview] = useState(saved?.showPreview ?? false);
+  useEffect(() => {
+    memory.save({ version: 1, identity, selectedPath, filter, mode, layout, pane, fileView, blockIndex, showDetail, showReviewed, showResolved, showPreview, agentChoice, draft });
+  }, [identity, selectedPath, filter, mode, layout, pane, fileView, blockIndex, showDetail, showReviewed, showResolved, showPreview, agentChoice, draft]);
+  useEffect(() => { tab?.setModified(Boolean(draft && (draft.body ?? draft.initial ?? "").trim())); }, [tab, draft]);
+  const updateDraftBody = (body: string) => writeDraft(previous => previous ? { ...previous, body } : previous);
   const readFile = useRpc(readReviewFile);
   const [workingFile, setWorkingFile] = useState<{ serverId: string; workspaceId: string; path: string } | null>(null);
   const [itemTarget, setItemTarget] = useState<ReviewItemTarget | null>(null);
@@ -272,6 +288,7 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
 
   useEffect(() => { if (!pinned && query.data) setPinned(query.data); }, [pinned, query.data]);
   const snapshot = pinned;
+  const draftMatchesSnapshot = !draft?.fingerprint || draft.fingerprint === snapshot?.fingerprint;
   const stale = !!snapshot && !!query.data && query.data.fingerprint !== snapshot.fingerprint;
   const files = (snapshot?.files ?? []).filter(file => filter === "all" || file.severity === filter);
   const selected = snapshot?.files.find(file => file.path === selectedPath) ?? files[0] ?? null;
@@ -328,10 +345,10 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
       for (const key of keys) for (const comment of placement.byLine.get(key) ?? []) {
         if (shownComments.has(comment.commentId)) continue;
         shownComments.add(comment.commentId);
-        if (draft?.commentId === comment.commentId && draft.anchor) rows.push({ key: `edit-${comment.commentId}`, type: "composer", anchor: draft.anchor, commentId: comment.commentId, initial: draft.initial });
+        if (draftMatchesSnapshot && draft?.commentId === comment.commentId && draft.anchor) rows.push({ key: `edit-${comment.commentId}`, type: "composer", anchor: draft.anchor, commentId: comment.commentId, initial: draft.initial });
         else rows.push({ key: `c-${comment.commentId}`, type: "comment", comment });
       }
-      if (draft && !draft.commentId && draft.anchor && draft.path === selected.path && keys.includes(anchorKey(draft.anchor.side, draft.anchor.line))) {
+      if (draftMatchesSnapshot && draft && !draft.commentId && draft.anchor && draft.path === selected.path && keys.includes(anchorKey(draft.anchor.side, draft.anchor.line))) {
         rows.push({ key: `draft-${at}`, type: "composer", anchor: draft.anchor });
       }
     };
@@ -381,7 +398,7 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
     </ScrollView>
   </View> : null;
 
-  const fileMenu = <>{itemTarget ? <ReviewFileMenu key={`${serverId}:${workspace.id}:${itemTarget.path}:${itemTarget.directory}`} target={itemTarget} serverId={serverId} workspaceId={workspace.id} online={online} colors={colors}
+  const fileMenu = <>{itemTarget ? <ReviewFileMenu onNavigate={onNavigate} key={`${serverId}:${workspace.id}:${itemTarget.path}:${itemTarget.directory}`} target={itemTarget} serverId={serverId} workspaceId={workspace.id} online={online} colors={colors}
     onClose={() => setItemTarget(null)} onOpenFile={path => setWorkingFile({ serverId, workspaceId: workspace.id, path })}
     onDiscarded={() => { setSelectedPath(null); setDraft(null); setWorkingFile(null); refresh(); void queryClient.invalidateQueries({ queryKey: ["mission-control", "review-file", serverId, workspace.id] }); }} /> : null}
     {workingFile && workingFile.serverId === serverId && workingFile.workspaceId === workspace.id ? <ReviewFilePreview key={`${serverId}:${workspace.id}:${workingFile.path}`} {...workingFile} online={online} colors={colors} compact={compact} onClose={() => setWorkingFile(null)} /> : null}
@@ -403,6 +420,10 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
       {snapshot.head ? <LinkButton label={scopeOpen ? "Close" : "Change what to review"} onPress={() => setScopeOpen(!scopeOpen)} colors={colors} /> : null}
     </View> : null}
     {scopePicker}
+    {draft && (pane !== "files" || (compact && !showDetail) || draft.path !== selected?.path || (draft.anchor && !rows.some(row => row.type === "composer"))) ? <View style={{ gap: 6 }}>
+      <Text style={{ color: colors.statusWarning, fontSize: 12 }}>Unfinished comment on {draft.path}{draft.anchor ? `, ${draft.anchor.side} line ${draft.anchor.line}. Original line context is retained; it may now be outdated.` : "."} Save or cancel it before starting another comment.</Text>
+      <CommentComposer label="Unfinished review comment" value={draft.body ?? draft.initial ?? ""} onChange={updateDraftBody} colors={colors} busy={review.busy} indent={false} onSave={body => void saveDraft(body)} onCancel={() => setDraft(null)} />
+    </View> : null}
     {snapshot?.baseWarning ? <Text style={{ color: colors.statusWarning, fontSize: 12 }}>{snapshot.baseWarning}</Text> : null}
     {stale ? <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}><Text style={{ color: colors.statusWarning, fontSize: 12, flex: 1 }}>Files changed since this snapshot.</Text><CompactLink iconOnly icon="RefreshCw" label="Refresh latest changes" colors={colors} disabled={!online || query.isFetching} onPress={refresh} /></View> : null}
     {scanning ? (snapshot ? null : <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Reading this workspace's changes. Git is slow on this host, so this can take a minute.</Text>)
@@ -455,7 +476,7 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
   const detailHeader = selected && placement ? <View style={{ gap: 8, paddingBottom: 8 }}>
     {compact ? <CompactLink colors={colors} label={"← Files"} accessibilityRole="button" onPress={() => setShowDetail(false)} /> : null}
     <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-      <Text selectable style={{ color: colors.foreground, fontSize: 15, fontWeight: "700", flex: 1 }}>{selected.path}</Text>
+      <Text selectable style={{ color: colors.foreground, fontSize: 15, fontWeight: "700", flex: 1, minWidth: 0 }}>{selected.path}</Text>
       <SeverityBadge severity={selected.severity} colors={colors} />
     </View>
     <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>
@@ -466,6 +487,7 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
         style={{ minHeight: 40, paddingHorizontal: 12, justifyContent: "center", borderRadius: 7, backgroundColor: fileDone(selected) ? "transparent" : colors.accent, borderWidth: 1, borderColor: fileDone(selected) ? colors.statusSuccess : colors.accent }}>
         <Text style={{ color: fileDone(selected) ? colors.statusSuccess : colors.accentForeground, fontSize: 12, fontWeight: "600" }}>{fileDone(selected) ? "✓ File reviewed · undo" : "Mark file reviewed"}</Text>
       </Pressable>
+      {selected.change !== "deleted" ? <CompactLink label="Open file" colors={colors} disabled={!online} onPress={() => { try { openReviewFile(serverId, workspace.id, selected.path); onNavigate?.(); } catch (error) { setMarkError(String(error)); } }} /> : null}
       <Pressable accessibilityRole="button" accessibilityLabel="Comment on file" onPress={() => { review.clearError(); setDraft({ path: selected.path, anchor: null }); }}
         style={{ minHeight: 40, paddingHorizontal: 12, justifyContent: "center", borderRadius: 7, borderWidth: 1, borderColor: colors.border }}>
         <Text style={{ color: colors.foreground, fontSize: 12 }}>💬 Comment on file</Text>
@@ -474,7 +496,7 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
         <Text style={{ color: colors.foreground, fontSize: 12 }}>Next to review → {splitPath(nextToReview.path).name}</Text>
       </Pressable> : null}
     </View>
-    {fileDraft ? <CommentComposer key={fileDraft.commentId ?? "file"} label="Comment on this file" initial={fileDraft.initial} colors={colors} busy={review.busy} indent={false} onSave={body => void saveDraft(body)} onCancel={() => setDraft(null)} /> : null}
+    {fileDraft ? <CommentComposer key={fileDraft.commentId ?? "file"} label="Comment on this file" initial={fileDraft.initial} value={fileDraft.body ?? fileDraft.initial ?? ""} onChange={updateDraftBody} colors={colors} busy={review.busy} indent={false} onSave={body => void saveDraft(body)} onCancel={() => setDraft(null)} /> : null}
     {placement.fileLevel.map(comment => draft?.commentId === comment.commentId && !draft.anchor
       ? null
       : <CommentCard key={comment.commentId} comment={comment} colors={colors} agentName={agentName} busy={review.busy} onAction={action => void review.update(comment.commentId, action)}
@@ -507,7 +529,7 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
     renderItem={({ item }) => {
       if (item.type === "comment") return <CommentCard comment={item.comment} colors={colors} agentName={agentName} busy={review.busy} onAction={action => void review.update(item.comment.commentId, action)}
         onEdit={() => setDraft({ path: item.comment.path, anchor: item.comment.anchor, commentId: item.comment.commentId, initial: item.comment.body })} />;
-      if (item.type === "composer") return <CommentComposer key={item.key} label={`Comment on line ${item.anchor.line}${item.anchor.side === "old" ? " (removed)" : ""}`} initial={item.initial} colors={colors} busy={review.busy}
+      if (item.type === "composer") return <CommentComposer key={item.key} label={`Comment on line ${item.anchor.line}${item.anchor.side === "old" ? " (removed)" : ""}`} initial={item.initial} value={draft?.body ?? draft?.initial ?? ""} onChange={updateDraftBody} colors={colors} busy={review.busy}
         onSave={body => void saveDraft(body)} onCancel={() => setDraft(null)} />;
       return <DiffRow row={item} colors={colors} total={selected?.hunks.length ?? 0} split={effectiveLayout === "split"} isReviewed={isReviewed} onToggleReviewed={toggleBlock} onLinePress={onLinePress}
         onStep={mode === "blocks" ? delta => setBlockIndex(Math.max(0, Math.min((selected?.hunks.length ?? 1) - 1, block + delta))) : undefined} />;

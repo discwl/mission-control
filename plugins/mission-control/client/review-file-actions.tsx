@@ -1,4 +1,5 @@
 import { useRpc } from "./host-rpc";
+import { openReviewFile } from "./review-file-screen";
 import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { copyText, Icon } from "@getpaseo/plugin/client/react-native";
 import { Platform, Pressable, ScrollView, Text, View } from "react-native";
@@ -20,9 +21,9 @@ export function ReviewItemActions({ children, target, colors, onOpen }: { childr
   </View>;
 }
 
-export function ReviewFileMenu({ target, serverId, workspaceId, online, colors, onClose, onOpenFile, onDiscarded }: {
+export function ReviewFileMenu({ target, serverId, workspaceId, online, colors, onClose, onOpenFile, onDiscarded, onNavigate }: {
   target: ReviewItemTarget; serverId: string; workspaceId: string; online: boolean; colors: Colors;
-  onClose: () => void; onOpenFile: (path: string) => void; onDiscarded: () => void;
+  onClose: () => void; onOpenFile: (path: string) => void; onDiscarded: () => void; onNavigate?: () => void;
 }) {
   const prepare = useRpc(prepareReviewDiscard), discard = useRpc(discardReviewChanges), reveal = useRpc(revealReviewItem);
   const resolvePath = useRpc(resolveReviewItemPath);
@@ -51,7 +52,7 @@ export function ReviewFileMenu({ target, serverId, workspaceId, online, colors, 
   }
   const parts = target.path.replace(/\\/g, "/").replace(/\/$/, "").split("/");
   const name = parts.pop() || target.path, parent = parts.join("/") || "Repository root";
-  const item = (label: string, icon: ComponentProps<typeof Icon>["name"], hint: string, action: () => void, options: { danger?: boolean; local?: boolean } = {}) => {
+  const item = (label: string, icon: NonNullable<ComponentProps<typeof Icon>["name"]>, hint: string, action: () => void, options: { danger?: boolean; local?: boolean } = {}) => {
     const disabled = busy || (!online && !options.local);
     const done = (label === "Copy path" && copied === "path") || (label === "Copy relative path" && copied === "relative");
     return <Pressable key={label} accessibilityRole="button" accessibilityLabel={label} accessibilityHint={hint || undefined} accessibilityState={{ disabled }} disabled={disabled}
@@ -78,6 +79,7 @@ export function ReviewFileMenu({ target, serverId, workspaceId, online, colors, 
         {!plan ? <>
           <View style={{ gap: 2 }}>
             {sectionLabel("OPEN")}
+            {!target.directory && !target.deleted ? item("Open file", "FileText", "Open the current file in a persistent read-only view", () => void run(async () => { openReviewFile(serverId, workspaceId, target.path); onClose(); onNavigate?.(); })) : null}
             {!target.directory && !target.deleted ? item("Preview file", "FileText", "View the working file in a preview dialog", () => { onOpenFile(target.path); onClose(); }) : null}
             {item(target.directory ? "Open folder in Windows Explorer" : "Reveal in Windows Explorer", "FolderOpen", "Open on the workspace host", () => void run(async () => { await reveal(input); if (active.current) onClose(); }))}
           </View>

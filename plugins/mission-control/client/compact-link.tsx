@@ -4,7 +4,7 @@ import { Platform, Pressable, Text, View } from "react-native";
 import { openExternalUrl, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 
 type Colors = PluginSurfaceProps["theme"]["colors"];
-type IconName = ComponentProps<typeof Icon>["name"];
+type IconName = NonNullable<ComponentProps<typeof Icon>["name"]>;
 
 function actionIcon(label: string, expanded?: boolean): IconName {
   if (expanded !== undefined) return expanded ? "ChevronUp" : "ChevronDown";

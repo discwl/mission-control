@@ -22,6 +22,7 @@ function runtime(handlers = {}) {
     if (id === "../shared/review") return { prepareReviewDiscard: "prepare", discardReviewChanges: "discard", revealReviewItem: "reveal", resolveReviewItemPath: "resolvePath" };
     if (id === "@getpaseo/plugin/client/react-native") return { Icon: "Icon", copyText: async text => { calls.push({ name: "copy", text }); return handlers.copy?.(text); } };
     if (id === "./app-modal") return { AppModal: Object.assign(() => null, { Content: "ModalContent" }) };
+    if (id === "./review-file-screen") return { openReviewFile: (serverId, workspaceId, path) => { calls.push({ name: "openFile", serverId, workspaceId, path }); return handlers.openFile?.(); } };
     if (id === "./web") return { bindReviewContextMenu(node, open) { binds.push({ node, open }); return () => binds.push("removed"); } };
     throw new Error(`Unexpected import ${id}`);
   }, module, module.exports);
@@ -35,6 +36,25 @@ function runtime(handlers = {}) {
   };
 }
 const defaults = () => ({ target: { path: "src/file.txt", directory: false }, serverId: "personal", workspaceId: "development-flow", online: true, colors: {}, onClose() {}, onOpenFile() {}, onDiscarded() {} });
+
+test("Open file routes to the exact host/workspace while Preview stays a dialog", async () => {
+  const state = runtime(); let previews = 0, closes = 0, navigations = 0;
+  const props = { ...defaults(), serverId: "WestCap", workspaceId: "task-worktree", onOpenFile: () => previews++, onClose: () => closes++, onNavigate: () => navigations++ };
+  state.render(state.ReviewFileMenu, props); state.press("Open file"); await flush();
+  assert.deepEqual(state.calls, [{ name: "openFile", serverId: "WestCap", workspaceId: "task-worktree", path: props.target.path }]);
+  assert.equal(previews, 0); assert.equal(closes, 1); assert.equal(navigations, 1);
+  state.render(state.ReviewFileMenu, props); state.press("Preview file");
+  assert.equal(previews, 1); assert.equal(closes, 2); assert.equal(navigations, 1);
+});
+
+test("failed file navigation keeps both the menu and its containing review open", async () => {
+  const state = runtime({ openFile: () => { throw new Error("File screen unavailable"); } });
+  let closes = 0, navigations = 0;
+  state.render(state.ReviewFileMenu, { ...defaults(), onClose: () => closes++, onNavigate: () => navigations++ });
+  state.press("Open file"); await flush();
+  assert.equal(closes, 0); assert.equal(navigations, 0);
+  assert.ok(state.changes.includes("File screen unavailable"));
+});
 
 test("Explorer failures stay visible in the menu; successful requests use the exact workspace", async () => {
   for (const fails of [true, false]) {
@@ -103,10 +123,11 @@ test("menu mount and remount do not navigate, reveal or discard", () => {
   assert.deepEqual(state.calls, []);
 });
 
-test("file actions omit Go to file and clearly label the existing dialog preview", () => {
+test("file actions offer persistent Open file alongside the dialog preview", () => {
   const state = runtime(), seen = [], props = { ...defaults(), onOpenFile: path => seen.push(["file", path]), onClose: () => seen.push("close") };
   state.render(state.ReviewFileMenu, props);
-  assert.ok(!state.buttons.some(button => button.accessibilityLabel === "Go to file" || button.accessibilityLabel === "Open file"));
+  assert.ok(!state.buttons.some(button => button.accessibilityLabel === "Go to file"));
+  assert.ok(state.buttons.some(button => button.accessibilityLabel === "Open file"));
   state.press("Preview file");
   assert.deepEqual(seen, [["file", "src/file.txt"], "close"]);
   assert.deepEqual(state.calls, []);

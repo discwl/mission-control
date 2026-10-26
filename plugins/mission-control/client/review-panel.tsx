@@ -11,6 +11,7 @@ const sideBySideWidth = 900;
 export function WorkspaceReviewContent(props: (PluginWorkspacePanelProps | PluginAgentPanelProps) & { compact: boolean }) {
   const { theme, host, workspaceId, compact } = props;
   const colors = theme.colors;
+  const agentId = props.params && "agentId" in props.params ? props.params.agentId : props.context === "agent" ? props.agentId : undefined;
   const online = useHosts().some(candidate => candidate.serverId === host.id && candidate.status === "online");
   const workspace = useQuery({
     queryKey: ["mission-control", "workspace", host.id, workspaceId],
@@ -18,7 +19,7 @@ export function WorkspaceReviewContent(props: (PluginWorkspacePanelProps | Plugi
     enabled: online, staleTime: 30_000,
   });
   const data = workspace.data;
-  const review = <MissionReview key={`${host.id}:${workspaceId}:${props.context === "agent" ? props.agentId : "workspace"}`} serverId={host.id} online={online} colors={colors} compact={compact} agentId={props.context === "agent" ? props.agentId : undefined}
+  const review = <MissionReview key={`${host.id}:${workspaceId}:${agentId ?? "workspace"}`} tab={props.tab} serverId={host.id} online={online} colors={colors} compact={compact} agentId={agentId}
     workspace={{ id: workspaceId, name: data?.title || data?.name || "Workspace", projectName: data?.projectCustomName || data?.projectDisplayName || "", hostLabel: host.label }} />;
   const error = workspace.isError ? <Text style={{ color: colors.statusDanger }}>Workspace unavailable: {workspace.error instanceof Error ? workspace.error.message : String(workspace.error)}</Text> : null;
   return <>{error}{review}</>;

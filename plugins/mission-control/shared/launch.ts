@@ -9,6 +9,8 @@ export const taskBindingSchema = z.object({
   taskId: z.string().regex(/^task_[a-f0-9-]+$/),
 });
 export type TaskBinding = z.infer<typeof taskBindingSchema>;
+export const launchParentSchema = z.object({ serverId: z.string().min(1), agentId: z.string().min(1) });
+export const checkLaunchParent = defineRpc({ name: "tasks.launch.parent", input: launchParentSchema, output: z.object({ supported: z.boolean(), reason: z.string().optional() }) });
 
 // A dispatch receipt is separate from run evidence: accepting a prompt is not progress.
 export const launchRecordSchema = taskBindingSchema.extend({
@@ -20,6 +22,8 @@ export const launchRecordSchema = taskBindingSchema.extend({
   modeId: z.string().nullable().optional(),
   thinkingOptionId: z.string().nullable().optional(),
   creatingAgent: z.boolean(),
+  // Retained through recovery; never reparent an existing task worker on resume.
+  parent: launchParentSchema.optional(),
   phase: z.enum(["preparing", "sending", "sent"]),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -63,6 +67,7 @@ export const getTaskLaunch = defineRpc({
 export const launchTask = defineRpc({
   name: "tasks.launch.dispatch",
   input: taskBindingSchema.extend({
+    parent: launchParentSchema.optional(),
     expectedRevision: z.string(), provider: z.string().max(300).optional(), isolate: z.boolean().optional(),
     modeId: z.string().min(1).max(100).optional(), thinkingOptionId: z.string().min(1).max(100).optional(),
     // With isolate: the previewed branch, and feature or bugfix when the preview offered both.

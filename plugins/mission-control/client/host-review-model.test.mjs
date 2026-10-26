@@ -51,15 +51,15 @@ test("review lists workspaces labelled Review, then stopped workspaces with chan
     workspace({ id: "unpushed", aheadOfOrigin: 1, activityAt: "2026-10-07T12:00:00Z" }),
   ];
   const agents = [
-    agent({ id: "old", workspaceId: "labelled", updatedAt: "2026-10-07T08:00:00Z" }),
-    agent({ id: "new", workspaceId: "labelled", updatedAt: "2026-10-07T09:00:00Z" }),
+    agent({ id: "old", workspaceId: "labelled", updatedAt: "2026-10-07T23:00:00Z", lastUserMessageAt: "2026-10-07T08:00:00Z" }),
+    agent({ id: "new", workspaceId: "labelled", updatedAt: "2026-10-07T09:00:00Z", lastUserMessageAt: "2026-10-07T09:00:00Z" }),
     agent({ id: "gone", workspaceId: "labelled", updatedAt: "2026-10-07T10:00:00Z", archivedAt: "2026-10-07T10:00:00Z" }),
     agent({ id: "busy", workspaceId: "running", status: "running" }),
   ];
   const { ready, changed } = hostReviewItems(workspaces, agents);
-  assert.deepEqual(ready.map(item => item.workspace.id), ["labelled-newer", "labelled"]);
-  assert.deepEqual(ready[1].agents.map(item => item.id), ["new", "old"]);
-  assert.deepEqual(changed.map(item => item.workspace.id), ["unpushed", "changed"]);
+  assert.deepEqual(ready.map(item => item.workspace.id), ["labelled", "labelled-newer"], "workspace timestamps are not agent activity");
+  assert.deepEqual(ready[0].agents.map(item => item.id), ["new", "old"]);
+  assert.deepEqual(changed.map(item => item.workspace.id), ["changed", "unpushed"], "unknown activity sorts by stable workspace ID");
 });
 
 test("bubble labels count what needs the user and what is ready", () => {

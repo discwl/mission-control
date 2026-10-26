@@ -6,9 +6,11 @@ import { test } from "node:test";
 const require = createRequire(import.meta.url);
 const ts = require("typescript");
 require.extensions[".ts"] = (module, file) => module._compile(ts.transpileModule(readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, file);
+require.extensions[".tsx"] = module => { module.exports = { createOrchestratorDialogIcon: (binding, initial, openDestination) => props => ({ binding, initial, openDestination, props }) }; };
 const { startOrchestratorPills } = require("./orchestrator-pills.ts");
 const { createBindingLookup } = require("./orchestrator-bindings.ts");
-const { takeHostDialogRequest, takeHostReviewRequest } = require("./host-review-request.ts");
+const { takeHostDialogRequest, takeHostReviewRequest, takeHostDestination } = require("./host-review-request.ts");
+const { orchestratorDialogKey, isOrchestratorDialogOpen, setOrchestratorDialogOpen } = require("./orchestrator-dialog-request.ts");
 const turn = () => new Promise(resolve => setImmediate(resolve));
 
 async function fixture(t) {
@@ -62,26 +64,35 @@ test("an orchestrator chat gets the host's Agents, Review and Attention bubbles 
   assert.equal(f.pills.get("host-agents-orch").label, "Acme agents · 1 running");
   // One permission prompt and two open decisions; the finished agent doesn't count.
   assert.equal(f.pills.get("host-attention-orch").label, "Attention · 3");
-  assert.equal(f.pills.get("host-attention-orch").contribution.button.icon, "Bell");
-  assert.equal(f.pills.get("host-review-orch").label, "Review · 1 ready");
+  assert.equal(f.pills.get("host-attention-orch").contribution.button.icon({}).initial, "attention");
+  assert.equal(f.pills.get("host-review-orch").label, "Review");
   assert.equal(f.pills.get("host-review-orch").contribution.workspaceId, "orch-ws");
   assert.deepEqual(f.hostReads, ["srv_acme"]);
 });
 
-test("Agents opens the Host agents tab; Review also asks it for the review list", async t => {
+test("Attention and Review open in the chat; only Agents or an explicit destination opens a panel", async t => {
   const f = await fixture(t);
+  for (const kind of ["review", "attention"]) {
+    const behavior = f.pills.get(`host-${kind}-orch`).contribution.button.behavior;
+    assert.equal(behavior.kind, "action");
+    behavior.onPress();
+    const key = orchestratorDialogKey("orch-ws", "orch", "srv_acme", kind);
+    assert.equal(isOrchestratorDialogOpen(key), true);
+    assert.equal(isOrchestratorDialogOpen(orchestratorDialogKey("orch-ws", "another-chat", "srv_acme", kind)), false);
+    setOrchestratorDialogOpen(key, false);
+    const content = f.pills.get(`host-${kind}-orch`).contribution.button.icon({ context: "agent", workspaceId: "orch-ws", agentId: "orch" });
+    assert.equal(content.initial, kind);
+    assert.equal(content.binding.serverId, "srv_acme");
+    assert.equal(f.opens.length, 0);
+    assert.equal(takeHostDialogRequest("orch-ws"), null);
+  }
+  const content = f.pills.get("host-review-orch").contribution.button.icon({});
+  content.openDestination("orch-ws", "srv_acme", "agent", "worker");
+  assert.deepEqual(f.opens.at(-1), ["host-agents", { workspaceId: "orch-ws", location: "workspace" }]);
+  assert.deepEqual(takeHostDestination("orch-ws", "srv_acme"), { serverId: "srv_acme", kind: "agent", id: "worker" });
+  assert.equal(takeHostDestination("orch-ws", "srv_acme"), null);
   f.pills.get("host-agents-orch").contribution.button.behavior.onPress();
-  assert.deepEqual(f.opens.at(-1), ["host-agents", { workspaceId: "orch-ws", location: "workspace" }]);
-  assert.equal(takeHostReviewRequest("orch-ws"), false);
-  f.pills.get("host-review-orch").contribution.button.behavior.onPress();
-  assert.deepEqual(f.opens.at(-1), ["host-agents", { workspaceId: "orch-ws", location: "workspace" }]);
-  assert.equal(takeHostReviewRequest("orch-ws"), true);
-  assert.equal(takeHostReviewRequest("orch-ws"), false);
-  f.pills.get("host-attention-orch").contribution.button.behavior.onPress();
-  assert.deepEqual(f.opens.at(-1), ["host-agents", { workspaceId: "orch-ws", location: "workspace" }]);
-  assert.equal(takeHostReviewRequest("orch-ws"), false, "an Attention request isn't a Review request");
-  assert.equal(takeHostDialogRequest("orch-ws"), "attention");
-  assert.equal(takeHostDialogRequest("orch-ws"), null);
+  assert.equal(f.opens.length, 2);
 });
 
 test("the Attention bubble shows only while something waits, and counts prompts when Mission Control can't be asked", async t => {
@@ -104,7 +115,7 @@ test("the host is read at most once a minute, and an unreachable host keeps its 
   f.advance(60_000); f.state.hostFails = true;
   await f.tick();
   assert.equal(f.hostReads.length, 2);
-  assert.equal(f.pills.get("host-review-orch").label, "Review · 1 ready");
+  assert.equal(f.pills.get("host-review-orch").label, "Review");
   f.state.hostFails = false; f.state.host = { workspaces: [], agents: [] };
   await f.tick();
   assert.equal(f.pills.get("host-review-orch").label, "Review");
@@ -127,6 +138,25 @@ test("bubbles go when the chat closes or the folder stops naming a host, and on 
   await f.tick();
   f.stop();
   assert.equal(f.pills.size, 0);
+});
+
+test("registration removal clears dialog state, while stale clicks cannot reopen it", async t => {
+  const f = await fixture(t);
+  const attentionKey = orchestratorDialogKey("orch-ws", "orch", "srv_acme", "attention");
+  const reviewKey = orchestratorDialogKey("orch-ws", "orch", "srv_acme", "review");
+  const clickReview = f.pills.get("host-review-orch").contribution.button.behavior.onPress;
+  f.pills.get("host-attention-orch").contribution.button.behavior.onPress();
+  assert.equal(isOrchestratorDialogOpen(attentionKey), true);
+  f.advance(60_000); f.state.attention = { questions: [], openDecisions: 0 }; f.state.host.agents[1].permissions = [];
+  await f.tick();
+  assert.equal(f.pills.has("host-attention-orch"), false);
+  assert.equal(isOrchestratorDialogOpen(attentionKey), false);
+  clickReview();
+  assert.equal(isOrchestratorDialogOpen(reviewKey), true);
+  f.stop();
+  assert.equal(isOrchestratorDialogOpen(reviewKey), false);
+  clickReview();
+  assert.equal(isOrchestratorDialogOpen(reviewKey), false);
 });
 
 test("binding lookups are cached for a minute and keep the last answer when a read fails", async () => {

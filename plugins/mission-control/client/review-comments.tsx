@@ -111,13 +111,14 @@ export function CommentCard({ comment, colors, agentName, busy, onAction, onEdit
   </View>;
 }
 
-export function CommentComposer({ label, initial, colors, busy, onSave, onCancel, indent = true }: {
-  label: string; initial?: string; colors: Colors; busy: boolean; onSave: (body: string) => void; onCancel: () => void; indent?: boolean;
+export function CommentComposer({ label, initial, value, onChange, colors, busy, onSave, onCancel, indent = true }: {
+  label: string; initial?: string; value?: string; onChange?: (body: string) => void; colors: Colors; busy: boolean; onSave: (body: string) => void; onCancel: () => void; indent?: boolean;
 }) {
-  const [body, setBody] = useState(initial ?? "");
+  const [localBody, setBody] = useState(initial ?? "");
+  const body = value ?? localBody;
   return <View style={{ marginVertical: 4, marginLeft: indent ? 46 : 0, borderColor: colors.accent, borderWidth: 1, borderRadius: 7, padding: 9, gap: 6, backgroundColor: colors.surface1 }}>
     <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{label}</Text>
-    <TextInput accessibilityLabel={label} value={body} onChangeText={setBody} editable={!busy} multiline autoFocus placeholder="What should change here?" placeholderTextColor={colors.foregroundMuted}
+    <TextInput accessibilityLabel={label} value={body} onChangeText={text => { setBody(text); onChange?.(text); }} maxLength={4000} editable={!busy} multiline autoFocus placeholder="What should change here?" placeholderTextColor={colors.foregroundMuted}
       style={{ color: colors.foreground, backgroundColor: colors.surface0, borderColor: colors.border, borderWidth: 1, borderRadius: 6, padding: 8, minHeight: 64, fontSize: 13, textAlignVertical: "top" }} />
     <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
       <Pressable accessibilityRole="button" disabled={busy} onPress={onCancel} style={{ minHeight: 36, paddingHorizontal: 12, justifyContent: "center" }}><Text style={{ color: colors.foreground, fontSize: 12 }}>Cancel</Text></Pressable>

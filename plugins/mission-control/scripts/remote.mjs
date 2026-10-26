@@ -30,7 +30,8 @@ Commands:
                                              A task without a ticket.
   status --workspace <id> --task <id>        What Start would do, the agent, the latest run and its stage.
   start --workspace <id> --task <id> [--provider <provider/model>] [--thinking <id>] [--mode <id>]
-      [--no-isolate] [--branch <name>] [--branch-type <feature|bugfix>]
+      [--no-isolate] [--branch <name>] [--branch-type <feature|bugfix>] [--orchestrator-agent <local chat id>]
+                                             Links the worker to PASEO_AGENT_ID (or --orchestrator-agent) on this machine.
                                              Starts, resumes or recovers the task's agent, as the Start button does.
   set-status --workspace <id> --task <id> --to <inbox|ready|in_progress|blocked|in_review|delivered|closed>
   due --workspace <id> --task <id> (--date <YYYY-MM-DD> | --clear)
@@ -51,6 +52,7 @@ const options = {
   "no-isolate": { type: "boolean" }, branch: { type: "string" }, "branch-type": { type: "string" },
   to: { type: "string" }, date: { type: "string" }, clear: { type: "boolean" }, name: { type: "string" },
   report: { type: "string" }, item: { type: "string", multiple: true },
+  "orchestrator-agent": { type: "string" },
 };
 
 const need = (values, ...names) => {
@@ -129,8 +131,18 @@ export async function runCommand(command, values, rpc) {
       const target = binding();
       const status = await rpc("tasks.launch.status", target);
       if (!["start", "resume", "recover"].includes(status.action)) return { started: false, ...describeLaunch(status) };
-      const next = await rpc("tasks.launch.dispatch", launchInput(target, status, values));
-      return { started: true, ...describeLaunch(next) };
+      const input = launchInput(target, status, values);
+      let nativeParent = { linked: false, reason: status.action === "start" ? "Originating chat or native host connection is unavailable." : "Existing workers keep their original parent." };
+      if (status.action === "start" && values.parent) {
+        try {
+          const check = await rpc("tasks.launch.parent", values.parent);
+          if (check.supported) { input.parent = values.parent; nativeParent = { linked: true }; }
+          else nativeParent.reason = check.reason || "Native parent connection is unavailable.";
+        } catch { nativeParent.reason = "This host does not support native Mission Control worker parents yet. Update Mission Control and Paseo on both hosts."; }
+      }
+      // Never retry a dispatch whose response is lost. Status reconciles its existing launch receipt.
+      const next = await rpc("tasks.launch.dispatch", input);
+      return { started: true, ...describeLaunch(next), ...(values.parent ? { nativeParent: { ...nativeParent, linked: Boolean(next.launch?.parent), requested: Boolean(input.parent) } } : {}) };
     }
     case "set-status": {
       need(values, "to");
@@ -166,6 +178,18 @@ export async function runCommand(command, values, rpc) {
       return rpc("morning.import", { ...workspace(), reportId: values.report, items: values.item });
     }
     default: throw new Error(`Unknown command "${command}".\n\n${usage}`);
+  }
+}
+
+/** A link failure must never turn a successful remote dispatch into an apparently failed start. */
+export async function recordStartedWork(result, target, record) {
+  if (!result.agent?.id) return { linked: false, warning: "No worker was returned. Use Link workers in Review after the launch completes." };
+  try {
+    await record({ remoteServerId: target.serverId, remoteAgentId: result.agent.id,
+      remoteWorkspaceId: result.worktree?.workspaceId || target.workspaceId, taskId: target.taskId, linked: true });
+    return { linked: true };
+  } catch (error) {
+    return { linked: false, warning: `Remote start result is unchanged; its chat link could not be saved: ${error instanceof Error ? error.message : String(error)}. Use Link workers in Review; do not repeat Start just to save the link.` };
   }
 }
 
@@ -211,15 +235,55 @@ async function main() {
   const { values, positionals } = parseArgs({ options, allowPositionals: true });
   if (values.help || !positionals.length) { console.log(usage); return; }
   const client = await connect(values);
+  let parentClient, parentAddress;
+  const originAgentId = values["orchestrator-agent"]?.trim() || process.env.PASEO_AGENT_ID?.trim();
   try {
+    if (positionals[0] === "start" && originAgentId) {
+      try {
+        parentClient = await connect({ local: true });
+        const { serverId } = await parentClient.invokePluginRpc(PLUGIN_ID, "host.identity", {});
+        parentAddress = { serverId, agentId: originAgentId };
+      } catch { /* Task launch still works without native parent routing. */ }
+    }
+    let remoteServerId;
     const result = await runCommand(positionals[0], values, async (method, input) => {
-      try { return await client.invokePluginRpc(PLUGIN_ID, method, input); } catch (error) {
+      try {
+        const response = await client.invokePluginRpc(PLUGIN_ID, method, input);
+        if (method === "host.identity") {
+          remoteServerId = response.serverId;
+          if (parentClient && parentAddress) {
+            try {
+              // This also validates that the exact originating chat's host.json targets this host.
+              await parentClient.invokePluginRpc(PLUGIN_ID, "orchestrator.work.list", { ...parentAddress, remoteServerId });
+              values.parent = parentAddress;
+            } catch { /* Do not infer ownership from a folder or a matching title. */ }
+          }
+        }
+        return response;
+      } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(/unknown|not found|no handler/i.test(message) ? `${method}: ${message} (is Mission Control installed and up to date on that host?)` : `${method}: ${message}`);
       }
     });
+    if (positionals[0] === "start") {
+      const agentId = values["orchestrator-agent"]?.trim() || process.env.PASEO_AGENT_ID?.trim();
+      if (!agentId) result.orchestrator = { linked: false, warning: "No originating chat identity. Use --orchestrator-agent or Link workers in Review." };
+      else {
+        let origin;
+        result.orchestrator = await recordStartedWork(result, {
+          serverId: remoteServerId,
+          workspaceId: values.workspace, taskId: values.task,
+        }, async link => {
+          origin = await connect({ local: true });
+          const { serverId } = await origin.invokePluginRpc(PLUGIN_ID, "host.identity", {});
+          await origin.invokePluginRpc(PLUGIN_ID, "orchestrator.work.set", { ...link, serverId, agentId });
+        });
+        await origin?.close().catch(() => {});
+      }
+    }
     console.log(JSON.stringify(result, null, 2));
   } finally {
+    await parentClient?.close().catch(() => {});
     await client.close().catch(() => {});
   }
 }

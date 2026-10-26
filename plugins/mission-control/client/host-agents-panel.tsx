@@ -14,7 +14,8 @@ import { VaultDocumentLinks } from "./document-links";
 import type { MissionControlCopy } from "./host-bridge";
 import { hostAttentionCount, hostAttentionLabel, noAttentionReads, readHostAttention } from "./host-attention";
 import { changeSummary, hostReviewItems, pullRequestSummary, runningAgentsCount, type ReviewItem } from "./host-review-model";
-import { hostReviewRequestVersion, subscribeHostReviewRequests, takeHostDialogRequest } from "./host-review-request";
+import { hostReviewRequestVersion, subscribeHostReviewRequests, takeHostDialogRequest, takeHostDestination } from "./host-review-request";
+import { agentActivityAt, latestTime } from "./orchestrator-work-model";
 import { HostRpcProvider, useMissionControlCopy } from "./host-rpc";
 import { InfoTip } from "./info-tip";
 import { MissionDocs } from "./mission-docs";
@@ -47,7 +48,7 @@ function statusColor(status: string, colors: Colors): string {
 }
 
 function timeLabel(value: string | null): string {
-  return value ? formatDateTime(value) : "No activity yet";
+  return value ? formatDateTime(value) : "No activity reported";
 }
 
 function projectsOf(roster: Roster): Project[] {
@@ -140,7 +141,16 @@ function HostView({ binding, remote, localServerId, workspaceId, theme, layout, 
     const dialog = takeHostDialogRequest(workspaceId);
     if (dialog === "review") { setAttentionOpen(false); setReviewOpen(true); }
     if (dialog === "attention") { setReviewOpen(false); setAttentionOpen(true); }
-  }, [requests, workspaceId]);
+    const destination = takeHostDestination(workspaceId, serverId);
+    if (destination) {
+      setReviewOpen(false); setAttentionOpen(false);
+      try {
+        if (!navigation) throw new Error("Opening conversations and workspaces is unavailable in this client.");
+        if (destination.kind === "agent") navigation.openAgent({ serverId, agentId: destination.id });
+        else navigation.openWorkspace({ serverId, workspaceId: destination.id });
+      } catch (error) { setNavigationError(error instanceof Error ? error.message : String(error)); }
+    }
+  }, [requests, workspaceId, serverId, navigation]);
   // What blocks an agent there: the bubble's count, from the host's roster and its own Mission Control.
   const copy = "copy" in bridge ? bridge.copy : null;
   const attentionReads = useQuery({
@@ -359,15 +369,15 @@ function WorkspaceRow({ workspace, agents, hostLabel, colors, onPress }: { works
 type CardActions = { canNavigate: boolean; openReview: (id: string) => void; openWorkspace: (id: string) => void; openAgent: (id: string) => void; showDetails: (id: string) => void };
 
 /** What's ready on the host: workspaces labelled Review first, then other workspaces with changes. */
-function ReviewSections({ hostLabel, ready, changed, loaded, colors, ...actions }: CardActions & {
-  hostLabel: string; ready: ReviewItem[]; changed: ReviewItem[]; loaded: boolean; colors: Colors;
+export function ReviewSections({ hostLabel, ready, changed, loaded, colors, linkedAgentIds, ...actions }: CardActions & {
+  hostLabel: string; ready: ReviewItem[]; changed: ReviewItem[]; loaded: boolean; colors: Colors; linkedAgentIds?: ReadonlySet<string>;
 }) {
   const section = (title: string, hint: string, items: ReviewItem[]) => <View style={{ gap: 8 }}>
     <View style={{ gap: 2 }}>
       <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 14, fontWeight: "600" }}>{title} ({items.length})</Text>
       <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{hint}</Text>
     </View>
-    {items.map(item => <ReviewCard key={item.workspace.id} item={item} colors={colors} {...actions} />)}
+    {items.map(item => <ReviewCard key={item.workspace.id} item={item} colors={colors} linkedAgentIds={linkedAgentIds} {...actions} />)}
   </View>;
   if (!loaded) return <Text style={{ color: colors.foregroundMuted }}>{hostLabel}'s workspaces haven't loaded yet.</Text>;
   if (ready.length + changed.length === 0) return <Text style={{ color: colors.foregroundMuted }}>Nothing on {hostLabel} is waiting for review: no workspace is labelled Review, and none with stopped agents has changes. Open review on any workspace's page reviews it anyway.</Text>;
@@ -377,7 +387,7 @@ function ReviewSections({ hostLabel, ready, changed, loaded, colors, ...actions 
   </View>;
 }
 
-function ReviewCard({ item, colors, canNavigate, openReview, openWorkspace, openAgent, showDetails }: CardActions & { item: ReviewItem; colors: Colors }) {
+function ReviewCard({ item, colors, canNavigate, openReview, openWorkspace, openAgent, showDetails, linkedAgentIds }: CardActions & { item: ReviewItem; colors: Colors; linkedAgentIds?: ReadonlySet<string> }) {
   const { workspace, agents } = item;
   const latest = agents[0] ?? null;
   const agentLine = latest ? [
@@ -391,11 +401,19 @@ function ReviewCard({ item, colors, canNavigate, openReview, openWorkspace, open
       <Text style={{ color: statusColor(workspace.status, colors), fontSize: 12 }}>{workspace.status.replaceAll("_", " ")}</Text>
     </View>
     <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
-      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{workspace.projectName} · {timeLabel(workspace.activityAt)}</Text>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{workspace.projectName} · Last activity: {timeLabel(latestTime(agents.map(agentActivityAt)))}</Text>
       {workspace.labels.map(name => <Badge key={name.toLowerCase()} text={name} colors={colors} />)}
     </View>
     <GitLine workspace={workspace} colors={colors} />
+    <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>Workspace changes · shared checkout totals, not individual agent changes</Text>
     <Text numberOfLines={3} style={{ color: colors.foregroundMuted, fontSize: 12 }}>{agentLine}</Text>
+    {linkedAgentIds ? agents.map(agent => <View key={agent.id} style={{ gap: 3, paddingVertical: 4 }}>
+      <Text style={{ color: linkedAgentIds.has(agent.id) ? colors.accent : colors.foregroundMuted, fontSize: 12 }}>
+        {linkedAgentIds.has(agent.id) ? "This chat's worker" : "Not linked to this chat"} · {agent.name} · {agent.requiresAttention ? "needs you" : agent.status}
+      </Text>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>Last activity: {timeLabel(agentActivityAt(agent))} · Agent updated: {timeLabel(agent.updatedAt)}</Text>
+      <CompactLink label="Open conversation" colors={colors} disabled={!canNavigate} onPress={() => openAgent(agent.id)} />
+    </View>) : null}
     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
       <CompactLink label="Open review" icon="FileDiff" colors={colors} onPress={() => openReview(workspace.id)} />
       <CompactLink label="Open workspace" colors={colors} disabled={!canNavigate} onPress={() => openWorkspace(workspace.id)} />

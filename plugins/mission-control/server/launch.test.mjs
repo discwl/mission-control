@@ -75,6 +75,28 @@ async function fixture(t) {
   return { input, task, state, agents, deps, paseo, launcher, start, run, folder };
 }
 
+test("native worker parent survives preparation recovery and is passed to the single task agent", async t => {
+  const f = await fixture(t), parent = { serverId: "orchestrator-host", agentId: "orchestrator-chat" }, parents = [];
+  const originalContext = f.deps.loadContext;
+  f.deps.loadContext = ({ parent: ignored, ...binding }) => originalContext(binding);
+  const originalRef = f.paseo.workspaces.ref;
+  f.paseo.workspaces.ref = id => ({ agents: { create: options => { parents.push(options.parent); return originalRef(id).agents.create(options); } } });
+  const originalAgentRef = f.paseo.agents.ref;
+  f.paseo.agents.ref = id => ({ ...originalAgentRef(id), address: { serverId: f.input.serverId, agentId: id } });
+  f.paseo.hosts = { client: async () => { throw Error("Reverse host connections are forbidden"); } };
+  const launcher = createTaskLauncher(f.deps);
+  f.state.rejectCreate = true;
+  await assert.rejects(launcher.dispatch({ ...f.input, parent, expectedRevision: (await launcher.status(f.input, f.paseo)).revision, provider: "codex/model" }, f.paseo), /Provider unavailable/);
+  const failed = await launcher.status(f.input, f.paseo);
+  assert.deepEqual(failed.launch.parent, parent);
+  assert.equal(failed.action, "recover");
+  f.state.rejectCreate = false;
+  const recovered = await launcher.dispatch({ ...f.input, parent: { serverId: "other", agentId: "other" }, expectedRevision: failed.revision }, f.paseo);
+  assert.equal(f.state.creates, 1); assert.equal(f.state.sends, 1);
+  assert.deepEqual(parents, [parent, parent]);
+  assert.deepEqual(recovered.launch.parent, parent);
+});
+
 test("missing reserved agents recover after definite create failure without swallowing connection errors", async t => {
   const f = await fixture(t);
   f.state.rejectCreate = true;

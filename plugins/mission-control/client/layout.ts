@@ -4,6 +4,8 @@
 // app's own layout is in window-layout.ts and this module stays loadable in plain Node tests.
 
 export const compactWidth = 720;
+let unifiedExplorer = false;
+export function setUnifiedExplorer(enabled: boolean) { unifiedExplorer = enabled; }
 
 export type Layout = { compact(): boolean; subscribe(listener: () => void): () => void };
 
@@ -12,5 +14,5 @@ export const wideLayout: Layout = { compact: () => false, subscribe: () => () =>
 
 /** Where a panel that can be either a tab or an Explorer pane should open. */
 export function panelLocation(layout: Pick<Layout, "compact">): "explorer" | "workspace" {
-  return layout.compact() ? "workspace" : "explorer";
+  return !unifiedExplorer && layout.compact() ? "workspace" : "explorer";
 }

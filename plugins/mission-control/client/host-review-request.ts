@@ -3,6 +3,23 @@
 
 export type HostDialog = "review" | "attention";
 
+type HostDestination = { serverId: string; kind: "agent" | "workspace"; id: string };
+const destinations = new Map<string, HostDestination>();
+
+// Button contributions in Paseo 0.12 don't receive native navigation. Only an explicit destination
+// action mounts Host agents to use its navigation; opening or closing the dialog never does.
+export function requestHostDestination(workspaceId: string, destination: HostDestination) {
+  destinations.set(workspaceId, destination);
+  version++;
+  for (const listener of [...listeners]) listener();
+}
+
+export function takeHostDestination(workspaceId: string, serverId: string): HostDestination | null {
+  const destination = destinations.get(workspaceId);
+  destinations.delete(workspaceId);
+  return destination?.serverId === serverId ? destination : null;
+}
+
 const pending = new Map<string, HostDialog>();
 const listeners = new Set<() => void>();
 let version = 0;

@@ -19,7 +19,8 @@ import { agentRuns, createClaimHandler } from "./server/agents-panel";
 import { agentsPanelSettings, claimAgentsPanelWorkspaces, listAgentRuns } from "./shared/agents-panel";
 import { getTaskSummary } from "./shared/task-summary";
 import { listTaskRuns, resolveTaskPrompt } from "./shared/runs";
-import { getTaskLaunch, launchTask } from "./shared/launch";
+import { getTaskLaunch, launchTask, checkLaunchParent } from "./shared/launch";
+import { probeLaunchParent } from "./server/launch-parent";
 import { createTaskLauncher } from "./server/launch";
 import { projectRoot, registerProjectGit, resolveDefaultBranch } from "./server/project-git";
 import { registerBranchNames } from "./server/branch-names";
@@ -46,6 +47,7 @@ import { registerMorning } from "./server/morning";
 import { registerWorkflowInstructions } from "./server/workflow-instructions";
 import { registerAgentCleanup } from "./server/agent-cleanup";
 import { registerOrchestrator } from "./server/orchestrator";
+import { registerOrchestratorWork } from "./server/orchestrator-work";
 import { startWorkspaceLabelSync } from "./server/workspace-labels";
 import { rememberHostPaseo } from "./server/host-paseo";
 import { getMissionSummary } from "./shared/mission";
@@ -68,6 +70,7 @@ export default function contribute(context: PluginServerContext) {
   registerMorning(server);
   registerWorkflowInstructions(server);
   registerOrchestrator(server);
+  registerOrchestratorWork(server);
   const projectGit = registerProjectGit(server);
   const branchNames = registerBranchNames(server);
   registerToolsInventory(server);
@@ -91,6 +94,7 @@ export default function contribute(context: PluginServerContext) {
     },
   });
   server.handle(getTaskLaunch, (input, { paseo }) => launcher.status(input, paseo));
+  server.handle(checkLaunchParent, (input, { paseo }) => probeLaunchParent(input, paseo));
   server.handle(launchTask, (input, { paseo }) => launcher.dispatch(input, paseo));
   const decisions = createDecisionStore({ sources: taskSources, kitRoot: source => profileKitRoot(defaultVaultPath, source.task.projectId) });
   const needsYouTimeline = createNeedsYouTimeline(localServerId);
