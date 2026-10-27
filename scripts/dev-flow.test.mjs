@@ -6,6 +6,7 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import vm from "node:vm";
+import { planBrief } from "../plugins/mission-control/server/plan-test-data.mjs";
 import { createWorkflowInstructionsStore } from "../plugins/mission-control/server/workflow-instructions-store.mjs";
 
 const cli = join(dirname(fileURLToPath(import.meta.url)), "dev-flow.mjs");
@@ -42,6 +43,7 @@ async function fixture(t) {
     schemaVersion: 1, taskId, hostId: "personal", projectId, title: "Pilot", acceptanceCriteria: "A recorded handoff survives resume.",
     status: "ready", source: "manual", assignments: [{ serverId, workspaceId }], createdAt: "2026-09-23T00:00:00Z", updatedAt: "2026-09-23T00:00:00Z",
   }));
+  await writeFile(join(folder, "plan.md"), "# Plan\n\nPrevent new full discounts. Leave existing orders untouched.\n");
   function run(command, extras = []) {
     return spawnSync(process.execPath, [cli, command, "--task", taskId, "--server", serverId, "--workspace", workspaceId, ...extras], {
       cwd: repo, env: { ...process.env, PASEO_AGENT_ID: "", DEV_VAULT_ROOT: vault }, encoding: "utf8",
@@ -423,7 +425,7 @@ test("a review decision records the reviewed candidate without touching the chec
 
   // Plan decisions record no candidate.
   const planRun = JSON.parse(run("start", ["--cwd", worktree]).stdout).run.runId;
-  await writeFile(input, JSON.stringify({ kind: "plan", question: "Approve the plan?", summary: "Plan." }));
+  await writeFile(input, JSON.stringify({ kind: "plan", question: "Approve the plan?", summary: "Plan.", planBrief }));
   const plan = run("request-decision", ["--run", planRun, "--input", input, "--cwd", worktree]);
   assert.equal(plan.status, 0, plan.stderr);
   assert.equal(JSON.parse(plan.stdout).decision.candidate, null);
@@ -496,13 +498,52 @@ test("decision requests store plain-language fields, refuse IDs, hashes, paths a
   assert.equal(JSON.parse(warned.stdout).decision.plain.found, jargon.found);
 
   // Plans may leave "found" out; a request without plain fields still works, as older callers send it.
-  const plan = await request({ kind: "plan", question: "Approve?", summary: "Plan.", plain: { built: "A pause button for tasks.", recommendation: { action: "accept", reason: "Small and safe." } } }, newRun());
+  const plan = await request({ kind: "plan", question: "Approve?", summary: "Plan.", planBrief, plain: { built: "A pause button for tasks.", recommendation: { action: "accept", reason: "Small and safe." } } }, newRun());
   assert.equal(plan.status, 0, plan.stderr);
   assert.deepEqual(JSON.parse(plan.stdout).decision.plain, { built: "A pause button for tasks.", found: "", recommendation: { action: "accept", reason: "Small and safe." } });
   const old = await request({ kind: "review", question: "Approve?", summary: "Clean.", findings: [{ title: "Typo", severity: "low" }] }, newRun());
   assert.equal(old.status, 0, old.stderr);
   assert.equal(JSON.parse(old.stdout).decision.plain, null);
   assert.equal(JSON.parse(old.stdout).findings[0].plain, null);
+});
+
+test("plan requests require a readable brief and capture a versioned full plan", async t => {
+  const f = await fixture(t);
+  const runId = JSON.parse(f.run("start").stdout).run.runId;
+  const input = join(f.base, "plan.json");
+  const request = async body => { await writeFile(input, JSON.stringify(body)); return f.run("request-decision", ["--run", runId, "--input", input]); };
+  const base = { kind: "plan", question: "Approve prevention first?", summary: "Cleanup remains deferred." };
+  const missing = await request(base);
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /requires planBrief/);
+  const jargon = await request({ ...base, planBrief: { ...planBrief, goal: "Update task_aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa." } });
+  assert.notEqual(jargon.status, 0);
+  assert.match(jargon.stderr, /internal ID/);
+  assert.equal((await readdir(join(f.folder, "runs", runId))).includes("decisions"), false);
+  const result = await request({ ...base, planBrief });
+  assert.equal(result.status, 0, result.stderr);
+  const decision = JSON.parse(result.stdout).decision;
+  assert.match(decision.plan.revision, /^[a-f0-9]{64}$/);
+  const snapshot = JSON.parse(await readFile(join(f.folder, "runs", runId, decision.plan.path), "utf8"));
+  assert.equal(snapshot.markdown, await readFile(join(f.folder, "plan.md"), "utf8"));
+  assert.deepEqual(snapshot.brief, planBrief);
+  assert.equal(snapshot.previous, null);
+  assert.equal(JSON.parse(f.run("context").stdout).latestRun.outcome, "waiting");
+  // Simulate the user's returned change request before the agent proposes a revision.
+  const file = join(f.folder, "runs", runId, "decisions", `${decision.decisionId}.md`);
+  await writeFile(file, (await readFile(file, "utf8")).replace('status: "open"', 'status: "changes_requested"'));
+  await writeFile(join(f.folder, "plan.md"), "# Revised plan\n\nAlso check renewal orders.\n");
+  const unexplained = await request({ ...base, planBrief });
+  assert.notEqual(unexplained.status, 0);
+  assert.match(unexplained.stderr, /Explain changesSincePrevious/);
+  const revisedBrief = { ...planBrief, included: [...planBrief.included, "Check renewal orders too."], changesSincePrevious: ["Added renewal orders to the prevention checks."] };
+  const revised = await request({ ...base, planBrief: revisedBrief });
+  assert.equal(revised.status, 0, revised.stderr);
+  const next = JSON.parse(revised.stdout).decision;
+  const saved = JSON.parse(await readFile(join(f.folder, "runs", runId, next.plan.path), "utf8"));
+  assert.equal(saved.previous.revision, decision.plan.revision);
+  assert.deepEqual(saved.previous.brief, planBrief);
+  assert.notEqual(next.plan.revision, decision.plan.revision);
 });
 
 test("help describes the plain decision fields", () => {

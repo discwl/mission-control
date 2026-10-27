@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
+import { capturePlanSnapshot } from "../plugins/mission-control/server/plan-snapshots.mjs";
+import { normalizePlanBrief } from "../plugins/mission-control/shared/plan-brief.mjs";
 import { createWorkflowInstructionsStore } from "../plugins/mission-control/server/workflow-instructions-store.mjs";
 import { workflowInstructionsPrompt } from "../plugins/mission-control/shared/workflow-instructions.mjs";
 import { createRequire } from "node:module";
@@ -445,6 +447,8 @@ async function requestDecision(args) {
   }
   const warnings = [];
   const plain = decisionPlain(input.plain, input.kind, warnings);
+  const planBrief = input.kind === "plan" ? normalizePlanBrief(input.planBrief, (text, label, max) => plainText(text, label, max, warnings)) : null;
+  if (input.kind === "plan" && !planBrief) throw new Error("Plan approval requires planBrief; see dev-flow.mjs help for its human-readable fields.");
   const plains = requested.map((item, index) => findingPlain(item.plain, index, warnings));
   if (plain && plains.some(item => !item)) throw new Error("When plain is given, every finding needs plain too.");
   if (plain && input.kind === "review") {
@@ -460,6 +464,7 @@ async function requestDecision(args) {
     if (open) throw new Error(`Decision ${open.decision.decisionId} is still open. Wait for the user.`);
     const now = new Date().toISOString();
     const decisionId = `decision_${randomUUID()}`;
+    const plan = input.kind === "plan" ? await capturePlanSnapshot({ taskFolder: bound.folder, runFolder: folder, taskId: current.taskId, runId: current.runId, decisionId, requestedAt: now, brief: planBrief }) : null;
     const findings = requested.map((item, index) => ({
       findingId: `finding_${randomUUID()}`, decisionId, title: item.title.trim(), severity: item.severity,
       detail: (item.detail ?? "").trim(), file: item.file ?? null, status: "open", updatedAt: now, evidence: [], plain: plains[index],
@@ -469,7 +474,7 @@ async function requestDecision(args) {
       schemaVersion: 1, decisionId, taskId: current.taskId, runId: current.runId, serverId: current.serverId, workspaceId: current.workspaceId,
       agentId: agentId || current.agentId || null, kind: input.kind, status: "open", question, requestedAt: now,
       gitHead: bound.git.head, gitDirty: bound.git.dirty, evidence, findingIds: findings.map(item => item.findingId),
-      resolvedAt: null, note: null, resume: null, candidate, plain,
+      resolvedAt: null, note: null, resume: null, candidate, plain, plan,
     };
     await mkdir(join(folder, "decisions"), { recursive: true });
     await writeFile(join(folder, "decisions", `${decisionId}.md`), markdownRecord(decision, summary), { flag: "wx" });
@@ -734,6 +739,21 @@ back as warnings (in the output's "warnings" and on stderr) so you can reword th
 When plain is given, every finding needs plain too. A review recommending "fix" needs a finding recommended
 for fixing; one recommending "accept" recommends skipping every finding. Mission Control shows the plain
 fields first and keeps question, summary, evidence and finding details under Technical details.
+
+For kind "plan", save the full plan.md beside task.md and include a required "planBrief":
+  { "goal": "<problem being solved>", "before": "<current behavior>",
+    "after": "<expected behavior with a concrete example>",
+    "included": ["<in scope>"], "deferred": ["<deferred or untouched; say none if none>"],
+    "scopeChange": "<how this differs from the original request; say none if unchanged>",
+    "affected": ["<people, accounts or systems>"], "approach": ["<understandable step>"],
+    "successChecks": ["<observable proof it works>"], "risks": ["<tradeoff; say none if none>"],
+    "authorization": "<what implementation work approval allows next>",
+    "changesSincePrevious": ["<what changed from the previous proposal; empty only when appropriate>"] }
+Each text is at most 600 characters; lists have 1–8 items (changesSincePrevious may be empty).
+The same plain-language checks apply. A revised plan must explain its changes. request-decision saves
+an immutable copy of the full plan and brief; approval is bound to it and fails if plan.md changes.
+Older requests remain readable but need a new versioned proposal before approval. Plan approval does
+not authorize publishing, PRs, merges, deployments or Jira/ADO updates.
 
 ask --run ID --input JSON records an ordinary question, whenever you stop to ask the user something that
 isn't a plan or review decision. Attention shows it as a "Waiting for you" card with a Reply box:

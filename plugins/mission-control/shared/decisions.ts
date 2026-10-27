@@ -1,5 +1,6 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { planReferenceSchema } from "./plan-approval";
 
 const taskId = z.string().regex(/^task_[a-f0-9-]+$/);
 const runId = z.string().regex(/^run_[a-f0-9-]+$/);
@@ -75,6 +76,8 @@ export const decisionSchema = z.object({
   // (dev-flow request-decision). Older decisions have none, so they can't be merged from Attention.
   candidate: z.object({ head: z.string().regex(/^[0-9a-f]{40}$/).nullable(), tree: z.string().regex(/^[0-9a-f]{40}$/) }).nullable().default(null),
   plain: decisionPlainSchema.nullable().catch(null),
+  // Immutable full plan and brief captured when approval was requested. Legacy records have none.
+  plan: planReferenceSchema.nullable().optional(),
 });
 export type Decision = z.infer<typeof decisionSchema>;
 
@@ -104,6 +107,7 @@ export const resolveDecision = defineRpc({
   name: "decisions.resolve",
   input: decisionRefSchema.extend({
     expectedRevision: z.string(),
+    expectedPlanRevision: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     outcome: z.enum(["approved", "changes_requested", "blocked"]),
     note: z.string().max(2000),
     submitFindingIds: z.array(findingId).max(50),

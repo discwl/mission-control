@@ -11,9 +11,11 @@ import {
   type Finding,
 } from "../shared/decisions";
 import type { TaskSource } from "./tasks";
+import { readPlanSnapshot, verifyPlanApproval } from "./plan-snapshots.mjs";
+import { decisionPlanSchema } from "../shared/plan-approval";
 
 type Ref = { serverId: string; workspaceId: string; taskId: string; runId: string; decisionId: string };
-type ResolveInput = Ref & { expectedRevision: string; outcome: "approved" | "changes_requested" | "blocked"; note: string; submitFindingIds: string[] };
+type ResolveInput = Ref & { expectedRevision: string; expectedPlanRevision?: string; outcome: "approved" | "changes_requested" | "blocked"; note: string; submitFindingIds: string[] };
 type Loaded = { decision: Decision; body: string; findings: Finding[]; revision: string; runFolder: string; decisionFile: string; findingsFile: string; source: TaskSource };
 
 const runIdPattern = /^run_[a-f0-9-]+$/;
@@ -118,12 +120,15 @@ export function decisionMessage(decision: Decision, findings: Finding[], kitRoot
     decision.note ? `User note: ${decision.note}` : "No note was added.",
     submitted.length ? `Findings to fix:\n${submitted.map(finding => `- ${finding.findingId} [${finding.severity}] ${finding.title}`).join("\n")}` : "",
     `Read the full record with: node ${cli} decision --task ${decision.taskId} --run ${decision.runId} --decision ${decision.decisionId} --server ${decision.serverId} --workspace ${decision.workspaceId}`,
+    decision.kind === "plan" && decision.plan ? `Saved plan: ${decision.plan.path}, version ${decision.plan.revision}. Read its markdown and brief from this run's plans folder. Follow that approved snapshot; if the working plan differs, stop and request a new plan decision.` : "",
     decision.status === "approved"
       ? "Continue to the next Development Flow stage within the approved scope."
+      : decision.status === "changes_requested" && decision.kind === "plan"
+        ? "Revise plan.md and its human-readable planBrief using the user's note, then request a new versioned plan decision. Do not implement the changed scope before approval."
       : decision.status === "changes_requested"
         ? "Use the fix-findings skill. Mark each fixed finding awaiting_verification with evidence; the fix itself never resolves a finding. Then validate and get a fresh review. When that review confirms a fix, mark the finding resolved with the review artifact as evidence (as review-changes says) before requesting the next decision; Mission Control won't accept an approval while earlier findings are unverified."
         : "Stop work on this task. Record a blocked handoff explaining what is needed to continue.",
-    "This decision grants no new commit, push, merge, or deployment permission.",
+    "This decision grants no new commit, push, merge, deployment, Jira/ADO comment, or other external publishing permission.",
   ].filter(Boolean).join("\n");
 }
 
@@ -168,7 +173,12 @@ export function createDecisionStore(deps: { sources: (serverId: string) => Promi
       throw new Error("Task is not assigned to this workspace.");
     }
     const runFolder = await runFolderOf(source, ref.runId);
-    return { source, runFolder, reload: () => load(source, runFolder, ref.runId, `${ref.decisionId}.md`) };
+    const reload = async () => {
+      const loaded = await load(source, runFolder, ref.runId, `${ref.decisionId}.md`);
+      if (loaded.decision.serverId !== ref.serverId || loaded.decision.workspaceId !== ref.workspaceId) throw new Error("Decision belongs to another host or workspace.");
+      return loaded;
+    };
+    return { source, runFolder, reload };
   }
 
   async function list(serverId: string, recentLimit = 10) {
@@ -191,6 +201,13 @@ export function createDecisionStore(deps: { sources: (serverId: string) => Promi
     return { open: open.map(toEntry), recent: recent.map(toEntry) };
   }
 
+  async function plan(input: Ref & { expectedRevision: string }) {
+    const loaded = await (await locate(input)).reload();
+    if (loaded.decision.kind !== "plan") throw new Error("This is not a plan decision.");
+    if (loaded.revision !== input.expectedRevision) throw new Error("The request changed. Refresh and read the new plan.");
+    return decisionPlanSchema.parse(await readPlanSnapshot({ taskFolder: loaded.source.folder!, runFolder: loaded.runFolder, decision: loaded.decision }));
+  }
+
   async function writeDecision(loaded: Loaded, decision: Decision) {
     await atomicWrite(loaded.decisionFile, markdownRecord(decision, loaded.body));
   }
@@ -202,6 +219,10 @@ export function createDecisionStore(deps: { sources: (serverId: string) => Promi
       const { decision } = loaded;
       if (decision.resume?.phase !== "pending") return null;
       const fail = async (error: string) => { await writeDecision(loaded, { ...decision, resume: { phase: "pending", error, updatedAt: new Date().toISOString() } }); return null; };
+      if (decision.kind === "plan" && decision.status === "approved") {
+        try { await verifyPlanApproval({ taskFolder: loaded.source.folder!, runFolder, decision }, decision.plan?.revision); }
+        catch (error) { return fail(error instanceof Error ? error.message : String(error)); }
+      }
       if (!decision.agentId) return fail("No agent is linked to this run. Open the task and resume it.");
       let agent;
       try { agent = (await paseo.agents.ref(decision.agentId).refresh())?.agent ?? null; }
@@ -237,6 +258,9 @@ export function createDecisionStore(deps: { sources: (serverId: string) => Promi
       const { decision } = loaded;
       if (decision.status !== "open") throw new Error("This decision was already made. Refresh Needs you.");
       if (loaded.revision !== input.expectedRevision) throw new Error("The request changed since you opened it. Refresh and review it again.");
+      if (decision.kind === "plan" && input.outcome === "approved") {
+        await verifyPlanApproval({ taskFolder: loaded.source.folder!, runFolder, decision }, input.expectedPlanRevision);
+      }
       const note = input.note.trim();
       const own = loaded.findings.filter(finding => decision.findingIds.includes(finding.findingId));
       const submit = new Set(input.submitFindingIds);
@@ -270,5 +294,5 @@ export function createDecisionStore(deps: { sources: (serverId: string) => Promi
     return deliver(input, paseo);
   }
 
-  return { list, resolve, resend };
+  return { list, plan, resolve, resend };
 }

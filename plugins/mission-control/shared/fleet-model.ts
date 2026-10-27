@@ -64,6 +64,7 @@ export function taskWorkflow(entry: FleetTask, agents: readonly FleetAgent[]): W
   const current = decisions.filter(entry => !run || entry.decision.runId === run.runId);
   const review = current.find(entry => entry.decision.kind === "review");
   const plan = current.find(entry => entry.decision.kind === "plan");
+  if (plan?.decision.status === "approved" && plan.decision.resume && plan.decision.resume.phase !== "sent") return result("Blocked", "you", plan.decision.resume.error || "Plan approval is saved but delivery to the worker is not confirmed. Check the decision in Attention before continuing.");
   if (current.some(entry => entry.decision.status === "blocked")) return result("Blocked", "you", "Resolve the blocked decision");
   if (review?.decision.status === "approved") return result("Delivery approval", "you", task.pullRequest ? "Review PR follow-up · external changes need approval" : "Approve the exact PR or delivery action");
   if (agents.some(agent => agent.status === "error" || agent.error)) return result("Blocked", "you", "Inspect the worker error before retrying");

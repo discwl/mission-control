@@ -16,6 +16,8 @@ import { MissionReview } from "./mission-review";
 import { MergeButton, MergeDialog, useMergeReady, type MergeTarget } from "./merge-action";
 import { PullRequestButton, PullRequestDialog, type PullRequestTarget } from "./pull-request-action";
 import { formatDateTime } from "./date-time";
+import { SavedPlanView } from "./plan-approval";
+import { taskDestination, type TaskTab } from "./fleet-navigation";
 
 type Colors = PluginSurfaceProps["theme"]["colors"];
 type OpenAgent = (serverId: string, agentId: string) => void;
@@ -54,6 +56,23 @@ function TaskAttention({ entry, workers, host, colors, openAgent }: { entry: Fle
   </View>;
 }
 
+function TaskPlan({ entry, host, colors, openAgent }: { entry: FleetTask; host: FleetHost; colors: Colors; openAgent: OpenAgent }) {
+  const [selected, setSelected] = useState<string | null>(null);
+  const hostLabel = useHosts().find(item => item.serverId === host.serverId)?.label ?? "Remote host";
+  const describe = (workspaceId: string) => {
+    const workspace = host.workspaces.find(item => item.id === workspaceId);
+    return { hostLabel, projectName: workspace?.projectName ?? "Project unavailable", workspaceName: workspace?.name ?? "Workspace unavailable" };
+  };
+  const plans = entry.decisions.filter(item => item.decision.kind === "plan").sort((a, b) => b.decision.requestedAt.localeCompare(a.decision.requestedAt));
+  const current = plans.find(item => item.decision.decisionId === selected) ?? plans.find(item => item.decision.status === "open") ?? plans[0];
+  return <View style={{ gap: 14 }}>
+    <Text style={{ color: colors.foregroundMuted }}>Review the intended behavior, scope and success checks before approving. Review acceptance and delivery remain separate decisions.</Text>
+    {plans.length > 1 ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>{plans.map(item => <CompactLink key={item.decision.decisionId} label={`${formatDateTime(item.decision.requestedAt)} · ${item.decision.status.replaceAll("_", " ")}`} colors={colors} selected={current?.decision.decisionId === item.decision.decisionId} onPress={() => setSelected(item.decision.decisionId)} />)}</View> : null}
+    {current?.decision.resume && current.decision.resume.phase !== "sent" ? <View style={{ gap: 6 }}><Text style={{ color: colors.statusWarning }}>Decision saved; delivery to the worker is {current.decision.resume.phase === "sending" ? "unconfirmed" : "pending"}. {current.decision.resume.error || "Inspect the decision in Attention before resuming work."}</Text>{current.decision.agentId ? <CompactLink label="Inspect worker conversation" colors={colors} onPress={() => openAgent(host.serverId, current.decision.agentId!)} /> : null}</View> : null}
+    {current ? current.decision.status === "open" ? <DecisionCard key={current.decision.decisionId} entry={current} serverId={host.serverId} hostLabel={hostLabel} colors={colors} actions={{ describe, openAgent: id => openAgent(host.serverId, id) }} /> : <SavedPlanView key={current.decision.decisionId} entry={current} serverId={host.serverId} colors={colors} /> : <Text style={{ color: colors.foregroundMuted }}>No plan decision has been recorded for this task. Its working documents are available under Evidence.</Text>}
+  </View>;
+}
+
 function TaskDelivery({ entry, serverId, colors }: { entry: FleetTask; serverId: string; colors: Colors }) {
   const ready = useMergeReady(serverId, true);
   const [merge, setMerge] = useState<MergeTarget | null>(null);
@@ -71,7 +90,10 @@ function TaskDelivery({ entry, serverId, colors }: { entry: FleetTask; serverId:
 }
 
 export function FleetTaskDetail({ entry, coordinator, host, workers, localServerId, colors, compact, reviewHeight, openAgent, close }: { entry: FleetTask; coordinator: FleetCoordinator; host: FleetHost; workers: FleetAgent[]; localServerId: string; colors: Colors; compact: boolean; reviewHeight: number; openAgent: OpenAgent; close(): void }) {
-  const [tab, setTab] = useState<"Overview" | "Needs you" | "Review" | "Evidence" | "Delivery">("Overview");
+  const [tab, setTab] = useState<TaskTab>(() => taskDestination(entry, workers).tab);
+  const focusedReview = tab === "Review" || tab === "Plan";
+  const openPlans = entry.decisions.filter(item => item.decision.kind === "plan" && item.decision.status === "open").length;
+  const openRequests = entry.decisions.filter(item => item.decision.status === "open").length + entry.questions.filter(item => item.question.status === "open").length + workers.reduce((sum, worker) => sum + worker.pendingPermissions, 0);
   const bridge = useMissionControlCopy(host.serverId);
   const online = useHosts().some(item => item.serverId === host.serverId && item.status === "online");
   const cache = useQueryClient();
@@ -79,11 +101,11 @@ export function FleetTaskDetail({ entry, coordinator, host, workers, localServer
   const workspaceId = entry.run?.workspaceId || entry.task.worktree?.workspaceId || entry.task.assignments.find(item => item.serverId === host.serverId)?.workspaceId;
   const workspace = host.workspaces.find(item => item.id === workspaceId);
   const binding = { serverId: host.serverId, workspaceId: workspaceId ?? "", taskId: entry.task.taskId };
-  const content = <View style={{ gap: tab === "Review" ? 10 : 16 }}>
+  const content = <View style={{ gap: focusedReview ? 10 : 16 }}>
     <CompactLink label="Back to fleet" colors={colors} onPress={close} />
-    <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: tab === "Review" ? 20 : 24, fontWeight: "700" }}>{entry.task.title}</Text>
-    <Text style={{ color: colors.foregroundMuted }}>{coordinator.hostLabel} · {coordinator.name}{tab === "Review" ? "" : ` · ${workspace?.name ?? "Workspace unavailable"}`}</Text>
-    {tab === "Review" ? <Text style={{ color: workflow.actor === "you" ? colors.statusWarning : colors.foregroundMuted, fontSize: 12 }}>{workflow.stage} · {workflow.next}</Text> : <>
+    <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: focusedReview ? 20 : 24, fontWeight: "700" }}>{entry.task.title}</Text>
+    <Text style={{ color: colors.foregroundMuted }}>{coordinator.hostLabel} · {coordinator.name}{focusedReview ? "" : ` · ${workspace?.name ?? "Workspace unavailable"}`}</Text>
+    {focusedReview ? <Text style={{ color: workflow.actor === "you" ? colors.statusWarning : colors.foregroundMuted, fontSize: 12 }}>{workflow.stage} · {workflow.next}</Text> : <>
     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>{workflowStages.map(stage => <View key={stage} style={{ padding: 7, borderRadius: 5, borderWidth: 1, borderColor: workflow.stage === stage ? colors.accent : colors.border }}><Text style={{ color: workflow.stage === stage ? colors.accent : colors.foregroundMuted, fontSize: 11 }}>{stage}</Text></View>)}</View>
     <View style={{ padding: 14, gap: 6, borderLeftWidth: 3, borderLeftColor: workflow.actor === "you" ? colors.statusWarning : colors.accent, backgroundColor: colors.surface1 }}>
       <Text style={{ color: colors.foreground, fontWeight: "600" }}>{workflow.stage} · {workflow.actor === "you" ? "Needs you" : workflow.actor === "agent" ? "Agent's next step" : workflow.actor === "done" ? "Recorded as delivered" : "Blocked"}</Text>
@@ -91,7 +113,7 @@ export function FleetTaskDetail({ entry, coordinator, host, workers, localServer
       <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Recorded evidence: {workflow.evidence}</Text>
     </View>
     </>}
-    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>{(["Overview", "Needs you", "Review", "Evidence", "Delivery"] as const).map(name => <CompactLink key={name} label={name} selected={tab === name} colors={colors} onPress={() => setTab(name)} />)}<CompactLink label="Refresh" colors={colors} onPress={() => void cache.invalidateQueries({ queryKey: ["mission-control"] })} /></View>
+    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>{(["Overview", "Plan", "Needs you", "Review", "Evidence", "Delivery"] as const).map(name => <CompactLink key={name} label={name === "Plan" && openPlans ? `Plan · ${openPlans} waiting` : name === "Needs you" && openRequests ? `Needs you · ${openRequests}` : name} selected={tab === name} colors={colors} onPress={() => setTab(name)} />)}<CompactLink label="Refresh" colors={colors} onPress={() => void cache.invalidateQueries({ queryKey: ["mission-control"] })} /></View>
     {tab === "Overview" ? <View style={{ gap: 16 }}>
       <Text style={{ color: colors.foreground, fontWeight: "600" }}>Acceptance criteria</Text>
       <Text selectable style={{ color: colors.foregroundMuted }}>{Array.isArray(entry.task.acceptanceCriteria) ? entry.task.acceptanceCriteria.join("\n") : entry.task.acceptanceCriteria || "No acceptance criteria recorded."}</Text>
@@ -101,6 +123,7 @@ export function FleetTaskDetail({ entry, coordinator, host, workers, localServer
     </View> : null}
     {tab !== "Overview" && (!online || !("copy" in bridge)) ? <Text style={{ color: colors.statusWarning }}>Connect {coordinator.hostLabel} and load its Mission Control plugin to use this task's actions.</Text> : null}
     {online && "copy" in bridge ? <HostRpcProvider copy={bridge.copy}>
+      {tab === "Plan" ? <TaskPlan entry={entry} host={host} colors={colors} openAgent={openAgent} /> : null}
       {tab === "Needs you" ? <TaskAttention entry={entry} workers={workers} host={host} colors={colors} openAgent={openAgent} /> : null}
       {tab === "Review" ? workspace ? <View style={{ gap: 8, height: reviewHeight }}>
         <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Changes belong to this workspace. Other agents using the same checkout may have contributed.</Text>

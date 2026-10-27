@@ -9,7 +9,9 @@ import { test } from "node:test";
 const require = createRequire(import.meta.url);
 const ts = require("typescript");
 require.extensions[".ts"] = (module, file) => module._compile(ts.transpileModule(readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, file);
-const { createDecisionStore } = require("./decisions.ts");
+const { createDecisionStore, parseRecord, markdownRecord } = require("./decisions.ts");
+import { capturePlanSnapshot } from "./plan-snapshots.mjs";
+import { planBrief } from "./plan-test-data.mjs";
 
 const markdown = (fields, body) => `---\n${Object.entries(fields).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join("\n")}\n---\n\n${body}\n`;
 const ids = {
@@ -43,7 +45,7 @@ async function fixture(t, { kind = "review", findings = [finding("11111111", "op
   }) } };
   const store = createDecisionStore({ sources: async serverId => { assert.equal(serverId, ids.serverId); return [{ task, folder, file: join(folder, "task.md") }]; }, kitRoot: async () => "C:\\kit" });
   const findingsOnDisk = async () => JSON.parse(await readFile(join(runFolder, "findings.json"), "utf8")).findings;
-  return { store, paseo, agent, sent, state, findingsOnDisk };
+  return { store, paseo, agent, sent, state, findingsOnDisk, folder, runFolder };
 }
 
 test("request changes submits chosen findings, dismisses the rest with a note, and resumes the agent once", async t => {
@@ -74,7 +76,7 @@ test("request changes submits chosen findings, dismisses the rest with a note, a
 });
 
 test("a busy agent keeps the saved decision pending until it is resent", async t => {
-  const { store, paseo, agent, sent } = await fixture(t, { kind: "plan", findings: [] });
+  const { store, paseo, agent, sent } = await fixture(t, { kind: "review", findings: [] });
   const [entry] = (await store.list(ids.serverId)).open;
   agent.status = "running";
   const saved = await store.resolve({ ...ids, expectedRevision: entry.revision, outcome: "approved", note: "", submitFindingIds: [] }, paseo);
@@ -136,4 +138,101 @@ test("an older decision without plain fields, or with a malformed block, still l
   assert.equal(entry.decision.plain, null);
   assert.deepEqual(entry.findings.map(item => item.plain), [null, null]);
   assert.deepEqual(entry.resolvedFindings, []);
+});
+
+async function versionedPlan(t) {
+  const f = await fixture(t, { kind: "plan", findings: [] });
+  await writeFile(join(f.folder, "plan.md"), "# Plan\n\nPrevent new full discounts. Leave existing orders untouched.\n");
+  const file = join(f.runFolder, "decisions", `${ids.decisionId}.md`);
+  const record = parseRecord(await readFile(file, "utf8"));
+  const plan = await capturePlanSnapshot({ taskFolder: f.folder, runFolder: f.runFolder, ...ids, requestedAt: record.fields.requestedAt, brief: planBrief });
+  await writeFile(file, markdownRecord({ ...record.fields, plan }, record.body));
+  const [entry] = (await f.store.list(ids.serverId)).open;
+  return { ...f, file, entry, plan, input: { ...ids, expectedRevision: entry.revision, expectedPlanRevision: plan.revision, outcome: "approved", note: "", submitFindingIds: [] } };
+}
+
+test("a shared task assignment cannot substitute another decision host or workspace", async t => {
+  const f = await versionedPlan(t);
+  const task = { taskId: ids.taskId, projectId: "prj_test", title: "Shared assignment", assignments: [
+    { serverId: ids.serverId, workspaceId: ids.workspaceId },
+    { serverId: ids.serverId, workspaceId: "wks_other" },
+    { serverId: "srv_other", workspaceId: ids.workspaceId },
+  ] };
+  const store = createDecisionStore({ sources: async () => [{ task, folder: f.folder, file: join(f.folder, "task.md") }] });
+  for (const ref of [{ ...f.input, workspaceId: "wks_other" }, { ...f.input, serverId: "srv_other" }]) {
+    await assert.rejects(store.plan(ref), /another host or workspace/);
+    await assert.rejects(store.resolve(ref, f.paseo), /another host or workspace/);
+  }
+  assert.equal(f.sent.length, 0);
+  assert.equal((await f.store.list(ids.serverId)).open.length, 1);
+});
+
+test("plan approval binds the full saved document and human brief to the exact decision", async t => {
+  const f = await versionedPlan(t);
+  const view = await f.store.plan({ ...ids, expectedRevision: f.entry.revision });
+  assert.equal(view.canApprove, true);
+  assert.equal(view.source, "snapshot");
+  assert.equal(view.revision, f.plan.revision);
+  assert.equal(view.brief.scopeChange, planBrief.scopeChange);
+  assert.match(view.markdown, /Leave existing orders untouched/);
+  const approved = await f.store.resolve(f.input, f.paseo);
+  assert.equal(approved.decision.status, "approved");
+  assert.equal(f.sent.length, 1);
+  assert.match(f.sent[0].text, new RegExp(f.plan.revision));
+  assert.match(f.sent[0].text, /Follow that approved snapshot/);
+  assert.match(f.sent[0].text, /no new commit, push, merge, deployment, Jira\/ADO/);
+});
+
+test("a changed plan is rejected even when the decision record itself is unchanged", async t => {
+  const f = await versionedPlan(t);
+  await assert.rejects(f.store.resolve({ ...f.input, expectedPlanRevision: "0".repeat(64) }, f.paseo), /Read the saved plan/);
+  await writeFile(join(f.folder, "plan.md"), "# Expanded plan\n\nRemove existing discounts too.\n");
+  assert.equal((await f.store.list(ids.serverId)).open[0].revision, f.entry.revision);
+  const view = await f.store.plan({ ...ids, expectedRevision: f.entry.revision });
+  assert.equal(view.canApprove, false);
+  assert.match(view.warning, /changed after/);
+  assert.match(view.markdown, /Leave existing orders untouched/);
+  await assert.rejects(f.store.resolve(f.input, f.paseo), /changed after/);
+  assert.equal(f.sent.length, 0);
+  assert.equal((await f.store.list(ids.serverId)).open.length, 1);
+  await f.store.resolve({ ...f.input, outcome: "changes_requested", note: "Keep existing orders untouched and explain the revision." }, f.paseo);
+  assert.match(f.sent[0].text, /Revise plan.md and its human-readable planBrief/);
+  assert.doesNotMatch(f.sent[0].text, /Use the fix-findings skill/);
+});
+
+test("an older plan remains readable and changeable, but cannot receive a blind approval", async t => {
+  const f = await fixture(t, { kind: "plan", findings: [] });
+  await writeFile(join(f.folder, "plan.md"), "# Current plan\n\nCurrent contents are not a request-time snapshot.\n");
+  const [entry] = (await f.store.list(ids.serverId)).open;
+  const input = { ...ids, expectedRevision: entry.revision, outcome: "approved", note: "", submitFindingIds: [] };
+  const view = await f.store.plan(input);
+  assert.equal(view.source, "current");
+  assert.equal(view.canApprove, false);
+  assert.equal(view.brief, null);
+  assert.match(view.warning, /older request/);
+  await assert.rejects(f.store.resolve(input, f.paseo), /saved plan version/);
+  await f.store.resolve({ ...input, outcome: "changes_requested", note: "Please provide a readable, versioned proposal." }, f.paseo);
+  assert.equal(f.sent.length, 1);
+});
+
+test("saved plan delivery is rechecked after a busy agent becomes idle", async t => {
+  const f = await versionedPlan(t);
+  f.agent.status = "running";
+  const approved = await f.store.resolve(f.input, f.paseo);
+  assert.equal(approved.decision.resume.phase, "pending");
+  await writeFile(join(f.folder, "plan.md"), "# New scope\n");
+  f.agent.status = "idle";
+  const result = await f.store.resend({ ...ids, expectedRevision: approved.revision }, f.paseo);
+  assert.equal(result.decision.resume.phase, "pending");
+  assert.match(result.decision.resume.error, /changed after/);
+  assert.equal(f.sent.length, 0);
+});
+
+test("altered snapshots and stale decision revisions never approve or resume work", async t => {
+  const f = await versionedPlan(t);
+  await assert.rejects(f.store.plan({ ...ids, expectedRevision: "old" }), /request changed/);
+  const snapshotFile = join(f.runFolder, f.plan.path);
+  await writeFile(snapshotFile, (await readFile(snapshotFile, "utf8")).replace("Prevent accidental", "Allow accidental"));
+  await assert.rejects(f.store.resolve(f.input, f.paseo), /Saved plan changed/);
+  assert.equal(f.sent.length, 0);
 });

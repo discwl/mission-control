@@ -10,6 +10,7 @@ import { formatDateTime } from "./date-time";
 import { answerProblem } from "./decision-note";
 import { decisionNeed, decisionWhere, latestAgentQuote, mayReadChat } from "./attention-model";
 import { CardFooter, NeedLine, TaskHeader, useTimeline, WhereLine } from "./attention-card";
+import { PlanApprovalView, readablePlanRequest, usePlanApproval } from "./plan-approval";
 
 type Colors = PluginSurfaceProps["theme"]["colors"];
 type Place = { hostLabel: string; projectName: string; workspaceName: string } | null;
@@ -75,7 +76,8 @@ export function DecisionCard({ entry, serverId, hostLabel, colors, actions, brie
   const [choices, setChoices] = useState<Choices>(() => initialChoices(entry.findings));
   const [note, setNote] = useState<NoteState>({ text: "", edited: false });
   // Stop, Change the plan, and any answer whose note isn't on screen show the exact note before sending.
-  const [confirm, setConfirm] = useState<(Answer & { id: ButtonId }) | null>(null);
+  const [confirm, setConfirm] = useState<(Answer & { id: ButtonId; planRevision?: string; requestRevision: string }) | null>(null);
+  const planQuery = usePlanApproval(entry, serverId);
   const [more, setMore] = useState(false);
   const [technical, setTechnical] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -89,7 +91,8 @@ export function DecisionCard({ entry, serverId, hostLabel, colors, actions, brie
   const summary = decisionWhere(entry, latestAgentQuote(timeline.data), `${model.lines.built}${model.lines.found && review ? ` ${model.lines.found}` : ""}`);
   const toFix = fixIds(entry, choices);
 
-  async function submit(outcome: Outcome, text: string) {
+  async function submit(outcome: Outcome, text: string, planRevision?: string, requestRevision = entry.revision) {
+    if (!review && outcome === "approved" && !planRevision) { setError("Read a verified saved proposal before approving."); return; }
     // Say what's missing up front, and open More where it can be added.
     const missing = answerProblem({ kind: decision.kind, outcome, openFindings: open, selected: toFix.length, note: text });
     if (missing) { if (!confirm) setMore(true); setError(missing); return; }
@@ -98,7 +101,7 @@ export function DecisionCard({ entry, serverId, hostLabel, colors, actions, brie
     try {
       const result = await resolve({
         serverId, workspaceId: decision.workspaceId, taskId: decision.taskId, runId: decision.runId, decisionId: decision.decisionId,
-        expectedRevision: entry.revision, outcome, note: text, submitFindingIds: outcome === "changes_requested" ? toFix : [],
+        expectedRevision: requestRevision, ...(planRevision ? { expectedPlanRevision: planRevision } : {}), outcome, note: text, submitFindingIds: outcome === "changes_requested" ? toFix : [],
       });
       const delivered = result.decision.resume?.phase === "sent";
       toast.show(delivered ? `${outcomeLabel[outcome]} · sent to the agent` : `${outcomeLabel[outcome]} · saved, not sent yet`, { variant: delivered ? "success" : "warning" });
@@ -113,8 +116,10 @@ export function DecisionCard({ entry, serverId, hostLabel, colors, actions, brie
   function press(id: ButtonId) {
     setError(null);
     const answer = answerFor(entry, choices, id, note, more);
-    if (answer.confirm) setConfirm({ ...answer, id });
-    else void submit(answer.outcome, answer.note);
+    const planRevision = !review && answer.outcome === "approved" ? planQuery.data?.revision ?? undefined : undefined;
+    if (!review && answer.outcome === "approved" && (!planQuery.data?.canApprove || planQuery.isError || !planRevision)) { setError("This proposal is not ready for approval. Read its status or request a fresh proposal."); return; }
+    if (answer.confirm) setConfirm({ ...answer, id, planRevision, requestRevision: entry.revision });
+    else void submit(answer.outcome, answer.note, planRevision, entry.revision);
   }
 
   const where = `${hostLabel} / ${place?.projectName ?? entry.projectId} / ${place?.workspaceName ?? decision.workspaceId}`;
@@ -130,6 +135,13 @@ export function DecisionCard({ entry, serverId, hostLabel, colors, actions, brie
       {summary.source === "generic" ? <Text style={muted}>Open More for the details.</Text> : null}
     </>}
     <NeedLine need={decisionNeed(entry)} recommendation={recommended} colors={colors} />
+    {!review ? <>
+      <PlanApprovalView entry={entry} query={planQuery} colors={colors} />
+      {!planQuery.isPending && (!planQuery.data?.canApprove || planQuery.isError) ? <Link label="Request readable plan" colors={colors} onPress={() => {
+        const answer = answerFor(entry, choices, "change", { text: readablePlanRequest, edited: true }, true);
+        setConfirm({ ...answer, note: readablePlanRequest, id: "change", requestRevision: entry.revision });
+      }} /> : null}
+    </> : null}
     {model.unverified ? <Text style={{ color: colors.statusWarning, fontSize: 12 }}>{model.unverified}</Text> : null}
 
     {more ? <View style={{ gap: 6 }}>
@@ -161,12 +173,15 @@ export function DecisionCard({ entry, serverId, hostLabel, colors, actions, brie
         style={{ color: colors.foreground, backgroundColor: colors.surface0, borderColor: colors.border, borderWidth: 1, borderRadius: 7, padding: 9, minHeight: 52, fontSize: 13, textAlignVertical: "top" }} />
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         <ActionButton label={confirm.sendLabel} tone={confirm.id === "stop" ? "danger" : "primary"} disabled={busy || (confirm.noteRequired && !confirm.note.trim())}
-          onPress={() => void submit(confirm.outcome, confirm.note)} colors={colors} />
+          onPress={() => void submit(confirm.outcome, confirm.note, confirm.planRevision, confirm.requestRevision)} colors={colors} />
         <ActionButton label="Cancel" tone="plain" disabled={busy} onPress={() => { setConfirm(null); setError(null); }} colors={colors} />
       </View>
     </View> : <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-      {model.buttons.map(button => <ActionButton key={button.id} label={button.label} disabled={busy} onPress={() => press(button.id)} colors={colors}
-        tone={button.id === "stop" ? "danger" : button.primary ? "primary" : "plain"} />)}
+      {model.buttons.map(button => {
+        const approvesPlan = !review && answerFor(entry, choices, button.id, note, more).outcome === "approved";
+        return <ActionButton key={button.id} label={approvesPlan ? "Approve this plan" : button.label} disabled={busy || (approvesPlan && (!planQuery.data?.canApprove || planQuery.isError))} onPress={() => press(button.id)} colors={colors}
+          tone={button.id === "stop" ? "danger" : button.primary ? "primary" : "plain"} />;
+      })}
       <Link label={more ? "Less" : "More"} expanded={more} onPress={() => setMore(!more)} colors={colors} />
     </View>}
 
