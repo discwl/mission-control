@@ -17,7 +17,13 @@ import { pathToFileURL } from "node:url";
 
 const PLUGIN_ID = "mission-control";
 
-export const usage = `Usage: remote.mjs (--offer-file <file> | --local) <command> [options]
+export const usage = `Usage: remote.mjs (--server <serverId> | --local | --offer-file <file>) <command> [options]
+
+Connections:
+  --server <serverId>                        Use this machine's saved Paseo destination (no pairing file).
+  --local                                    Use this machine's Mission Control.
+  --offer-file <file>                         Explicit legacy/admin connection only; never regenerate as a fallback.
+                                             Discover destinations with Paseo list_hosts. Never register Personal remotely.
 
 Commands:
   identity                                   The host's Paseo server ID.
@@ -44,7 +50,7 @@ Commands:
   morning-import --workspace <id> --report <reportId> --item <system:KEY> [--item ...]`;
 
 const options = {
-  "offer-file": { type: "string" }, local: { type: "boolean" }, help: { type: "boolean", short: "h" },
+  server: { type: "string" }, "offer-file": { type: "string" }, local: { type: "boolean" }, help: { type: "boolean", short: "h" },
   workspace: { type: "string" }, task: { type: "string" },
   system: { type: "string" }, key: { type: "string" }, url: { type: "string" }, title: { type: "string" }, type: { type: "string" },
   "description-file": { type: "string" }, "criteria-file": { type: "string" }, status: { type: "string" }, sprint: { type: "string" },
@@ -206,12 +212,23 @@ async function localUrl() {
  * plugin's agent rename does. It may break when Paseo changes that client.
  */
 async function connect(values) {
+  const selectors = [Boolean(values.local), values.server !== undefined, values["offer-file"] !== undefined].filter(Boolean);
+  if (selectors.length !== 1) throw new Error(`Choose exactly one connection: --server <serverId>, --local, or --offer-file <file>.\n\n${usage}`);
+  if (values.server !== undefined && !values.server.trim()) throw new Error("--server requires a non-empty destination server ID from list_hosts.");
   const { DaemonClient } = await import("@getpaseo/client/internal/daemon-client");
   const base = { clientId: `mission-control-remote-${process.pid}`, clientType: "cli", connectTimeoutMs: 30_000, reconnect: { enabled: false } };
+  if (values.server !== undefined) {
+    const { createHostChannelTransport } = await import("@getpaseo/client/node");
+    const origin = await connect({ local: true });
+    return connectRegisteredHost(values.server.trim(), origin, serverId => new DaemonClient({
+      ...base,
+      transportFactory: createHostChannelTransport(origin, serverId, `mission-control-${process.pid}-${Date.now()}`, null),
+    }));
+  }
   let client;
   if (values.local) client = new DaemonClient({ ...base, url: await localUrl() });
   else {
-    if (!values["offer-file"]) throw new Error(`Pass --offer-file <file with the host's pairing URL>, or --local.\n\n${usage}`);
+    if (!values["offer-file"]?.trim()) throw new Error("--offer-file requires a file path for an explicit legacy/admin connection. Prefer --server <serverId> for orchestration.");
     const [{ parseConnectionOfferFromUrl }, { buildRelayWebSocketUrl, shouldUseTlsForDefaultHostedRelay }, { default: WebSocket }] = await Promise.all([
       import("@getpaseo/protocol/connection-offer"), import("@getpaseo/protocol/daemon-endpoints"), import("ws"),
     ]);
@@ -229,6 +246,30 @@ async function connect(values) {
     throw new Error(`Couldn't reach the host's Paseo: ${error instanceof Error ? error.message : error}`);
   }
   return client;
+}
+
+/** Route through an existing local registration; never pair, re-register, or fall back to the local host. */
+export async function connectRegisteredHost(serverId, origin, createClient) {
+  let client, closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    try { await client?.close(); } finally { await origin.close(); }
+  };
+  try {
+    const directory = await origin.listHosts();
+    const host = directory.hosts.find(entry => entry.serverId === serverId);
+    if (!host) throw new Error(`Destination ${serverId} is not registered on this machine. Check list_hosts and this orchestrator folder's host.json; do not recreate pairing files or register Personal remotely.`);
+    if (!host.enabled || host.status !== "online") throw new Error(`Destination ${host.label || serverId} (${serverId}) is ${!host.enabled ? "disabled" : host.status}. Check list_hosts and the remote machine's Paseo/network; do not regenerate pairing files or change registrations.`);
+    client = await createClient(serverId);
+    await client.connect();
+    const identity = await client.invokePluginRpc(PLUGIN_ID, "host.identity", {});
+    if (identity.serverId !== serverId) throw new Error(`Host identity mismatch: requested ${serverId}, received ${identity.serverId}. No task command was sent.`);
+    return { invokePluginRpc: (...args) => client.invokePluginRpc(...args), close };
+  } catch (error) {
+    await close().catch(() => {});
+    throw error;
+  }
 }
 
 async function main() {
