@@ -70,8 +70,8 @@ function TaskDelivery({ entry, serverId, colors }: { entry: FleetTask; serverId:
   </View>;
 }
 
-export function FleetTaskDetail({ entry, coordinator, host, workers, localServerId, colors, compact, openAgent, close }: { entry: FleetTask; coordinator: FleetCoordinator; host: FleetHost; workers: FleetAgent[]; localServerId: string; colors: Colors; compact: boolean; openAgent: OpenAgent; close(): void }) {
-  const [tab, setTab] = useState<"Overview" | "Needs you" | "Files" | "Evidence" | "Delivery">("Overview");
+export function FleetTaskDetail({ entry, coordinator, host, workers, localServerId, colors, compact, reviewHeight, openAgent, close }: { entry: FleetTask; coordinator: FleetCoordinator; host: FleetHost; workers: FleetAgent[]; localServerId: string; colors: Colors; compact: boolean; reviewHeight: number; openAgent: OpenAgent; close(): void }) {
+  const [tab, setTab] = useState<"Overview" | "Needs you" | "Review" | "Evidence" | "Delivery">("Overview");
   const bridge = useMissionControlCopy(host.serverId);
   const online = useHosts().some(item => item.serverId === host.serverId && item.status === "online");
   const cache = useQueryClient();
@@ -79,17 +79,19 @@ export function FleetTaskDetail({ entry, coordinator, host, workers, localServer
   const workspaceId = entry.run?.workspaceId || entry.task.worktree?.workspaceId || entry.task.assignments.find(item => item.serverId === host.serverId)?.workspaceId;
   const workspace = host.workspaces.find(item => item.id === workspaceId);
   const binding = { serverId: host.serverId, workspaceId: workspaceId ?? "", taskId: entry.task.taskId };
-  const content = <View style={{ gap: 16 }}>
+  const content = <View style={{ gap: tab === "Review" ? 10 : 16 }}>
     <CompactLink label="Back to fleet" colors={colors} onPress={close} />
-    <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 24, fontWeight: "700" }}>{entry.task.title}</Text>
-    <Text style={{ color: colors.foregroundMuted }}>{coordinator.hostLabel} · {coordinator.name} · {workspace?.name ?? "Workspace unavailable"}</Text>
+    <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: tab === "Review" ? 20 : 24, fontWeight: "700" }}>{entry.task.title}</Text>
+    <Text style={{ color: colors.foregroundMuted }}>{coordinator.hostLabel} · {coordinator.name}{tab === "Review" ? "" : ` · ${workspace?.name ?? "Workspace unavailable"}`}</Text>
+    {tab === "Review" ? <Text style={{ color: workflow.actor === "you" ? colors.statusWarning : colors.foregroundMuted, fontSize: 12 }}>{workflow.stage} · {workflow.next}</Text> : <>
     <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>{workflowStages.map(stage => <View key={stage} style={{ padding: 7, borderRadius: 5, borderWidth: 1, borderColor: workflow.stage === stage ? colors.accent : colors.border }}><Text style={{ color: workflow.stage === stage ? colors.accent : colors.foregroundMuted, fontSize: 11 }}>{stage}</Text></View>)}</View>
     <View style={{ padding: 14, gap: 6, borderLeftWidth: 3, borderLeftColor: workflow.actor === "you" ? colors.statusWarning : colors.accent, backgroundColor: colors.surface1 }}>
       <Text style={{ color: colors.foreground, fontWeight: "600" }}>{workflow.stage} · {workflow.actor === "you" ? "Needs you" : workflow.actor === "agent" ? "Agent's next step" : workflow.actor === "done" ? "Recorded as delivered" : "Blocked"}</Text>
       <Text selectable style={{ color: colors.foreground }}>{workflow.next}</Text>
       <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Recorded evidence: {workflow.evidence}</Text>
     </View>
-    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>{(["Overview", "Needs you", "Files", "Evidence", "Delivery"] as const).map(name => <CompactLink key={name} label={name} selected={tab === name} colors={colors} onPress={() => setTab(name)} />)}<CompactLink label="Refresh" colors={colors} onPress={() => void cache.invalidateQueries({ queryKey: ["mission-control"] })} /></View>
+    </>}
+    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>{(["Overview", "Needs you", "Review", "Evidence", "Delivery"] as const).map(name => <CompactLink key={name} label={name} selected={tab === name} colors={colors} onPress={() => setTab(name)} />)}<CompactLink label="Refresh" colors={colors} onPress={() => void cache.invalidateQueries({ queryKey: ["mission-control"] })} /></View>
     {tab === "Overview" ? <View style={{ gap: 16 }}>
       <Text style={{ color: colors.foreground, fontWeight: "600" }}>Acceptance criteria</Text>
       <Text selectable style={{ color: colors.foregroundMuted }}>{Array.isArray(entry.task.acceptanceCriteria) ? entry.task.acceptanceCriteria.join("\n") : entry.task.acceptanceCriteria || "No acceptance criteria recorded."}</Text>
@@ -100,7 +102,7 @@ export function FleetTaskDetail({ entry, coordinator, host, workers, localServer
     {tab !== "Overview" && (!online || !("copy" in bridge)) ? <Text style={{ color: colors.statusWarning }}>Connect {coordinator.hostLabel} and load its Mission Control plugin to use this task's actions.</Text> : null}
     {online && "copy" in bridge ? <HostRpcProvider copy={bridge.copy}>
       {tab === "Needs you" ? <TaskAttention entry={entry} workers={workers} host={host} colors={colors} openAgent={openAgent} /> : null}
-      {tab === "Files" ? workspace ? <View style={{ gap: 8, height: compact ? 560 : 700 }}>
+      {tab === "Review" ? workspace ? <View style={{ gap: 8, height: reviewHeight }}>
         <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Changes belong to this workspace. Other agents using the same checkout may have contributed.</Text>
         <MissionReview sessionId={`fleet:${coordinator.agentId}:${entry.task.taskId}`} serverId={host.serverId} localServerId={host.serverId} online colors={colors} compact={compact} workspace={{ ...workspace, hostLabel: coordinator.hostLabel }} onChangeWorkspace={() => setTab("Overview")} />
       </View> : <Text style={{ color: colors.statusWarning }}>The task's workspace is unavailable.</Text> : null}
