@@ -1,4 +1,14 @@
 /// <reference lib="dom" />
+import { Platform } from "react-native";
+
+export function readClientStorage(key: string): string | null {
+  if (Platform.OS !== "web" || typeof window === "undefined") return null;
+  try { return window.localStorage.getItem(key); } catch { return null; }
+}
+export function writeClientStorage(key: string, value: string | null): boolean {
+  if (Platform.OS !== "web" || typeof window === "undefined") return false;
+  try { if (value === null) window.localStorage.removeItem(key); else window.localStorage.setItem(key, value); return true; } catch { return false; }
+}
 
 // React portal events still bubble through the icon's composer button. Stop them in
 // the bubble phase, after inputs and actions handle them, without preventing focus.

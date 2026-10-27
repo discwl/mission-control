@@ -1,7 +1,7 @@
 export type FlowDocument = { name: string; content: string; revision: string; updatedAt: string; editable: boolean };
 export const flowStages = ["intake", "plan", "execute", "validate", "review", "fix", "delivery", "handoff"] as const;
 export const flowOutcomes = ["in_progress", "completed", "blocked", "waiting"] as const;
-export type FlowEvent = { eventId: string; runId: string; taskId: string; stage: typeof flowStages[number]; outcome: typeof flowOutcomes[number]; at: string; agentId: string | null; evidence: string[]; source: string; body: string };
+export type FlowEvent = { eventId: string; runId: string; taskId: string; stage: typeof flowStages[number]; outcome: typeof flowOutcomes[number]; at: string; agentId: string | null; evidence: string[]; source: string; body: string; gitHead?: string | null; gitDirty?: boolean; serverId?: string; workspaceId?: string };
 export type FlowIssue = { source: string; reason: string };
 const id = (kind: string, value: unknown) => typeof value === "string" && new RegExp(`^${kind}_[a-f0-9-]+$`).test(value);
 const date = (value: unknown) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.test(value) && Number.isFinite(Date.parse(value)) && (() => { const [year, month, day] = value.slice(0, 10).split("-").map(Number); return month >= 1 && month <= 12 && day >= 1 && day <= new Date(Date.UTC(year, month, 0)).getUTCDate(); })();
@@ -28,7 +28,7 @@ export function recentActivity(documents: readonly FlowDocument[], taskId: strin
       if (!flowStages.includes(fields.stage as typeof flowStages[number]) || !flowOutcomes.includes(fields.outcome as typeof flowOutcomes[number]) || !date(fields.at)) throw new Error("Invalid event stage, outcome or timestamp");
       if (!strings(fields.evidence) || fields.evidence.some(value => !value.trim())) throw new Error("Invalid evidence list");
       if (!(fields.agentId === null || typeof fields.agentId === "string") || !(fields.gitHead === null || typeof fields.gitHead === "string") || typeof fields.gitDirty !== "boolean" || !strings(fields.gitChanges) || !Number.isInteger(fields.omittedChanges) || (fields.omittedChanges as number) < 0) throw new Error("Invalid event agent or Git metadata");
-      candidates.push({ eventId: fields.eventId as string, runId: fields.runId as string, taskId, stage: fields.stage as FlowEvent["stage"], outcome: fields.outcome as FlowEvent["outcome"], at: fields.at as string, agentId: fields.agentId as string | null, evidence: fields.evidence, source: document.name, body: lines.slice(end + 1).join("\n").trim() });
+      candidates.push({ eventId: fields.eventId as string, runId: fields.runId as string, taskId, stage: fields.stage as FlowEvent["stage"], outcome: fields.outcome as FlowEvent["outcome"], at: fields.at as string, agentId: fields.agentId as string | null, evidence: fields.evidence, gitHead: fields.gitHead as string | null, gitDirty: fields.gitDirty as boolean, ...(typeof fields.serverId === "string" ? { serverId: fields.serverId } : {}), ...(typeof fields.workspaceId === "string" ? { workspaceId: fields.workspaceId } : {}), source: document.name, body: lines.slice(end + 1).join("\n").trim() });
     } catch (error) { issues.push({ source: document.name, reason: error instanceof Error ? error.message : String(error) }); }
   }
   const counts = new Map<string, number>();

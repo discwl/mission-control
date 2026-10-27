@@ -37,21 +37,20 @@ function runtime(handlers = {}) {
 }
 const defaults = () => ({ target: { path: "src/file.txt", directory: false }, serverId: "personal", workspaceId: "development-flow", online: true, colors: {}, onClose() {}, onOpenFile() {}, onDiscarded() {} });
 
-test("Open file routes to the exact host/workspace while Preview stays a dialog", async () => {
-  const state = runtime(); let previews = 0, closes = 0, navigations = 0;
-  const props = { ...defaults(), serverId: "WestCap", workspaceId: "task-worktree", onOpenFile: () => previews++, onClose: () => closes++, onNavigate: () => navigations++ };
-  state.render(state.ReviewFileMenu, props); state.press("Open file"); await flush();
-  assert.deepEqual(state.calls, [{ name: "openFile", serverId: "WestCap", workspaceId: "task-worktree", path: props.target.path }]);
-  assert.equal(previews, 0); assert.equal(closes, 1); assert.equal(navigations, 1);
-  state.render(state.ReviewFileMenu, props); state.press("Preview file");
-  assert.equal(previews, 1); assert.equal(closes, 2); assert.equal(navigations, 1);
+test("View current file retains the containing review instead of navigating away", async () => {
+  const state = runtime(); const previews = []; let closes = 0, navigations = 0;
+  const props = { ...defaults(), serverId: "WestCap", workspaceId: "task-worktree", onOpenFile: path => previews.push(path), onClose: () => closes++, onNavigate: () => navigations++ };
+  state.render(state.ReviewFileMenu, props); state.press("View current file"); await flush();
+  assert.deepEqual(state.calls, []);
+  assert.deepEqual(previews, [props.target.path]);
+  assert.equal(closes, 1); assert.equal(navigations, 0);
 });
 
 test("failed file navigation keeps both the menu and its containing review open", async () => {
-  const state = runtime({ openFile: () => { throw new Error("File screen unavailable"); } });
+  const state = runtime();
   let closes = 0, navigations = 0;
-  state.render(state.ReviewFileMenu, { ...defaults(), onClose: () => closes++, onNavigate: () => navigations++ });
-  state.press("Open file"); await flush();
+  state.render(state.ReviewFileMenu, { ...defaults(), onOpenFile: () => { throw new Error("File screen unavailable"); }, onClose: () => closes++, onNavigate: () => navigations++ });
+  state.press("View current file"); await flush();
   assert.equal(closes, 0); assert.equal(navigations, 0);
   assert.ok(state.changes.includes("File screen unavailable"));
 });
@@ -123,12 +122,12 @@ test("menu mount and remount do not navigate, reveal or discard", () => {
   assert.deepEqual(state.calls, []);
 });
 
-test("file actions offer persistent Open file alongside the dialog preview", () => {
+test("file actions have one honestly labelled current-file action", async () => {
   const state = runtime(), seen = [], props = { ...defaults(), onOpenFile: path => seen.push(["file", path]), onClose: () => seen.push("close") };
   state.render(state.ReviewFileMenu, props);
   assert.ok(!state.buttons.some(button => button.accessibilityLabel === "Go to file"));
-  assert.ok(state.buttons.some(button => button.accessibilityLabel === "Open file"));
-  state.press("Preview file");
+  assert.ok(!state.buttons.some(button => button.accessibilityLabel === "Open file"));
+  state.press("View current file"); await flush();
   assert.deepEqual(seen, [["file", "src/file.txt"], "close"]);
   assert.deepEqual(state.calls, []);
 });
@@ -157,9 +156,9 @@ test("offline menu can close; folders and deleted files do not offer file openin
   assert.equal(state.buttons.find(button => button.accessibilityLabel === "Discard changes…").disabled, true); state.press("Close");
   state.render(state.ReviewFileMenu, { ...props, target: { path: "src", directory: true } });
   assert.ok(state.buttons.some(button => button.accessibilityLabel === "Open folder in Windows Explorer"));
-  assert.ok(!state.buttons.some(button => button.accessibilityLabel === "Preview file"));
+  assert.ok(!state.buttons.some(button => button.accessibilityLabel === "View current file"));
   state.render(state.ReviewFileMenu, { ...props, target: { ...props.target, deleted: true } });
-  assert.ok(!state.buttons.some(button => button.accessibilityLabel === "Preview file"));
+  assert.ok(!state.buttons.some(button => button.accessibilityLabel === "View current file"));
 });
 
 test("right-click binding has an accessible alternative and removes its listener on unmount", () => {

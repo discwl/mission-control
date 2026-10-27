@@ -17,7 +17,9 @@ import { MergeButton, MergeDialog, useMergeReady, type MergeTarget } from "./mer
 import { PullRequestButton, PullRequestDialog, type PullRequestTarget } from "./pull-request-action";
 import { formatDateTime } from "./date-time";
 import { SavedPlanView } from "./plan-approval";
-import { taskDestination, type TaskTab } from "./fleet-navigation";
+import { taskDestination, taskTabKey, type TaskTab } from "./fleet-navigation";
+import { usePageState } from "./page-state";
+import { ReviewReadiness } from "./review-readiness";
 
 type Colors = PluginSurfaceProps["theme"]["colors"];
 type OpenAgent = (serverId: string, agentId: string) => void;
@@ -89,8 +91,9 @@ function TaskDelivery({ entry, serverId, colors }: { entry: FleetTask; serverId:
   </View>;
 }
 
-export function FleetTaskDetail({ entry, coordinator, host, workers, localServerId, colors, compact, reviewHeight, openAgent, close }: { entry: FleetTask; coordinator: FleetCoordinator; host: FleetHost; workers: FleetAgent[]; localServerId: string; colors: Colors; compact: boolean; reviewHeight: number; openAgent: OpenAgent; close(): void }) {
-  const [tab, setTab] = useState<TaskTab>(() => taskDestination(entry, workers).tab);
+export function FleetTaskDetail({ entry, coordinator, host, workers, localServerId, colors, compact, reviewHeight, openAgent, close, navigation }: { entry: FleetTask; coordinator: FleetCoordinator; host: FleetHost; workers: FleetAgent[]; localServerId: string; colors: Colors; compact: boolean; reviewHeight: number; openAgent: OpenAgent; close(): void; navigation?: PluginSurfaceProps["navigation"] }) {
+  const [tab, setTab] = usePageState<TaskTab>(taskTabKey(host.serverId, coordinator.agentId, entry.task.taskId), () => taskDestination(entry, workers).tab);
+  const [evidenceDocument, setEvidenceDocument] = useState<string | undefined>(undefined);
   const focusedReview = tab === "Review" || tab === "Plan";
   const openPlans = entry.decisions.filter(item => item.decision.kind === "plan" && item.decision.status === "open").length;
   const openRequests = entry.decisions.filter(item => item.decision.status === "open").length + entry.questions.filter(item => item.question.status === "open").length + workers.reduce((sum, worker) => sum + worker.pendingPermissions, 0);
@@ -127,9 +130,9 @@ export function FleetTaskDetail({ entry, coordinator, host, workers, localServer
       {tab === "Needs you" ? <TaskAttention entry={entry} workers={workers} host={host} colors={colors} openAgent={openAgent} /> : null}
       {tab === "Review" ? workspace ? <View style={{ gap: 8, height: reviewHeight }}>
         <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Changes belong to this workspace. Other agents using the same checkout may have contributed.</Text>
-        <MissionReview sessionId={`fleet:${coordinator.agentId}:${entry.task.taskId}`} serverId={host.serverId} localServerId={host.serverId} online colors={colors} compact={compact} workspace={{ ...workspace, hostLabel: coordinator.hostLabel }} onChangeWorkspace={() => setTab("Overview")} />
+        <MissionReview sessionId={`fleet:${coordinator.agentId}:${entry.task.taskId}`} serverId={host.serverId} localServerId={host.serverId} online colors={colors} compact={compact} openWorkspace={navigation ? () => navigation.openWorkspace({ serverId: host.serverId, workspaceId: workspace.id }) : undefined} readiness={(snapshot, stale) => <ReviewReadiness entry={entry} serverId={host.serverId} workspaceId={workspace.id} online={online} snapshot={snapshot} stale={stale} complete={host.complete} colors={colors} onEvidence={document => { setEvidenceDocument(document); setTab("Evidence"); }} onDecision={() => setTab("Needs you")} />} workspace={{ ...workspace, hostLabel: coordinator.hostLabel }} onChangeWorkspace={() => setTab("Overview")} />
       </View> : <Text style={{ color: colors.statusWarning }}>The task's workspace is unavailable.</Text> : null}
-      {tab === "Evidence" && workspaceId ? <TaskFlowDetail task={entry.task} binding={binding} online colors={colors} hostLabel={coordinator.hostLabel} openAgent={id => openAgent(host.serverId, id)} /> : null}
+      {tab === "Evidence" && workspaceId ? <View style={{ gap: 10 }}><CompactLink label="Back to review" colors={colors} onPress={() => setTab("Review")} /><TaskFlowDetail key={evidenceDocument ?? "activity"} initialDocument={evidenceDocument} task={entry.task} binding={binding} online colors={colors} hostLabel={coordinator.hostLabel} openAgent={id => openAgent(host.serverId, id)} /></View> : null}
       {tab === "Delivery" ? <TaskDelivery entry={entry} serverId={host.serverId} colors={colors} /> : null}
     </HostRpcProvider> : null}
   </View>;

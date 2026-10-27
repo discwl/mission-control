@@ -11,13 +11,13 @@ function runtime(result = {}) {
   }).outputText;
   const module = { exports: {} };
   new Function("require", "module", "exports", compiled)(id => {
-    if (id === "react") return { useState(initial) { const slot = index++; if (!(slot in values)) values[slot] = initial; return [values[slot], value => { values[slot] = value; }]; } };
+    if (id === "react") return { useRef: value => ({ current: value }), useEffect: () => {}, useState(initial) { const slot = index++; if (!(slot in values)) values[slot] = initial; return [values[slot], value => { values[slot] = value; }]; } };
     if (id === "react/jsx-runtime") return { jsx, jsxs: jsx };
     if (id === "react-native") return { Image: "Image", Text: "Text", View: "View" };
-    if (id === "@getpaseo/plugin/client/react-native") return { ScrollView: "ScrollView" };
+    if (id === "@getpaseo/plugin/client/react-native") return { ScrollView: "ScrollView", copyText: async text => calls.push({ name: "copy", text }) };
     if (id === "@getpaseo/plugin/client" || id === "./host-rpc") return { useRpc: name => async input => { calls.push({ name, input }); return result.data; } };
     if (id === "@tanstack/react-query") return { useQuery: options => { queries.push(options); return result; } };
-    if (id === "../shared/review") return { readReviewWorkingFile: "working-file", isMarkdownPath: path => /\.md$/i.test(path) };
+    if (id === "../shared/review") return { readReviewWorkingFile: "working-file", resolveReviewItemPath: "item-path", isMarkdownPath: path => /\.md$/i.test(path) };
     if (id === "./app-modal") return { AppModal: Object.assign(() => null, { Content: "Content" }) };
     if (id === "./markdown-preview") return { MarkdownPreview: "MarkdownPreview" };
     if (id === "./compact-link") return { CompactLink: "CompactLink" };
@@ -52,7 +52,7 @@ test("preview supports text, Markdown and bounded content in its own closable di
   let closed = 0;
   const state = runtime({ data: { text: "# Heading", truncated: true } });
   const tree = state.render({ ...props, path: "README.md", onClose: () => closed++ });
-  assert.equal(tree.props.title, "File preview");
+  assert.equal(tree.props.title, "Current file · read-only");
   assert.equal(nodes(tree).find(node => node.type === "MarkdownPreview").props.content, "# Heading");
   assert.ok(JSON.stringify(tree).includes("Only the first 512 KB"));
   tree.props.onOpenChange(false); assert.equal(closed, 1);

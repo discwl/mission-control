@@ -27,19 +27,26 @@ function harness(file, mocks) {
 }
 function cardHarness() {
   const e = entry(), calls = [], query = { data: proposal(), isPending: false, isError: false };
+  const memory = require("./page-memory.ts").createPageMemory(), storage = new Map();
+  const drafts = harness("./decision-draft.ts", {
+    zod: require("zod"), "./decision-card-model": model,
+    "./page-memory": { pageMemory: memory, pageKey: (...parts) => JSON.stringify(parts) },
+    "./page-state": { usePageState: (key, initial) => [memory.read(key, initial)] },
+    "./web": { readClientStorage: key => storage.get(key) ?? null, writeClientStorage: (key, value) => { if (value === null) storage.delete(key); else storage.set(key, value); return true; } },
+  }).exports;
   const h = harness("./decision-card.tsx", {
     "./host-rpc": { useRpc: () => async input => { calls.push(input); return { decision: { resume: { phase: "sent" } } }; } },
     "@getpaseo/plugin/client/react-native": { useToast: () => ({ show() {} }) },
     "@tanstack/react-query": { useQueryClient: () => ({ invalidateQueries: async () => {} }) },
     "../shared/decisions": { decisionsKey: id => ["decisions", id], resolveDecision: {} },
-    "./decision-card-model": model, "./decision-note": noteModel,
+    "./decision-card-model": model, "./decision-note": noteModel, "./decision-draft": drafts,
     "./date-time": { formatDateTime: value => value },
     "./attention-model": { decisionNeed: () => "Approve the plan", decisionWhere: () => ({ source: "generic", text: "Plan" }), latestAgentQuote: () => null, mayReadChat: () => false },
     "./attention-card": { useTimeline: () => ({ data: [] }), TaskHeader: "TaskHeader", WhereLine: "WhereLine", NeedLine: "NeedLine", CardFooter: "CardFooter" },
     "./plan-approval": { usePlanApproval: () => query, PlanApprovalView: "PlanApprovalView", readablePlanRequest: "Provide a readable, versioned proposal; keep cleanup deferred." },
     "./compact-link": { CompactLink: "CompactLink" },
   });
-  return { entry: e, calls, query, render: () => h.render("DecisionCard", { entry: e, serverId: "srv_cns", hostLabel: "CNS", colors: {}, actions: { describe: () => null, openAgent() {} } }) };
+  return { entry: e, calls, query, drafts, render: () => h.render("DecisionCard", { entry: e, serverId: "srv_cns", hostLabel: "CNS", colors: {}, actions: { describe: () => null, openAgent() {} } }) };
 }
 const button = (tree, label) => nodes(tree).find(node => node.props?.label === label);
 
@@ -64,10 +71,13 @@ test("background refresh does not silently replace a plan version in an open con
   h.entry.revision = "request-v2";
   h.query.data.revision = "c".repeat(64);
   const confirm = nodes(h.render()).find(node => node.type?.name === "ActionButton" && node.props.tone === "primary");
+  assert.equal(confirm.props.disabled, true);
   confirm.props.onPress();
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(h.calls[0].expectedRevision, "request-v1");
-  assert.equal(h.calls[0].expectedPlanRevision, "a".repeat(64));
+  assert.equal(h.calls.length, 0);
+  const saved = h.drafts.useDecisionDraft(h.entry, "srv_cns").draft.confirm;
+  assert.equal(saved.requestRevision, "request-v1");
+  assert.equal(saved.planRevision, "a".repeat(64));
 });
 
 test("legacy or unavailable proposals cannot approve, and requesting a readable plan does not send without confirmation", async () => {
@@ -88,7 +98,8 @@ test("a request-changes draft survives a background refresh without being sent",
   assert.equal(nodes(h.render()).find(node => node.type === "TextInput").props.value, "Keep cleanup deferred and add an example.");
   assert.equal(h.calls.length, 0);
   button(h.render(), "Cancel").props.onPress();
-  assert.equal(nodes(h.render()).some(node => node.type === "TextInput"), false);
+  assert.equal(nodes(h.render()).find(node => node.type === "TextInput").props.value, "Keep cleanup deferred and add an example.");
+  assert.equal(h.calls.length, 0);
 });
 
 test("the plan view shows scope reduction, behavior, success checks, and full saved Markdown without inferring missing content", () => {

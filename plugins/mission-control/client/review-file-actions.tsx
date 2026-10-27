@@ -1,5 +1,4 @@
 import { useRpc } from "./host-rpc";
-import { openReviewFile } from "./review-file-screen";
 import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { copyText, Icon } from "@getpaseo/plugin/client/react-native";
 import { Platform, Pressable, ScrollView, Text, View } from "react-native";
@@ -79,8 +78,7 @@ export function ReviewFileMenu({ target, serverId, workspaceId, online, colors, 
         {!plan ? <>
           <View style={{ gap: 2 }}>
             {sectionLabel("OPEN")}
-            {!target.directory && !target.deleted ? item("Open file", "FileText", "Open the current file in a persistent read-only view", () => void run(async () => { openReviewFile(serverId, workspaceId, target.path); onClose(); onNavigate?.(); })) : null}
-            {!target.directory && !target.deleted ? item("Preview file", "FileText", "View the working file in a preview dialog", () => { onOpenFile(target.path); onClose(); }) : null}
+            {!target.directory && !target.deleted ? item("View current file", "FileText", "Read the current file and return to this review", () => void run(async () => { onOpenFile(target.path); onClose(); })) : null}
             {item(target.directory ? "Open folder in Windows Explorer" : "Reveal in Windows Explorer", "FolderOpen", "Open on the workspace host", () => void run(async () => { await reveal(input); if (active.current) onClose(); }))}
           </View>
           <View style={{ height: 1, backgroundColor: colors.border }} />

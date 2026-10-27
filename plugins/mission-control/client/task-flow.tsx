@@ -65,10 +65,10 @@ export function TaskFlowRow({ task, binding, online, colors, selected, onPress, 
     <CompactLink label="View full details" accessibilityLabel={`View full details for ${task.title}`} icon="ArrowUpRight" colors={colors} onPress={onPress} />
   </View>;
 }
-export function TaskFlowDetail({ task, binding, online, colors, hostLabel, openAgent }: { task: TaskRecord; binding: Binding; online: boolean; colors: Colors; hostLabel: string; openAgent: (id: string) => void }) {
-  const [tab, setTab] = useState<"Activity" | "Decisions" | "Artifacts">("Activity");
-  const [selectedDocument, setSelectedDocument] = useState<string | null>(null);
-  const [showRecords, setShowRecords] = useState(false);
+export function TaskFlowDetail({ task, binding, online, colors, hostLabel, openAgent, initialDocument }: { task: TaskRecord; binding: Binding; online: boolean; colors: Colors; hostLabel: string; openAgent: (id: string) => void; initialDocument?: string }) {
+  const [tab, setTab] = useState<"Activity" | "Decisions" | "Artifacts">(initialDocument ? "Artifacts" : "Activity");
+  const [selectedDocument, setSelectedDocument] = useState<string | null>(initialDocument ?? null);
+  const [showRecords, setShowRecords] = useState(Boolean(initialDocument?.startsWith("runs/")));
   const [showIssues, setShowIssues] = useState(false);
   const [showTechnical, setShowTechnical] = useState(false);
   const [showRunSnapshots, setShowRunSnapshots] = useState(false);

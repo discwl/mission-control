@@ -1,6 +1,7 @@
 import type { FleetAgent, FleetTask } from "../shared/fleet";
 import { taskWorkflow } from "../shared/fleet-model";
 
+export const taskTabKey = (serverId: string, coordinatorId: string, taskId: string) => JSON.stringify(["fleet-task-tab", serverId, coordinatorId, taskId]);
 export type TaskTab = "Overview" | "Plan" | "Needs you" | "Review" | "Evidence" | "Delivery";
 export const hasOpenPlan = (entry: FleetTask) => entry.decisions.some(item => item.decision.kind === "plan" && item.decision.status === "open");
 

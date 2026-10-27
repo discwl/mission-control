@@ -19,7 +19,7 @@ export function WorkspaceReviewContent(props: (PluginWorkspacePanelProps | Plugi
     enabled: online, staleTime: 30_000,
   });
   const data = workspace.data;
-  const review = <MissionReview key={`${host.id}:${workspaceId}:${agentId ?? "workspace"}`} tab={props.tab} serverId={host.id} online={online} colors={colors} compact={compact} agentId={agentId}
+  const review = <MissionReview key={`${host.id}:${workspaceId}:${agentId ?? "workspace"}`} tab={props.tab} openWorkspace={props.navigation ? () => props.navigation!.openWorkspace({ serverId: host.id, workspaceId }) : undefined} serverId={host.id} online={online} colors={colors} compact={compact} agentId={agentId}
     workspace={{ id: workspaceId, name: data?.title || data?.name || "Workspace", projectName: data?.projectCustomName || data?.projectDisplayName || "", hostLabel: host.label }} />;
   const error = workspace.isError ? <Text style={{ color: colors.statusDanger }}>Workspace unavailable: {workspace.error instanceof Error ? workspace.error.message : String(workspace.error)}</Text> : null;
   return <>{error}{review}</>;

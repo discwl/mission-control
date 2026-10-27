@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import type { PluginTab } from "@getpaseo/plugin/client";
 import { z } from "zod";
-import { commentAnchorSchema } from "../shared/review";
+import { commentAnchorSchema, type ReviewSnapshot } from "../shared/review";
+
+// Keep reviewed code only in this client session, never in browser storage.
+const pinnedSnapshots = new Map<string, ReviewSnapshot>();
+import { readClientStorage, writeClientStorage } from "./web";
 
 export const reviewSessionSchema = z.object({
   version: z.literal(1), identity: z.string(),
@@ -24,7 +28,7 @@ export function useReviewSession(identity: string, tab?: PluginTab) {
   const key = `mission-control:review-session:${identity}`;
   const [initial] = useState(() => {
     if (tab) return restoreReviewSession(tab.state, identity);
-    try { return restoreReviewSession(JSON.parse(globalThis.localStorage?.getItem(key) ?? "null"), identity); }
+    try { return restoreReviewSession(JSON.parse(readClientStorage(key) ?? "null"), identity); }
     catch { return null; }
   });
   const last = useRef("");
@@ -33,8 +37,9 @@ export function useReviewSession(identity: string, tab?: PluginTab) {
     if (json === last.current) return;
     last.current = json;
     if (tab) tab.setState(JSON.parse(json));
-    else { try { globalThis.localStorage?.setItem(key, json); } catch { /* Storage can be disabled. */ } }
+    else { try { writeClientStorage(key, json); } catch { /* Storage can be disabled. */ } }
   }
   useEffect(() => () => tab?.setModified(false), [tab]);
-  return { initial, save };
+  return { initial, save, snapshot: pinnedSnapshots.get(identity) ?? null,
+    rememberSnapshot(snapshot: ReviewSnapshot) { pinnedSnapshots.delete(identity); pinnedSnapshots.set(identity, snapshot); while (pinnedSnapshots.size > 8) pinnedSnapshots.delete(pinnedSnapshots.keys().next().value!); } };
 }

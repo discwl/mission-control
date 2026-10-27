@@ -14,7 +14,7 @@ const review = load("../shared/review.ts", { "@getpaseo/plugin": { defineRpc: va
 const defaults = identity => ({ version: 1, identity, selectedPath: "src/a.ts", filter: "high", mode: "full", layout: "unified", pane: "files", fileView: "tree", blockIndex: 2, showDetail: true, showReviewed: false, showResolved: false, showPreview: false, agentChoice: "worker", draft: { path: "src/a.ts", anchor: { side: "old", line: 4, contentId: "aaaaaaaaaaaaaaaa", text: "original" }, body: "Please preserve this note" } });
 function memoryRuntime() {
   const states = [], refs = []; let s = 0, r = 0; const cleanup = [];
-  const module = load("./review-session.ts", { "../shared/review": review, react: {
+  const module = load("./review-session.ts", { "../shared/review": review, "./web": { readClientStorage: () => null, writeClientStorage: () => true }, react: {
     useState(initial) { const i = s++; if (!(i in states)) states[i] = typeof initial === "function" ? initial() : initial; return [states[i], value => states[i] = value]; },
     useRef(initial) { return refs[r++] ??= { current: initial }; },
     useEffect(effect) { const done = effect(); if (done) cleanup.push(done); },
@@ -37,9 +37,18 @@ test("tab persistence survives a remount and writes do not loop on equivalent re
   assert.deepEqual(memoryRuntime().render(state.identity, tab).initial, state);
   first.cleanup.forEach(fn => fn()); assert.equal(modified.at(-1), false);
 });
-test("Open file route retains the exact remote host/workspace and special path characters", () => {
+test("returning to a review keeps its pinned snapshot in memory without persisting code", () => {
+  const m = memoryRuntime(), writes = [], tab = { state: undefined, setState: value => writes.push(value), setModified() {} };
+  const first = m.render("host/workspace/chat", tab), snapshot = { fingerprint: "saved-code-version", files: [{ path: "src/a.ts" }] };
+  first.rememberSnapshot(snapshot);
+  assert.equal(m.render("host/workspace/chat", tab).snapshot, snapshot);
+  assert.equal(m.render("other/workspace/chat", tab).snapshot, null);
+  assert.equal(writes.length, 0);
+});
+
+test("legacy file route retains the exact remote host/workspace and special path characters", () => {
   const opened = [];
-  const module = load("./review-file-screen.tsx", { "react/jsx-runtime": { jsx, jsxs: jsx }, "react-native": { Text: "Text", View: "View" }, "@getpaseo/plugin/client": { useHosts: () => [{ serverId: "remote", label: "WestCap", status: "online" }] }, "./host-rpc": { useMissionControlCopy: id => ({ copy: { serverId: id } }), HostRpcProvider: "Provider" }, "./review-file-preview": { ReviewFilePreview: "File" }, "./plugin-client": { pluginClient: () => ({ openScreen: input => opened.push(input) }) } });
+  const module = load("./review-file-screen.tsx", { "react/jsx-runtime": { jsx, jsxs: jsx }, "react-native": { Text: "Text", View: "View" }, "@getpaseo/plugin/client": { useHosts: () => [{ serverId: "remote", label: "WestCap", status: "online" }] }, "./host-rpc": { useMissionControlCopy: id => ({ copy: { serverId: id } }), HostRpcProvider: "Provider" }, "./review-file-preview": { ReviewFilePreview: "File" }, "./compact-link": { CompactLink: "Link" }, "./plugin-client": { pluginClient: () => ({ openScreen: input => opened.push(input) }) } });
   const path = "docs/a #1 (draft).md";
   module.openReviewFile("remote", "exact-workspace", path);
   assert.deepEqual(opened, [{ screenId: "review-file", params: { serverId: "remote", workspaceId: "exact-workspace", path } }]);

@@ -8,9 +8,10 @@ import { managedTasks, managedWorkerIds, taskWorkflow, taskWorkers, workflowStag
 import { setOrchestratorWork } from "../shared/orchestrator-work";
 import { CompactLink } from "./compact-link";
 import { formatDateTime } from "./date-time";
-import { usePageState } from "./page-state";
+import { PageScrollView, usePageState } from "./page-state";
+import { pageKey, pageMemory } from "./page-memory";
 import { FleetTaskDetail, FleetWorkerTree } from "./fleet-task";
-import { hasOpenPlan, taskDestination } from "./fleet-navigation";
+import { hasOpenPlan, taskDestination, taskTabKey } from "./fleet-navigation";
 
 type Colors = PluginSurfaceProps["theme"]["colors"];
 type Selection = { coordinatorId: string; taskId: string } | null;
@@ -112,7 +113,7 @@ export function OrchestratorFleet({ theme, host, layout, navigation }: PluginSur
   const unavailableHosts = hostIssues.filter(remote => remote.error);
   const limitedHosts = hostIssues.filter(remote => !remote.error);
   const card = { backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.border, borderRadius: 9, padding: 16, gap: 10 };
-  return <ScrollView onLayout={event => setViewportHeight(event.nativeEvent.layout.height)} style={{ flex: 1, backgroundColor: colors.surface0 }} contentContainerStyle={{ padding: compact ? 14 : 24, gap: selected ? 10 : 18 }}>
+  return <PageScrollView memoryKey={pageKey("fleet-scroll", host.id, selection?.coordinatorId ?? view, selection?.taskId ?? filterHost, filterChat)} onLayout={event => setViewportHeight(event.nativeEvent.layout.height)} style={{ flex: 1, backgroundColor: colors.surface0 }} contentContainerStyle={{ padding: compact ? 14 : 24, gap: selected ? 10 : 18 }}>
     {!selected ? <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
       <View style={{ flex: 1, minWidth: 200, gap: 5 }}><Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 28, fontWeight: "700" }}>Orchestrator</Text><Text style={{ color: colors.foregroundMuted }}>Your coordinators, remote workers, and next decisions.</Text></View>
       <CompactLink label={query.isFetching ? "Refreshing…" : "Refresh"} colors={colors} disabled={query.isFetching} onPress={() => void query.refetch()} />
@@ -141,7 +142,7 @@ export function OrchestratorFleet({ theme, host, layout, navigation }: PluginSur
       {!snapshot.coordinators.length ? <View style={card}><Text style={{ color: colors.foreground }}>No orchestrator chats were found on this installation.</Text><Text style={{ color: colors.foregroundMuted }}>Open this screen on the computer hosting your orchestrator folders. Coordinators are chats in workspaces with a valid host.json binding; helpers in the same workspace are excluded. Existing remote chats are included through native parent links or explicit worker links.</Text></View> : null}
       </> : null}
       {selection && !selected ? <View style={card}><Text style={{ color: colors.statusWarning }}>The selected task is no longer available in this scope. Its host may be offline or its ownership may have changed.</Text><CompactLink label="Back to fleet" colors={colors} onPress={() => setSelection(null)} /></View> : null}
-      {selected ? <FleetTaskDetail key={`${selected.coordinator.agentId}:${selected.entry.task.taskId}`} {...selected} localServerId={snapshot.serverId} colors={colors} compact={compact} reviewHeight={Math.max(compact ? 640 : 800, viewportHeight - 250)} openAgent={openAgent} close={() => setSelection(null)} /> : !selection ? <>
+      {selected ? <FleetTaskDetail key={`${selected.coordinator.agentId}:${selected.entry.task.taskId}`} {...selected} localServerId={snapshot.serverId} colors={colors} compact={compact} navigation={navigation} reviewHeight={Math.max(compact ? 640 : 800, viewportHeight - 250)} openAgent={openAgent} close={() => setSelection(null)} /> : !selection ? <>
         {view === "Overview" ? <View style={{ gap: 12 }}>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12 }}>{[["Working now", rows.filter(row => row.workers.some(agent => agent.status === "running")).length], ["Needs you", rows.filter(row => row.workflow.actor === "you").length], ["Queued", rows.filter(row => row.queued?.enabled).length]].map(([label, count]) => <View key={label} style={{ ...card, flex: 1, minWidth: 150 }}><Text style={{ color: colors.foregroundMuted }}>{label}</Text><Text style={{ color: colors.foreground, fontSize: 28, fontWeight: "700" }}>{count}</Text></View>)}</View>
           <View style={card}><Text style={{ color: colors.foreground, fontWeight: "600" }}>Since your last visit</Text><Text style={{ color: colors.foregroundMuted }}>{since.current ? `${newEvents.length} recorded changes since ${date(since.current)}` : "This visit establishes your activity baseline."}</Text>{newEvents.slice(0, 3).map(event => <Text key={event.id} style={{ color: colors.foregroundMuted, fontSize: 12 }}>{event.message} · {date(event.at)}</Text>)}</View>
@@ -158,7 +159,7 @@ export function OrchestratorFleet({ theme, host, layout, navigation }: PluginSur
             <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{row.coordinator.hostLabel} · {row.coordinator.name} · {row.workers.length} managed workers · {date(row.entry.run?.updatedAt ?? row.entry.task.updatedAt)}</Text>
             <Text style={{ color: colors.foreground }}>{hasOpenPlan(row.entry) ? `Plan waiting for your approval${row.workflow.stage === "Blocked" ? " · other requests are under Needs you" : ""}` : row.workflow.next}</Text>
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-              <CompactLink label={taskDestination(row.entry, row.workers).label} colors={colors} onPress={() => setSelection({ coordinatorId: row.coordinator.agentId, taskId: row.entry.task.taskId })} />
+              <CompactLink label={taskDestination(row.entry, row.workers).label} colors={colors} onPress={() => { pageMemory.write(taskTabKey(row.host.serverId, row.coordinator.agentId, row.entry.task.taskId), taskDestination(row.entry, row.workers).tab); setSelection({ coordinatorId: row.coordinator.agentId, taskId: row.entry.task.taskId }); }} />
               <CompactLink label="Open coordinator" colors={colors} onPress={() => openAgent(snapshot.serverId, row.coordinator.agentId)} />
               <CompactLink label={row.queued?.enabled ? "Remove from automatic work" : "Queue for automatic work"} colors={colors} disabled={Boolean(busy) || query.isError || row.workflow.actor === "done"} onPress={() => act(row.entry.task.taskId, () => queue({ coordinatorId: row.coordinator.agentId, remoteServerId: row.host.serverId, taskId: row.entry.task.taskId, enabled: !row.queued?.enabled, priority: row.queued?.priority ?? 5, expectedRevision: snapshot.state.revision }))} />
               {row.queued?.enabled ? <CompactLink label={row.queued.priority === 9 ? "Priority: high" : "Make high priority"} colors={colors} disabled={Boolean(busy) || query.isError} onPress={() => act(row.entry.task.taskId, () => queue({ ...row.queued!, priority: row.queued!.priority === 9 ? 5 : 9, expectedRevision: snapshot.state.revision }))} /> : null}
@@ -175,7 +176,7 @@ export function OrchestratorFleet({ theme, host, layout, navigation }: PluginSur
         </View> : null}
       </> : null}
     </> : null}
-  </ScrollView>;
+  </PageScrollView>;
 }
 
 export function registerFleetClient(client: PluginClientContext) {
