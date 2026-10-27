@@ -20,6 +20,8 @@ import { SavedPlanView } from "./plan-approval";
 import { taskDestination, taskTabKey, type TaskTab } from "./fleet-navigation";
 import { usePageState } from "./page-state";
 import { ReviewReadiness } from "./review-readiness";
+import { ReviewBrief } from "./review-brief";
+import { DecisionQueue, type QueueItem } from "./decision-queue";
 
 type Colors = PluginSurfaceProps["theme"]["colors"];
 type OpenAgent = (serverId: string, agentId: string) => void;
@@ -34,7 +36,7 @@ export function FleetWorkerTree({ workers, serverId, colors, openAgent }: { work
   </View>;
 }
 
-function TaskAttention({ entry, workers, host, colors, openAgent }: { entry: FleetTask; workers: FleetAgent[]; host: FleetHost; colors: Colors; openAgent: OpenAgent }) {
+function TaskAttention({ entry, workers, host, colors, openAgent, nextDecisionTask }: { entry: FleetTask; workers: FleetAgent[]; host: FleetHost; colors: Colors; openAgent: OpenAgent; nextDecisionTask?: () => void }) {
   const remote = useHosts().find(item => item.serverId === host.serverId);
   const online = remote?.status === "online";
   useLiveRoster(host.serverId, online);
@@ -47,14 +49,18 @@ function TaskAttention({ entry, workers, host, colors, openAgent }: { entry: Fle
   const prompts = pendingPrompts(hosts, rosters);
   const waiting = waitingCards({ hosts, rosters, localServerId: host.serverId, questions: entry.questions, replied });
   const decisions = entry.decisions.filter(item => item.decision.status === "open");
+  const unmatched = entry.questions.filter(item => item.question.status === "open" && !waiting.some(card => card.question?.question.questionId === item.question.questionId));
+  const items: QueueItem[] = [
+    ...prompts.map(({ agent, request }) => ({ key: `permission:${agent.id}:${request.id}`, title: "Tool permission", next: "Inspect the requested operation. Allowing it lets this worker perform that operation; denying it keeps the operation blocked.", content: <PermissionCard serverId={host.serverId} agentId={agent.id} agentName={agent.name} request={request} colors={colors} brief task={{ title: entry.task.title, place: remote?.label ?? host.serverId }} readChat={mayReadChat(agent)} openAgent={() => openAgent(host.serverId, agent.id)} /> })),
+    ...waiting.map(card => ({ key: card.question ? `question:${card.question.question.questionId}` : `waiting:${card.key}`, title: "Worker question or issue", next: "Read the worker's question or error. Your answer goes to that worker so it can continue with the clarified instructions.", content: <WaitingCardView card={card} colors={colors} openAgent={openAgent} onReplied={card => setReplied(current => ({ ...current, [agentKey(card.serverId, card.agentId)]: new Date().toISOString() }))} /> })),
+    ...unmatched.map(({ question }) => ({ key: `question:${question.questionId}`, title: "Recorded question", next: "This question is still recorded as open, but its worker could not be matched. Inspect the conversation before replying or resuming work.", content: <View style={{ gap: 8, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 8 }}><Text selectable style={{ color: colors.foreground }}>{question.question}</Text>{question.plain ? <Text style={{ color: colors.foregroundMuted }}>{question.plain.status}</Text> : null}<CompactLink label="Inspect question's conversation" colors={colors} onPress={() => openAgent(host.serverId, question.agentId)} /></View> })),
+    ...(online ? decisions.map(decision => ({ key: `decision:${decision.decision.decisionId}`, title: decision.decision.kind === "plan" ? "Plan approval" : "Code review decision", next: decision.decision.kind === "plan" ? "Read the intended behavior, scope, and success checks. Approval authorizes the described implementation; requesting changes sends the plan back for revision." : "Read the review brief, inspect the diff and evidence, then accept or request changes. Acceptance does not authorize publishing a PR or posting an external update.", content: <DecisionCard entry={decision} serverId={host.serverId} hostLabel={remote?.label ?? host.serverId} colors={colors} actions={{ describe: workspaceId => { const workspace = host.workspaces.find(item => item.id === workspaceId); return { hostLabel: remote?.label ?? host.serverId, projectName: workspace?.projectName ?? "Project unavailable", workspaceName: workspace?.name ?? "Workspace unavailable" }; }, openAgent: id => openAgent(host.serverId, id), agentOf: id => roster?.agents.find(agent => agent.id === id) ?? null }} /> })) : []),
+  ];
   return <View style={{ gap: 12 }}>
     <Text style={{ color: colors.foregroundMuted }}>Your replies and decisions apply to this task on {remote?.label ?? host.serverId}.</Text>
     {!online || query.isError ? <Text style={{ color: colors.statusWarning }}>Current worker prompts are unavailable. Reconnect or refresh before acting.</Text> : null}
-    {prompts.map(({ agent, request }) => <PermissionCard key={request.id} serverId={host.serverId} agentId={agent.id} agentName={agent.name} request={request} colors={colors} brief task={{ title: entry.task.title, place: remote?.label ?? host.serverId }} readChat={mayReadChat(agent)} openAgent={() => openAgent(host.serverId, agent.id)} />)}
-    {waiting.map(card => <WaitingCardView key={card.key} card={card} colors={colors} openAgent={openAgent} onReplied={card => setReplied(current => ({ ...current, [agentKey(card.serverId, card.agentId)]: new Date().toISOString() }))} />)}
-    {online ? decisions.map(decision => <DecisionCard key={decision.decision.decisionId} entry={decision} serverId={host.serverId} hostLabel={remote?.label ?? host.serverId} colors={colors} actions={{ describe: () => null, openAgent: id => openAgent(host.serverId, id), agentOf: id => roster?.agents.find(agent => agent.id === id) ?? null }} />) : null}
-    {!prompts.length && !waiting.length && !decisions.length ? <Text style={{ color: colors.foregroundMuted }}>No open prompts or decisions returned for this task.</Text> : null}
-    {entry.questions.some(question => question.question.status === "open" && !waiting.some(card => card.question?.question.questionId === question.question.questionId)) ? <Text style={{ color: colors.statusWarning }}>A recorded question could not be matched to a current worker. Inspect its conversation before resuming.</Text> : null}
+    <DecisionQueue memoryKey={JSON.stringify(["decision-queue", host.serverId, entry.task.taskId])} items={items} colors={colors} nextTask={nextDecisionTask} />
+    {query.isPending ? <Text style={{ color: colors.foregroundMuted }}>Checking current worker prompts…</Text> : null}
   </View>;
 }
 
@@ -91,10 +97,10 @@ function TaskDelivery({ entry, serverId, colors }: { entry: FleetTask; serverId:
   </View>;
 }
 
-export function FleetTaskDetail({ entry, coordinator, host, workers, localServerId, colors, compact, reviewHeight, openAgent, close, navigation }: { entry: FleetTask; coordinator: FleetCoordinator; host: FleetHost; workers: FleetAgent[]; localServerId: string; colors: Colors; compact: boolean; reviewHeight: number; openAgent: OpenAgent; close(): void; navigation?: PluginSurfaceProps["navigation"] }) {
+export function FleetTaskDetail({ entry, coordinator, host, workers, localServerId, colors, compact, reviewHeight, openAgent, close, navigation, nextDecisionTask }: { entry: FleetTask; coordinator: FleetCoordinator; host: FleetHost; workers: FleetAgent[]; localServerId: string; colors: Colors; compact: boolean; reviewHeight: number; openAgent: OpenAgent; close(): void; navigation?: PluginSurfaceProps["navigation"]; nextDecisionTask?: () => void }) {
   const [tab, setTab] = usePageState<TaskTab>(taskTabKey(host.serverId, coordinator.agentId, entry.task.taskId), () => taskDestination(entry, workers).tab);
   const [evidenceDocument, setEvidenceDocument] = useState<string | undefined>(undefined);
-  const focusedReview = tab === "Review" || tab === "Plan";
+  const focusedReview = tab === "Review" || tab === "Plan" || tab === "Needs you";
   const openPlans = entry.decisions.filter(item => item.decision.kind === "plan" && item.decision.status === "open").length;
   const openRequests = entry.decisions.filter(item => item.decision.status === "open").length + entry.questions.filter(item => item.question.status === "open").length + workers.reduce((sum, worker) => sum + worker.pendingPermissions, 0);
   const bridge = useMissionControlCopy(host.serverId);
@@ -105,7 +111,7 @@ export function FleetTaskDetail({ entry, coordinator, host, workers, localServer
   const workspace = host.workspaces.find(item => item.id === workspaceId);
   const binding = { serverId: host.serverId, workspaceId: workspaceId ?? "", taskId: entry.task.taskId };
   const content = <View style={{ gap: focusedReview ? 10 : 16 }}>
-    <CompactLink label="Back to fleet" colors={colors} onPress={close} />
+    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}><CompactLink label="Back to fleet" colors={colors} onPress={close} />{nextDecisionTask ? <CompactLink label="Next task needing you" colors={colors} onPress={nextDecisionTask} /> : null}</View>
     <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: focusedReview ? 20 : 24, fontWeight: "700" }}>{entry.task.title}</Text>
     <Text style={{ color: colors.foregroundMuted }}>{coordinator.hostLabel} · {coordinator.name}{focusedReview ? "" : ` · ${workspace?.name ?? "Workspace unavailable"}`}</Text>
     {focusedReview ? <Text style={{ color: workflow.actor === "you" ? colors.statusWarning : colors.foregroundMuted, fontSize: 12 }}>{workflow.stage} · {workflow.next}</Text> : <>
@@ -127,10 +133,10 @@ export function FleetTaskDetail({ entry, coordinator, host, workers, localServer
     {tab !== "Overview" && (!online || !("copy" in bridge)) ? <Text style={{ color: colors.statusWarning }}>Connect {coordinator.hostLabel} and load its Mission Control plugin to use this task's actions.</Text> : null}
     {online && "copy" in bridge ? <HostRpcProvider copy={bridge.copy}>
       {tab === "Plan" ? <TaskPlan entry={entry} host={host} colors={colors} openAgent={openAgent} /> : null}
-      {tab === "Needs you" ? <TaskAttention entry={entry} workers={workers} host={host} colors={colors} openAgent={openAgent} /> : null}
+      {tab === "Needs you" ? <TaskAttention entry={entry} workers={workers} host={host} colors={colors} openAgent={openAgent} nextDecisionTask={nextDecisionTask} /> : null}
       {tab === "Review" ? workspace ? <View style={{ gap: 8, height: reviewHeight }}>
         <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Changes belong to this workspace. Other agents using the same checkout may have contributed.</Text>
-        <MissionReview sessionId={`fleet:${coordinator.agentId}:${entry.task.taskId}`} serverId={host.serverId} localServerId={host.serverId} online colors={colors} compact={compact} openWorkspace={navigation ? () => navigation.openWorkspace({ serverId: host.serverId, workspaceId: workspace.id }) : undefined} readiness={(snapshot, stale) => <ReviewReadiness entry={entry} serverId={host.serverId} workspaceId={workspace.id} online={online} snapshot={snapshot} stale={stale} complete={host.complete} colors={colors} onEvidence={document => { setEvidenceDocument(document); setTab("Evidence"); }} onDecision={() => setTab("Needs you")} />} workspace={{ ...workspace, hostLabel: coordinator.hostLabel }} onChangeWorkspace={() => setTab("Overview")} />
+        <MissionReview sessionId={`fleet:${coordinator.agentId}:${entry.task.taskId}`} serverId={host.serverId} localServerId={host.serverId} online colors={colors} compact={compact} brief={(snapshot, stale, selectFile) => <ReviewBrief entry={entry} serverId={host.serverId} workspaceId={workspace.id} snapshot={snapshot} stale={stale} colors={colors} selectFile={selectFile} onEvidence={() => { setEvidenceDocument(undefined); setTab("Evidence"); }} />} openWorkspace={navigation ? () => navigation.openWorkspace({ serverId: host.serverId, workspaceId: workspace.id }) : undefined} readiness={(snapshot, stale) => <ReviewReadiness entry={entry} serverId={host.serverId} workspaceId={workspace.id} online={online} snapshot={snapshot} stale={stale} complete={host.complete} colors={colors} onEvidence={document => { setEvidenceDocument(document); setTab("Evidence"); }} onDecision={() => setTab("Needs you")} />} workspace={{ ...workspace, hostLabel: coordinator.hostLabel }} onChangeWorkspace={() => setTab("Overview")} />
       </View> : <Text style={{ color: colors.statusWarning }}>The task's workspace is unavailable.</Text> : null}
       {tab === "Evidence" && workspaceId ? <View style={{ gap: 10 }}><CompactLink label="Back to review" colors={colors} onPress={() => setTab("Review")} /><TaskFlowDetail key={evidenceDocument ?? "activity"} initialDocument={evidenceDocument} task={entry.task} binding={binding} online colors={colors} hostLabel={coordinator.hostLabel} openAgent={id => openAgent(host.serverId, id)} /></View> : null}
       {tab === "Delivery" ? <TaskDelivery entry={entry} serverId={host.serverId} colors={colors} /> : null}

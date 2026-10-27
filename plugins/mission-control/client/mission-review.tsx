@@ -199,7 +199,7 @@ function scopeLabel(snapshot: ReviewSnapshot | null) {
   return snapshot.base === "head" ? `uncommitted changes vs ${snapshot.head!.slice(0, 7)}` : "all files; the repository has no commits yet";
 }
 
-export function MissionReview({ serverId, localServerId = serverId, online, workspace, colors, compact, onChangeWorkspace, onNavigate, agentId: preferredAgentId, tab, sessionId = "workspace", openWorkspace, readiness }: {
+export function MissionReview({ serverId, localServerId = serverId, online, workspace, colors, compact, onChangeWorkspace, onNavigate, agentId: preferredAgentId, tab, sessionId = "workspace", openWorkspace, readiness, brief }: {
   serverId: string; online: boolean; workspace: { id: string; name: string; projectName: string; hostLabel: string };
   colors: Colors; compact: boolean; onChangeWorkspace?: () => void; onNavigate?: () => void; agentId?: string;
   // The host this Mission Control runs on, whose vault names the tasks in sub-agents' context lines.
@@ -207,6 +207,7 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
   tab?: PluginTab; sessionId?: string;
   openWorkspace?: () => void;
   readiness?: (snapshot: ReviewSnapshot | null, stale: boolean) => React.ReactNode;
+  brief?: (snapshot: ReviewSnapshot | null, stale: boolean, selectFile: (path: string) => void) => React.ReactNode;
 }) {
   const identity = JSON.stringify([serverId, workspace.id, preferredAgentId ?? sessionId]);
   const memory = useReviewSession(identity, tab);
@@ -425,6 +426,7 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
       </Text>
       {snapshot.head ? <LinkButton label={scopeOpen ? "Close" : "Change what to review"} onPress={() => setScopeOpen(!scopeOpen)} colors={colors} /> : null}
     </View> : null}
+    {brief?.(snapshot, stale || !online || (query.isError && !scanning), select)}
     {scopePicker}
     {draft && (pane !== "files" || (compact && !showDetail) || draft.path !== selected?.path || (draft.anchor && !rows.some(row => row.type === "composer"))) ? <View style={{ gap: 6 }}>
       <Text style={{ color: colors.statusWarning, fontSize: 12 }}>Unfinished comment on {draft.path}{draft.anchor ? `, ${draft.anchor.side} line ${draft.anchor.line}. Original line context is retained; it may now be outdated.` : "."} Save or cancel it before starting another comment.</Text>
@@ -480,7 +482,7 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
   </PageScrollView>;
 
   const fileDraft = draft && !draft.anchor && selected && draft.path === selected.path ? draft : null;
-  const detailHeader = selected && placement ? <View style={{ gap: 8, paddingBottom: 8 }}>
+  const detailToolbar = selected && placement ? <View accessibilityLabel="Review file controls" style={{ gap: 8, paddingBottom: 8, backgroundColor: colors.surface0, borderBottomWidth: 1, borderBottomColor: colors.border }}>
     {compact ? <CompactLink colors={colors} label={"← Files"} accessibilityRole="button" onPress={() => setShowDetail(false)} /> : null}
     <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
       <Text selectable style={{ color: colors.foreground, fontSize: 15, fontWeight: "700", flex: 1, minWidth: 0 }}>{selected.path}</Text>
@@ -504,6 +506,9 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
       </Pressable> : null}
     </View>
     {fileDraft ? <CommentComposer key={fileDraft.commentId ?? "file"} label="Comment on this file" initial={fileDraft.initial} value={fileDraft.body ?? fileDraft.initial ?? ""} onChange={updateDraftBody} colors={colors} busy={review.busy} indent={false} onSave={body => void saveDraft(body)} onCancel={() => setDraft(null)} /> : null}
+    <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Reviewed {snapshot?.files.filter(fileDone).length ?? 0} of {snapshot?.files.length ?? 0} files · {reviewedCount(selected)} of {selected.reviewIds.length} parts in this file · {unsent.length} unsent comments{stale ? " · Snapshot out of date" : ""}</Text>
+  </View> : null;
+  const detailHeader = selected && placement ? <View style={{ gap: 8, paddingVertical: 8 }}>
     {placement.fileLevel.map(comment => draft?.commentId === comment.commentId && !draft.anchor
       ? null
       : <CommentCard key={comment.commentId} comment={comment} colors={colors} agentName={agentName} busy={review.busy} onAction={action => void review.update(comment.commentId, action)}
@@ -525,8 +530,10 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
   </View> : <Text style={{ color: colors.foregroundMuted }}>Select a file to review.</Text>;
 
   const scrollKey = pageKey("review-diff", identity, selected?.path ?? "", String(block), mode, effectiveLayout);
-  const detail = <ReviewDiffList key={scrollKey} memoryKey={scrollKey} data={rows} keyExtractor={row => row.key} scrollEnabled={!compact} initialNumToRender={60} windowSize={9} extraData={[marks, review.comments, draft, review.busy]}
-    ListHeaderComponent={detailHeader} style={{ flex: compact ? undefined : 1, minHeight: 0 }} keyboardShouldPersistTaps="handled"
+  const detail = <View style={{ flex: compact ? undefined : 1, height: compact ? 600 : undefined, minHeight: 0, gap: 8 }}>
+    {detailToolbar}
+    <ReviewDiffList key={scrollKey} memoryKey={scrollKey} data={rows} keyExtractor={row => row.key} scrollEnabled initialNumToRender={60} windowSize={9} extraData={[marks, review.comments, draft, review.busy]}
+    ListHeaderComponent={detailHeader} style={{ flex: 1, minHeight: 0 }} nestedScrollEnabled keyboardShouldPersistTaps="handled"
     ListFooterComponent={previewing ? <View style={{ borderColor: colors.border, borderWidth: 1, borderRadius: 8, padding: 14, gap: 8 }}>
       <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>Preview of the file as it is now. Switch to Changes to comment on lines.</Text>
       {previewQuery.isPending ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Loading preview…</Text> : null}
@@ -541,7 +548,8 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
         onSave={body => void saveDraft(body)} onCancel={() => setDraft(null)} />;
       return <DiffRow row={item} colors={colors} total={selected?.hunks.length ?? 0} split={effectiveLayout === "split"} isReviewed={isReviewed} onToggleReviewed={toggleBlock} onLinePress={onLinePress}
         onStep={mode === "blocks" ? delta => setBlockIndex(Math.max(0, Math.min((selected?.hunks.length ?? 1) - 1, block + delta))) : undefined} />;
-    }} />;
+    }} />
+  </View>;
 
   if (!snapshot) return <View style={{ gap: 12 }}>{header}{fileMenu}</View>;
   if (compact) return <View style={{ gap: 12 }}>{header}{fileMenu}{showDetail && readiness ? readiness(snapshot, stale || !online || query.isError) : null}{showDetail && selected && pane === "files" ? detail : list}</View>;
