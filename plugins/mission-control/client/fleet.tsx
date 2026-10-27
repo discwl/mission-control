@@ -7,6 +7,7 @@ import { acknowledgeFleetDispatch, configureSupervisor, fleetScreenId, pauseFlee
 import { managedTasks, managedWorkerIds, taskWorkflow, taskWorkers, workflowStages } from "../shared/fleet-model";
 import { setOrchestratorWork } from "../shared/orchestrator-work";
 import { CompactLink } from "./compact-link";
+import { navigateWithCoordinatorReturn } from "./coordinator-return";
 import { formatDateTime } from "./date-time";
 import { PageScrollView, usePageState } from "./page-state";
 import { pageKey, pageMemory } from "./page-memory";
@@ -80,7 +81,7 @@ export function OrchestratorFleet({ theme, host, layout, navigation }: PluginSur
   const [filterHost, setFilterHost] = usePageState(`fleet:${host.id}:host`, "all");
   const [filterChat, setFilterChat] = usePageState(`fleet:${host.id}:chat`, "all");
   const [selection, setSelection] = usePageState<Selection>(`fleet:${host.id}:selection`, null);
-  const [search, setSearch] = useState(""); const [stage, setStage] = useState("All stages");
+  const [search, setSearch] = usePageState(`fleet:${host.id}:search`, ""); const [stage, setStage] = usePageState(`fleet:${host.id}:stage`, "All stages");
   const [showWarnings, setShowWarnings] = useState(false);
   const [viewportHeight, setViewportHeight] = useState(900);
   const [busy, setBusy] = useState<string | null>(null); const [error, setError] = useState<string | null>(null);
@@ -92,7 +93,13 @@ export function OrchestratorFleet({ theme, host, layout, navigation }: PluginSur
     void work().catch(cause => setError(problem(cause))).finally(() => { setBusy(null); void cache.invalidateQueries({ queryKey: key }); });
   }
   const openAgent = (serverId: string, agentId: string) => {
-    try { if (!navigation) throw new Error("Conversation navigation is unavailable here."); navigation.openAgent({ serverId, agentId }); }
+    try {
+      if (!navigation) throw new Error("Conversation navigation is unavailable here.");
+      const coordinator = selected?.coordinator ?? snapshot?.coordinators.find(item => serverId === host.id ? item.agentId === agentId : item.remoteServerId === serverId && managedWorkerIds(host.id, item, snapshot.hosts.find(remote => remote.serverId === serverId)?.snapshot?.agents ?? []).has(agentId));
+      const navigate = () => navigation.openAgent({ serverId, agentId });
+      if (coordinator) navigateWithCoordinatorReturn({ version: 1, kind: "fleet", serverId: host.id, agentId: coordinator.agentId, workspaceId: "", label: `${coordinator.hostLabel} · Orchestrator console` }, navigate);
+      else navigate();
+    }
     catch (cause) { setError(problem(cause)); }
   };
   const coordinators = snapshot?.coordinators.filter(item => (filterHost === "all" || item.remoteServerId === filterHost) && (filterChat === "all" || item.agentId === filterChat)) ?? [];

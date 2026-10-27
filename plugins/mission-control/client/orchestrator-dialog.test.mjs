@@ -12,18 +12,24 @@ const workspace = id => ({ id, name: id, projectName: "project", labels: ["Revie
 
 function harness(kind, compact = false) {
   const states = []; let cursor = 0;
-  const calls = [], keys = [], cleanups = [];
+  const calls = [], keys = [], cleanups = [], origins = [];
   const roster = { workspaces: [workspace("mine"), workspace("other")], agents: [worker("worker", "mine"), worker("other-worker", "other")], hasMore: false };
   const links = { links: [{ serverId: "local", agentId: "chat", remoteServerId: "remote", remoteAgentId: "worker", remoteWorkspaceId: "mine", linkedAt: "now", taskId: null }] };
   const jsx = (type, props) => typeof type === "function" ? type(props) : ({ type, props });
   const modal = Object.assign(props => ({ type: "Modal", props }), { Content: "ModalContent" });
+  const webModule = { exports: {} };
+  new Function("require", "module", "exports", compile(readFileSync(new URL("./web.ts", import.meta.url), "utf8")))(name => name === "react-native" ? { Platform: { OS: "web" } } : require(name), webModule, webModule.exports);
   const mocks = {
+    "./web": webModule.exports,
     react: { useState: initial => { const index = cursor++; if (!(index in states)) states[index] = initial; return [states[index], value => { states[index] = value; }]; }, useEffect: effect => { const cleanup = effect(); if (cleanup) cleanups.push(cleanup); }, useSyncExternalStore: (_subscribe, snapshot) => snapshot() },
     "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
     "react-native": { Text: "Text", View: "View", TextInput: "TextInput" },
     "@getpaseo/plugin/client": { useHosts: () => [{ serverId: "remote", status: "online", label: "Remote" }], useRpc: contract => async input => { calls.push([contract.name, input]); return links; } },
     "@getpaseo/plugin/client/react-native": { Icon: "Icon" },
     "@tanstack/react-query": { useQuery: options => { keys.push(options.queryKey); return { data: options.queryKey[1] === "orchestrator-work" ? links : roster, isPending: false, refetch: async () => {} }; }, useQueryClient: () => ({ setQueryData: () => {} }) },
+    "./coordinator-return": { navigateWithCoordinatorReturn: (origin, navigate) => { origins.push(origin); return navigate(); } },
+    "./plugin-client": { pluginClient: () => ({ openScreen: input => calls.push(["screen", input]) }) },
+    "./worker-history": { workerHistoryScreenId: "worker-history" },
     "./app-modal": { AppModal: modal }, "./attention": { Attention: "Attention" }, "./compact-link": { CompactLink: "Link" },
     "./date-time": { formatDateTime: value => value }, "./host-agents-panel": { ReviewSections: "ReviewSections" },
     "./host-rpc": { HostRpcProvider: "HostRpcProvider", useMissionControlCopy: () => ({ copy: { serverId: "remote" } }) },
@@ -36,13 +42,24 @@ function harness(kind, compact = false) {
   const key = requests.orchestratorDialogKey("folder", "chat", "remote", kind);
   requests.setOrchestratorDialogOpen(key, true);
   const render = () => { cursor = 0; return Icon({ context: "agent", workspaceId: "folder", agentId: "chat", host: { id: "local" }, theme: { colors: {} }, layout: { compact, platform: "web" }, size: 16, color: "white" }); };
-  return { render, calls, keys, key, links, roster, unmount: () => { for (const cleanup of cleanups.splice(0)) cleanup(); states.length = 0; } };
+  return { render, calls, keys, key, links, roster, origins, unmount: () => { for (const cleanup of cleanups.splice(0)) cleanup(); states.length = 0; } };
 }
 function nodes(node, type) {
   if (!node || typeof node !== "object") return [];
   if (Array.isArray(node)) return node.flatMap(child => nodes(child, type));
   return [...(node.type === type ? [node] : []), ...nodes(node.props?.children, type)];
 }
+test("worker navigation records the origin and history opens for the exact current chat", () => {
+  const navigation = harness("review");
+  nodes(navigation.render(), "Link").find(node => node.props.label === "Open agent").props.onPress();
+  assert.deepEqual(navigation.origins[0], { version: 1, kind: "chat", serverId: "local", agentId: "chat", workspaceId: "folder", label: "Remote coordinator" });
+  assert.deepEqual(navigation.calls[0], ["navigate", "folder", "remote", "agent", "worker"]);
+  navigation.unmount(); requests.setOrchestratorDialogOpen(navigation.key, false);
+  const history = harness("review");
+  nodes(history.render(), "Link").find(node => node.props.label === "Workers & history").props.onPress();
+  assert.deepEqual(history.calls[0], ["screen", { screenId: "worker-history", params: { serverId: "local", agentId: "chat", workspaceId: "folder", label: "Remote coordinator" } }]);
+  history.unmount(); requests.setOrchestratorDialogOpen(history.key, false);
+});
 test("native children appear without links and another server's same chat ID is excluded", () => {
   for (const compact of [false, true]) {
     const f = harness("review", compact);

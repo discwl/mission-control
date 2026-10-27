@@ -7,6 +7,9 @@ import { Text, TextInput, View } from "react-native";
 import type { OrchestratorBinding } from "../shared/orchestrator";
 import { listOrchestratorWork, setOrchestratorWork } from "../shared/orchestrator-work";
 import { AppModal } from "./app-modal";
+import { navigateWithCoordinatorReturn } from "./coordinator-return";
+import { pluginClient } from "./plugin-client";
+import { workerHistoryScreenId } from "./worker-history";
 import { isolateModalEvents } from "./web";
 import { Attention } from "./attention";
 import { CompactLink } from "./compact-link";
@@ -76,7 +79,10 @@ function OrchestratorDialog(props: PluginButtonContentProps & { binding: Orchest
   const message = (text: string, warning = false) => <Text style={{ color: warning ? colors.statusWarning : colors.foregroundMuted, fontSize: 13 }}>{text}</Text>;
   const date = (at: string | null) => at ? formatDateTime(at) : "Unknown";
   const navigate = (kind: "agent" | "workspace", id: string) => {
-    try { openDestination(workspaceId, serverId, kind, id); close(); }
+    try {
+      navigateWithCoordinatorReturn({ version: 1, kind: "chat", serverId: host.id, agentId, workspaceId, label: `${binding.label} coordinator` }, () => openDestination(workspaceId, serverId, kind, id));
+      close();
+    }
     catch (failure) { setError(failure instanceof Error ? failure.message : String(failure)); }
   };
   const openReview = (id: string) => { setView("review"); setReviewId(id); };
@@ -127,6 +133,7 @@ function OrchestratorDialog(props: PluginButtonContentProps & { binding: Orchest
           <CompactLink label={onlyLinked ? "✓ This chat's work" : "This chat's work"} colors={colors} selected={onlyLinked} onPress={() => selectScope(true)} />
           <CompactLink label={!onlyLinked ? "✓ All host work" : "All host work"} colors={colors} selected={!onlyLinked} onPress={() => selectScope(false)} />
           <CompactLink label={linking ? "Hide worker links" : "Link workers"} colors={colors} onPress={() => setLinking(!linking)} />
+          <CompactLink label="Workers & history" colors={colors} onPress={() => { pluginClient()?.openScreen({ screenId: workerHistoryScreenId, params: { serverId: host.id, agentId, workspaceId, label: `${binding.label} coordinator` } }); close(); }} />
         </View>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
           <CompactLink label={sort === "activity" ? "✓ Last activity" : "Last activity"} colors={colors} onPress={() => setSort("activity")} />

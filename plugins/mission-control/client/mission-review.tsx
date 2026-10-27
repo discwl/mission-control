@@ -1,6 +1,7 @@
 import { useRpc } from "./host-rpc";
 import type { PluginTab } from "@getpaseo/plugin/client";
 import { useReviewSession } from "./review-session";
+import { ReviewChanges } from "./review-changes";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { ReviewDiffList } from "./review-scroll";
@@ -223,6 +224,7 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
   useEffect(() => { if (pinned) memory.rememberSnapshot(pinned); }, [identity, pinned]);
   const [selectedPath, setSelectedPath] = useState<string | null>(saved?.selectedPath ?? null);
   const [filter, setFilter] = useState<"all" | Severity>(saved?.filter ?? "all");
+  const [comparisonPaths, setComparisonPaths] = useState<readonly string[] | null>(null);
   const [mode, setMode] = useState<"blocks" | "full">(saved?.mode ?? "blocks");
   const [layout, setLayout] = useState<"split" | "unified">(saved?.layout ?? "split");
   const [pane, setPane] = useState<"files" | "comments">(saved?.pane ?? "files");
@@ -297,8 +299,8 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
   const snapshot = pinned;
   const draftMatchesSnapshot = !draft?.fingerprint || draft.fingerprint === snapshot?.fingerprint;
   const stale = !!snapshot && !!query.data && query.data.fingerprint !== snapshot.fingerprint;
-  const files = (snapshot?.files ?? []).filter(file => filter === "all" || file.severity === filter);
-  const selected = snapshot?.files.find(file => file.path === selectedPath) ?? files[0] ?? null;
+  const files = (snapshot?.files ?? []).filter(file => (filter === "all" || file.severity === filter) && (!comparisonPaths || comparisonPaths.includes(file.path)));
+  const selected = snapshot?.files.find(file => file.path === selectedPath && (!comparisonPaths || comparisonPaths.includes(file.path))) ?? files[0] ?? null;
   const block = selected ? Math.min(blockIndex, Math.max(0, selected.hunks.length - 1)) : 0;
   // Split view is empty on one side for added or deleted files.
   const effectiveLayout = compact || selected?.change === "added" || selected?.change === "deleted" ? "unified" : layout;
@@ -427,6 +429,7 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
       {snapshot.head ? <LinkButton label={scopeOpen ? "Close" : "Change what to review"} onPress={() => setScopeOpen(!scopeOpen)} colors={colors} /> : null}
     </View> : null}
     {brief?.(snapshot, stale || !online || (query.isError && !scanning), select)}
+    <ReviewChanges key={identity} identity={identity} snapshot={snapshot} stale={stale || !online || (query.isError && !scanning)} colors={colors} onSelect={select} onFilter={setComparisonPaths} />
     {scopePicker}
     {draft && (pane !== "files" || (compact && !showDetail) || draft.path !== selected?.path || (draft.anchor && !rows.some(row => row.type === "composer"))) ? <View style={{ gap: 6 }}>
       <Text style={{ color: colors.statusWarning, fontSize: 12 }}>Unfinished comment on {draft.path}{draft.anchor ? `, ${draft.anchor.side} line ${draft.anchor.line}. Original line context is retained; it may now be outdated.` : "."} Save or cancel it before starting another comment.</Text>
@@ -468,6 +471,7 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
         })}
       </ScrollView>
       {snapshot && snapshot.files.length === 0 ? <Text style={{ color: colors.foregroundMuted, fontSize: 13 }}>No changes to review. {snapshot.head ? "Use \"Change what to review\" to review recent commits." : ""}</Text> : null}
+      {comparisonPaths ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Showing files changed since your comparison point. Use Show all files above to restore the full list.</Text> : null}
       {snapshot && snapshot.files.length ? <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "700", marginTop: 6 }}>To review · {toReview.length}</Text> : null}
       {snapshot && snapshot.files.length && !toReview.length ? <Text style={{ color: colors.statusSuccess, fontSize: 12 }}>Everything here is reviewed.</Text> : null}
       {fileView === "tree" ? <FileTree files={toReview} colors={colors} onActions={setItemTarget} renderFile={file => <FileRow file={file} selected={selected?.path === file.path} reviewed={reviewedCount(file)} comments={commentsIn(file.path)} colors={colors} onActions={setItemTarget} onPress={() => select(file.path)} />} /> : fileGroups(toReview).map(group => <View key={group.severity} style={{ gap: 2 }}>
