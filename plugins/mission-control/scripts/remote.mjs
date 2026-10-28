@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-// Drives another host's Mission Control from this machine, over that host's Paseo pairing link: import tickets as
+// Drives another host's Mission Control through this machine's saved Paseo destination: import tickets as
 // tasks, start and resume them through Mission Control's launcher, and read their status and evidence. It's for
 // orchestrator agents, so ticket work follows the Development Flow instead of starting plain agents.
 //
 // Approving or rejecting review decisions, merging and opening pull requests stay with the user in Mission Control.
 //
-//   node remote.mjs --offer-file <file> <command> [options]     (the file holds the host's pairing URL)
+//   node remote.mjs --server <serverId> <command> [options]   (the saved destination; no pairing file)
+//   node remote.mjs --offer-file <file> <command> [options]    (explicit legacy/admin connection)
 //   node remote.mjs --local <command> [options]                  (this machine's daemon)
 //
 // Output is JSON on stdout; a failure prints its message on stderr and exits 1.
@@ -207,6 +208,10 @@ async function localUrl() {
   return `ws://${listen.replace(/^(0\.0\.0\.0|\[::\]):/, "127.0.0.1:")}/ws`;
 }
 
+// The daemon drops an earlier connection that reuses a client ID, so each connection gets its own. Sharing one cut
+// the --server route when start opened its parent connection ("host.identity: Transport not connected").
+let connectionCount = 0;
+
 /**
  * INTERNAL PASEO API: PaseoApi has no plugin RPC call, so this uses @getpaseo/client's internal DaemonClient, as the
  * plugin's agent rename does. It may break when Paseo changes that client.
@@ -216,7 +221,7 @@ async function connect(values) {
   if (selectors.length !== 1) throw new Error(`Choose exactly one connection: --server <serverId>, --local, or --offer-file <file>.\n\n${usage}`);
   if (values.server !== undefined && !values.server.trim()) throw new Error("--server requires a non-empty destination server ID from list_hosts.");
   const { DaemonClient } = await import("@getpaseo/client/internal/daemon-client");
-  const base = { clientId: `mission-control-remote-${process.pid}`, clientType: "cli", connectTimeoutMs: 30_000, reconnect: { enabled: false } };
+  const base = { clientId: `mission-control-remote-${process.pid}-${++connectionCount}`, clientType: "cli", connectTimeoutMs: 30_000, reconnect: { enabled: false } };
   if (values.server !== undefined) {
     const { createHostChannelTransport } = await import("@getpaseo/client/node");
     const origin = await connect({ local: true });

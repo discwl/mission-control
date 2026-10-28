@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { connectRegisteredHost, usage } from "./remote.mjs";
 
 function fixture({ hosts = [{ serverId: "srv_remote", label: "Remote", enabled: true, status: "online" }], actual = "srv_remote", connectError, identityError, closeError, directoryError, factoryError } = {}) {
@@ -68,6 +71,50 @@ test("remote cleanup failure still releases the origin and does not replace a ro
   const f = fixture({ actual: "srv_wrong", closeError: new Error("cleanup") });
   await assert.rejects(connectRegisteredHost("srv_remote", f.origin, f.create), /Host identity mismatch/);
   assert.equal(f.calls.at(-1), "origin.close");
+});
+
+test("opening parent and link connections keeps the original remote route alive", async () => {
+  const source = (await readFile(new URL("./remote.mjs", import.meta.url), "utf8"))
+    .replace(/^import .*;\r?\n/gm, "")
+    .replace(/export /g, "")
+    .replace(/await import\(/g, "await importModule(")
+    .split("if (import.meta.url ===")[0];
+  const peers = new Map();
+  const created = [];
+  class DaemonClient {
+    constructor(config) { this.config = config; this.route = config.transportFactory?.(); this.connected = false; created.push(this); }
+    async connect() {
+      const key = `${this.route?.serverId ?? "local"}:${this.config.clientId}`;
+      const previous = peers.get(key);
+      if (previous) previous.connected = false; // Paseo replaces a session reusing this client identity.
+      peers.set(key, this);
+      this.connected = true;
+    }
+    async close() { this.connected = false; }
+    check() { if (!this.connected || (this.route && !this.route.origin.connected)) throw new Error("Transport not connected"); }
+    async listHosts() { this.check(); return { hosts: [{ serverId: "srv_remote", label: "Remote", enabled: true, status: "online" }] }; }
+    async invokePluginRpc(_plugin, method) { this.check(); return method === "host.identity" ? { serverId: this.route?.serverId ?? "srv_personal" } : { linked: true }; }
+  }
+  const sandbox = {
+    process: { pid: 42, env: {} }, join, homedir: () => "/test-home", readFile: async () => '{"listen":"127.0.0.1:6767"}',
+    importModule: async name => {
+      if (name === "@getpaseo/client/internal/daemon-client") return { DaemonClient };
+      if (name === "@getpaseo/client/node") return { createHostChannelTransport: (origin, serverId) => () => ({ origin, serverId }) };
+      throw new Error(`Unexpected import ${name}`);
+    },
+  };
+  runInNewContext(`${source}\nglobalThis.openConnection = connect;`, sandbox);
+  const remote = await sandbox.openConnection({ server: "srv_remote" });
+  const parent = await sandbox.openConnection({ local: true });
+  const link = await sandbox.openConnection({ local: true });
+  try {
+    assert.equal((await parent.invokePluginRpc("mission-control", "host.identity", {})).serverId, "srv_personal");
+    assert.equal((await link.invokePluginRpc("mission-control", "orchestrator.work.set", {})).linked, true);
+    assert.equal((await remote.invokePluginRpc("mission-control", "host.identity", {})).serverId, "srv_remote");
+    assert.equal(created.length, 4);
+    assert.equal(new Set(created.map(client => client.config.clientId)).size, created.length);
+  } finally { await link.close(); await parent.close(); await remote.close(); }
+  assert.ok(created.every(client => !client.connected));
 });
 
 test("the command line refuses conflicting or missing selectors before connecting", () => {
