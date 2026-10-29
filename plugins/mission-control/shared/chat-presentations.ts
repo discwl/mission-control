@@ -3,10 +3,18 @@ import type { DecisionEntry } from "./decisions";
 import type { PullRequestPlan } from "./pull-request";
 
 const bullets = (values: readonly string[]) => values.map(text => `• ${text}`).join("\n");
+import { reviewSummary } from "./review-summary";
 export function chatPlan(title: string, host: string, brief: PlanBrief, revision: string) {
   return `${host} · ${title}\nPlan for your approval · ${revision.slice(0, 12)}\n\nGoal: ${brief.goal}\nToday: ${brief.before}\nAfter this work: ${brief.after}\n\nIncluded\n${bullets(brief.included)}\n\nDeferred\n${bullets(brief.deferred)}\n\nAffected\n${bullets(brief.affected)}\n\nApproach\n${bullets(brief.approach)}\n\nHow we will check it\n${bullets(brief.successChecks)}\n\nRisks\n${bullets(brief.risks)}\n\nScope change: ${brief.scopeChange}\nAuthorization: ${brief.authorization}${brief.changesSincePrevious.length ? `\n\nChanges since the previous plan\n${bullets(brief.changesSincePrevious)}` : ""}\n\nApproval permits only this plan's implementation. Publishing, PRs, merges, deployments and tracker updates require separate authorization.`;
 }
 export function chatReview(entry: DecisionEntry, host: string) {
+  const rank = { high: 0, medium: 1, low: 2 };
+  const open = entry.findings.filter(f => f.status === "open").sort((a, b) => rank[a.severity] - rank[b.severity]);
+  const findings = open.slice(0, 5).map(f => `${f.severity.toUpperCase()} · ${f.plain?.description ?? "Issue needs a readable description; open the full review."}${f.plain?.impact ? `\nIf skipped: ${f.plain.impact}` : ""}`).join("\n\n");
+  const recommendation = entry.decision.plain?.recommendation;
+  return `${host} · ${entry.taskTitle}\nReady for your code review\n\n${reviewSummary(entry)}\n\n${open.length ? `${open.length} open review issue(s)\n${findings}${open.length > 5 ? "\nMore issues are listed in the full review." : ""}` : "No open findings in this request."}${entry.unverifiedFindings ? `\n${entry.unverifiedFindings} earlier fixes still need verification; acceptance is blocked.` : ""}${recommendation ? `\n\nAgent recommends ${recommendation.action === "accept" ? "accepting the code" : recommendation.action === "fix" ? "requesting changes" : "stopping"}: ${recommendation.reason}` : ""}\n\nYour decision: accept this code change or request changes.\nPublication and production changes still require separate approval.\nFull report: review details ${entry.decision.taskId}`;
+}
+export function chatReviewDetails(entry: DecisionEntry, host: string) {
   const decision = entry.decision;
   return `${host} · ${entry.taskTitle}\nCode review for your approval\n\n${entry.summary}\n\n${decision.question}\n\nReviewed HEAD: ${decision.candidate?.head ?? decision.gitHead ?? "unavailable"}\nReviewed tree: ${decision.candidate?.tree ?? "unavailable"}\n${entry.unverifiedFindings} previous findings still need verification.\n\nFindings\n${entry.findings.length ? entry.findings.map(f => `${f.severity.toUpperCase()} · ${f.plain?.description ?? f.title}\n${f.plain?.impact ?? f.detail}\nStatus: ${f.status}${f.file ? ` · ${f.file}` : ""}\nFinding: ${f.findingId}`).join("\n\n") : "No findings in this request."}\n\nEvidence\n${bullets(decision.evidence)}\n\nRequesting changes sends the open findings and your note back to the worker. Accepting this review does not authorize a commit, push, PR, merge, deployment or tracker update.`;
 }

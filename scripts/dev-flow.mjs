@@ -379,9 +379,15 @@ function decisionPlain(input, kind, warnings) {
   if (typeof input !== "object" || Array.isArray(input)) throw new Error("plain must be an object.");
   const action = input.recommendation?.action;
   if (!["accept", "fix", "stop"].includes(action)) throw new Error("plain.recommendation.action must be accept, fix or stop.");
+  const briefList = key => {
+    if (input[key] == null) { if (kind === "review") warnings.push(`plain.${key} was not supplied; the owner will see that this information is missing.`); return undefined; }
+    if (!Array.isArray(input[key]) || !input[key].length || input[key].length > 5) throw new Error(`plain.${key} must contain one to five concise statements.`);
+    return input[key].map((text, index) => plainText(text, `plain.${key}[${index}]`, 240, warnings));
+  };
   return {
     built: plainText(input.built, "plain.built", plainLimits.built, warnings),
     found: plainText(input.found, "plain.found", plainLimits.found, warnings, { optional: kind === "plan" }),
+    checks: briefList("checks"), limitations: briefList("limitations"),
     recommendation: { action, reason: plainText(input.recommendation.reason, "plain.recommendation.reason", plainLimits.reason, warnings) },
   };
 }
@@ -728,6 +734,8 @@ request-decision --input is a JSON file:
     "plain": {
       "built": "<what the user gets: what was built or planned, 1-2 sentences, max ${plainLimits.built}>",
       "found": "<what the review found, in everyday terms, max ${plainLimits.found}; optional for plans>",
+      "checks": ["<reported test or validation result, max 240 characters; up to 5>"],
+      "limitations": ["<remaining risk, unverified behavior or follow-up, max 240 characters; up to 5>"],
       "recommendation": { "action": "accept" | "fix" | "stop", "reason": "<one line, max ${plainLimits.reason}>" } },
     "findings": [{ "title": "...", "severity": "high" | "medium" | "low", "detail": "...", "file": "...",
       "plain": { "description": "<the problem in plain words, max ${plainLimits.description}>",
@@ -739,6 +747,9 @@ back as warnings (in the output's "warnings" and on stderr) so you can reword th
 When plain is given, every finding needs plain too. A review recommending "fix" needs a finding recommended
 for fixing; one recommending "accept" recommends skipping every finding. Mission Control shows the plain
 fields first and keeps question, summary, evidence and finding details under Technical details.
+For reviews, supply checks and limitations in plain language. They must reflect recorded evidence;
+if there are no known limitations, say so explicitly. Legacy requests may omit them, but the owner
+will see that information is missing. Chat users can request the full report with review details <task ID>.
 
 For kind "plan", save the full plan.md beside task.md and include a required "planBrief":
   { "goal": "<problem being solved>", "before": "<current behavior>",

@@ -27,6 +27,8 @@ export const decisionPlainSchema = z.object({
   built: plainText(plainLimits.built),
   // What the review found; plans may leave it empty.
   found: z.string().trim().max(plainLimits.found).default(""),
+  checks: z.array(plainText(240)).max(5).optional(),
+  limitations: z.array(plainText(240)).max(5).optional(),
   recommendation: z.object({ action: z.enum(["accept", "fix", "stop"]), reason: plainText(plainLimits.reason) }),
 });
 export type DecisionPlain = z.infer<typeof decisionPlainSchema>;

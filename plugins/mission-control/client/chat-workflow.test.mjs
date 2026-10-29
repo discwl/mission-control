@@ -52,7 +52,7 @@ test("native receipt is appended by the plugin server session and preserves disp
   registerChatWorkflow({ handle: (contract, run) => handlers.set(contract.name, run), on() {} }, { decisions: {}, questions: {}, pullRequests: {} });
   const context = { paseo: { agents: { ref: id => ({ refresh: async () => ({ agent: { id, workspaceId: "workspace" } }), timeline: { append: async item => { appended.push({ id, item }); } } }) } } };
   const result = await handlers.get("chat.native-command")({ agentId: "coordinator", text: "help" }, context);
-  assert.equal(result.text, "Mission Control help"); assert.equal(appended.length, 1);
+  assert.match(result.text, /^Mission Control help/); assert.equal(appended.length, 1);
   assert.equal(appended[0].id, "coordinator"); assert.equal(appended[0].item.type, "plugin");
   assert.equal(appended[0].item.kind, "chat-workflow"); assert.equal(appended[0].item.data.text, result.text);
 });

@@ -141,8 +141,8 @@ export function DecisionCard({ entry, serverId, hostLabel, colors, actions, brie
       {!busy ? <Link label="Discard draft" colors={colors} onPress={() => { draftState.clear(); setError(null); }} /> : null}
     </View> : null}
     {more ? null : <>
-      <WhereLine where={summary} colors={colors} />
-      {summary.source === "generic" ? <Text style={muted}>Open More for the details.</Text> : null}
+      {review ? <Text style={body}>{reviewSummary(entry)}</Text> : <WhereLine where={summary} colors={colors} />}
+      {!review && summary.source === "generic" ? <Text style={muted}>Open More for the details.</Text> : null}
     </>}
     <NeedLine need={decisionNeed(entry)} recommendation={recommended} colors={colors} />
     {!review ? <>
@@ -223,3 +223,4 @@ export function DecisionCard({ entry, serverId, hostLabel, colors, actions, brie
   </View>;
 }
 import { CompactLink } from "./compact-link";
+import { reviewSummary } from "../shared/review-summary";

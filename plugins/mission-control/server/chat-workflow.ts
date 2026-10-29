@@ -1,4 +1,5 @@
 import { chatNativeCommand } from "../shared/chat-workflow";
+import { chatReviewDetails } from "../shared/chat-presentations";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import type { PaseoApi } from "@getpaseo/client";
@@ -55,7 +56,7 @@ export function registerChatWorkflow(server: PluginServerContext, deps: { decisi
     };
     {
       const command = text.trim();
-      if (/^(help|\?)$/i.test(command)) return { text: CHAT_HELP };
+      if (/^(help|\?)$/i.test(command)) return { text: `${CHAT_HELP}\nreview details <ticket or task ID> — open the full technical report` };
       const management = await manageChatCommand(command, { local, target, agentId, label, orchestrator: Boolean(binding) });
       if (management) return management;
       if (/^(yes\b|approve\b|accept\b|request changes\b|changes:|change the plan:|stop:|answer:|open draft pr\b)/i.test(command)) {
@@ -93,7 +94,8 @@ export function registerChatWorkflow(server: PluginServerContext, deps: { decisi
         return { text: `${offer.text}\n\nReply: answer: <your answer>\nQuestion proposal ${offer.id}\n${chatLinks(target, q.workspaceId, q.agentId)}`, offerId: offer.id, state: offer.state };
       }
       const refreshPlan = /^refresh plan\s+(.+)$/i.exec(command);
-      const requested = /^(plan|review)\s+(.+)$/i.exec(refreshPlan ? `plan ${refreshPlan[1]}` : command);
+      const details = /^review details\s+(.+)$/i.exec(command);
+      const requested = /^(plan|review)\s+(.+)$/i.exec(details ? `review ${details[1]}` : refreshPlan ? `plan ${refreshPlan[1]}` : command);
       const all = /^all needs$/i.test(command);
       if (!requested && !all && !/^(needs|what needs me\??)$/i.test(command)) return { text: CHAT_HELP };
       const decisions = await call(listDecisions, { serverId: target });
@@ -113,6 +115,7 @@ export function registerChatWorkflow(server: PluginServerContext, deps: { decisi
       if (matching.length !== 1) return { text: matching.length ? `Several tasks match. Use the exact task ID:\n${matching.map(entry => `${entry.taskTitle}: ${entry.decision.taskId}`).join("\n")}` : "No open decision matches that task. Use ‘needs’ or ‘all needs’ to see current requests." };
       const entry = matching[0];
       const d = entry.decision;
+      if (details) return { text: `${chatReviewDetails(entry, label)}\n${chatLinks(target, d.workspaceId, d.agentId)}` };
       const ref = { serverId: target, workspaceId: d.workspaceId, taskId: d.taskId, runId: d.runId, decisionId: d.decisionId, expectedRevision: entry.revision };
       if (refreshPlan) {
         const result = await call(resolveDecision, { ...ref, outcome: "changes_requested", note: "Please reissue this plan in the same task with a fresh versioned plan and a complete human-readable approval brief. Explain the goal, before/after behavior, scope, deferred work, approach, checks and risks. Preserve existing work and history. Wait for my approval before implementation; no publication is authorized.", submitFindingIds: [] });

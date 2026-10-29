@@ -437,6 +437,8 @@ test("decision requests store plain-language fields, refuse IDs, hashes, paths a
   const plain = {
     built: "You can now pause a task and pick it up later without losing notes.",
     found: "The review found one problem: pausing twice loses the second note.",
+    checks: ["The saved-note checks passed."],
+    limitations: ["Pausing twice still needs a fix."],
     recommendation: { action: "fix", reason: "It's a quick fix and notes matter." },
   };
   const finding = { title: "Second pause overwrites notes", severity: "medium", detail: "savePause replaces notes.md.", file: "server/pause.ts",
@@ -460,6 +462,9 @@ test("decision requests store plain-language fields, refuse IDs, hashes, paths a
     [plain, [{ ...finding, plain: { ...finding.plain, recommend: "skip" } }], /at least one finding recommended for fixing/],
     [{ ...plain, recommendation: { action: "accept", reason: "Good enough." } }, [finding], /recommends accepting/],
     [{ ...plain, found: "" }, [finding], /plain\.found is required/],
+    [{ ...plain, checks: [] }, [finding], /one to five/],
+    [{ ...plain, limitations: ["x".repeat(241)] }, [finding], /too long/],
+    [{ ...plain, checks: ["See C:\\dev-vault\\test.md"] }, [finding], /a file path/],
   ];
   const runId = newRun();
   for (const [candidate, findings, pattern] of refusals) {
@@ -481,6 +486,8 @@ test("decision requests store plain-language fields, refuse IDs, hashes, paths a
 
   // Ordinary text passes untouched; file, code and tool names pass with a warning the agent sees.
   const ordinary = {
+    checks: ["Saved notes remain readable."],
+    limitations: ["No known limitations from these checks."],
     built: "From 26/09/2026 you can read/write/delete notes in Settings/Plugins/Mission Control, 24/7, with and/or without a draft.",
     found: "The review found nothing wrong, e.g. dates, times like 10:30, and prices like $12.50 all look right.",
     recommendation: { action: "accept", reason: "It works as described; accept it." },
