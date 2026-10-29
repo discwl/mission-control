@@ -2,6 +2,7 @@ import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { acknowledgeFleetDispatch, configureSupervisor, fleetSnapshotSchema, pauseFleet, readFleet, readFleetHost, reconcileFleet, setFleetQueue, supervisorEntrySchema, type FleetSnapshot } from "../shared/fleet";
 import { chooseNextTask, coordinatorCandidates, managedTasks, taskFingerprint } from "../shared/fleet-model";
 import { hideSecrets } from "../shared/secret-mask";
+import { isQuiet } from "../shared/agent-tree";
 import { collectFleetHost, fleetDirectory, toFleetAgent, type FleetHostDeps } from "./fleet-host";
 import { createFleetStore, fleetEvent } from "./fleet-store";
 import { createFleetSupervisor } from "./fleet-supervisor";
@@ -67,7 +68,7 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
   }
   const pipeline = registerPipelineRuntime(server, store, hostDeps, () => snapshot(true), (id, prompt, requestId) => withFleetConnection(async paseo => {
     const entry = await paseo.agents.ref(id).refresh();
-    if (!entry || entry.agent.status !== "idle" || entry.agent.pendingPermissions?.length || entry.agent.archivedAt) throw new Error("Coordinator changed before send.");
+    if (!entry || !isQuiet(entry.agent) || entry.agent.pendingPermissions?.length || entry.agent.archivedAt) throw new Error("Coordinator changed before send.");
     await paseo.agents.ref(id).send(prompt, { messageId: requestId, activeTurnBehavior: "steer" });
   }), () => { cached = null; });
   const supervisor = createFleetSupervisor({ store, snapshot: async () => {
@@ -86,7 +87,7 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
     }),
     send: (id, prompt, requestId) => withFleetConnection(async paseo => {
       const entry = await paseo.agents.ref(id).refresh();
-      if (!entry || entry.agent.status !== "idle" || entry.agent.pendingPermissions?.length || entry.agent.archivedAt) throw new Error("Coordinator changed before send.");
+      if (!entry || !isQuiet(entry.agent) || entry.agent.pendingPermissions?.length || entry.agent.archivedAt) throw new Error("Coordinator changed before send.");
       await paseo.agents.ref(id).send(prompt, { messageId: requestId, activeTurnBehavior: "steer" });
     }),
   });

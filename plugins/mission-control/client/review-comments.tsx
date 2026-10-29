@@ -15,6 +15,7 @@ import {
 import { formatDateTime } from "./date-time";
 import { Chip, LinkButton, mono, plural, type Colors } from "./review-ui";
 import { flattenAgentTree, groupAgents, parentAgentIdOf } from "../shared/subagents";
+import { isQuiet } from "../shared/agent-tree";
 import { listIncludingBackground } from "../shared/background";
 
 export type ReviewAgent = { id: string; name: string; status: string; updatedAt: string; parentAgentId: string | null };
@@ -137,7 +138,7 @@ export function SendBar({ agents, agentId, onChooseAgent, pending, busy, onSend,
 }) {
   const chosen = agents.find(agent => agent.id === agentId) ?? null;
   const chosenContext = chosen && contextLine ? contextLine(chosen) : null;
-  const ready = chosen?.status === "idle";
+  const ready = chosen ? isQuiet(chosen) : false;
   return <View style={{ gap: 6 }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
       <Pressable accessibilityRole="button" accessibilityLabel={`Send ${plural(pending, "comment")} to ${chosen?.name ?? "an agent"}`} disabled={busy || !pending || !ready} onPress={onSend}

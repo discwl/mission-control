@@ -323,7 +323,9 @@ async function lookupAgent(paseo: PaseoApi, agentId: string): Promise<AgentLooku
     agent = null;
   }
   if (!agent) return { found: false };
-  if (agent.archivedAt || agent.status === "closed") return { found: true, idle: true, archived: true, detail: "The task's agent is archived, so it can't be working. No note will be sent." };
+  if (agent.archivedAt) return { found: true, idle: true, archived: true, detail: "The task's agent is archived, so it can't be working. No note will be sent." };
+  // Paseo 0.14 closes an idle agent's runtime after an hour. Waking it only to read a note that asks for nothing isn't worth a turn.
+  if (agent.status === "closed") return { found: true, idle: true, archived: true, detail: "The task's agent is resting (closed while idle), so it can't be working. No note will be sent, so it isn't woken just to read one." };
   if (agent.pendingPermissions.length) return { found: true, idle: false, archived: false, detail: "The task's agent is waiting on a permission prompt." };
   if (agent.status !== "idle" || agent.activeTurn) return { found: true, idle: false, archived: false, detail: `The task's agent is ${agent.status === "idle" ? "in a turn" : agent.status}. Wait until it's idle.` };
   return { found: true, idle: true, archived: false, detail: "The task's agent is idle." };

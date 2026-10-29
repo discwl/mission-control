@@ -44,16 +44,16 @@ export const AGENT_STATE_LABELS: Record<AgentState, string> = {
 const SORT_ORDER: Record<AgentState, number> = { "needs-input": 0, failed: 1, ready: 2, working: 3, idle: 4, closed: 5 };
 
 /**
- * One agent's state. Precedence: Failed, Needs input, Working, Ready, Closed, Idle. An agent that
- * failed is never shown as one that can simply resume. waiting counts what Mission Control holds for
- * it: open decisions and, once task 24 merges, recorded questions.
+ * One agent's state. Precedence: Failed, Needs input, Working, Ready, Idle. An agent that failed is
+ * never shown as one that can simply resume. A closed agent shows as idle: Paseo 0.14 closes an idle
+ * agent's runtime after an hour, and the next message resumes it (see isQuiet). waiting counts what
+ * Mission Control holds for it: open decisions and, once task 24 merges, recorded questions.
  */
 export function agentState(agent: Pick<TreeAgent, "status" | "requiresAttention" | "attentionReason" | "permissions">, waiting = 0): AgentState {
   if (agent.status === "error" || (agent.requiresAttention && agent.attentionReason === "error")) return "failed";
   if (agent.permissions.length > 0 || agent.attentionReason === "permission" || waiting > 0) return "needs-input";
   if (agent.status === "running" || agent.status === "initializing") return "working";
   if (agent.requiresAttention || agent.attentionReason === "finished") return "ready";
-  if (agent.status === "closed") return "closed";
   return "idle";
 }
 
@@ -67,6 +67,14 @@ export function helperState(helper: Pick<Helper, "status">): AgentState {
 
 export function isWorking(agent: Pick<TreeAgent, "status">): boolean {
   return agent.status === "running" || agent.status === "initializing";
+}
+
+/**
+ * Not working, so a message can go to it now: idle, or closed. Paseo 0.14 closes an idle agent's runtime after an hour
+ * and reports it closed until the next message resumes its saved session. Only archiving removes an agent.
+ */
+export function isQuiet(agent: Pick<TreeAgent, "status">): boolean {
+  return agent.status === "idle" || agent.status === "closed";
 }
 
 /** What each agent is waiting on in Mission Control: open decisions by agent, plus recorded questions. */

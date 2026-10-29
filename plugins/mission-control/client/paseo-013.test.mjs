@@ -76,11 +76,12 @@ test("native parent preflight supports one-way fleets without connecting back to
   assert.equal(connections, 0); assert.equal(refreshes, 0);
   assert.equal((await probeLaunchParent(parent, {})).supported, false);
 });
-test("same-host native parents must still exist and remain available", async () => {
+test("same-host native parents must still exist and not be archived; a closed one is only resting", async () => {
   const { probeLaunchParent } = load("../server/launch-parent.ts", { "../shared/secret-mask": { hideCredentials: text => text } });
   const parent = { serverId: "local", agentId: "chat" };
-  for (const agent of [{ status: "idle", archivedAt: null }, null, { status: "closed" }, { status: "idle", archivedAt: "2026-10-26" }]) {
+  // Paseo 0.14 closes an idle chat's runtime after an hour; a worker's finish notice resumes it.
+  for (const [agent, supported] of [[{ status: "idle", archivedAt: null }, true], [null, false], [{ status: "closed", archivedAt: null }, true], [{ status: "idle", archivedAt: "2026-10-26" }, false]]) {
     const paseo = { hosts: { client: async () => { throw Error("Must not connect"); } }, agents: { ref: id => ({ address: { serverId: "local", agentId: id }, refresh: async () => ({ agent }) }) } };
-    assert.equal((await probeLaunchParent(parent, paseo)).supported, agent?.status === "idle" && !agent.archivedAt);
+    assert.equal((await probeLaunchParent(parent, paseo)).supported, supported);
   }
 });

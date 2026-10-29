@@ -91,6 +91,31 @@ test("a busy agent keeps the saved decision pending until it is resent", async t
   await assert.rejects(store.resend({ ...ids, expectedRevision: delivered.revision }, paseo), /already sent/);
 });
 
+test("a closed agent receives the decision; only an archived one is refused (Paseo 0.14 releases idle agents)", async t => {
+  const resting = await fixture(t, { kind: "review", findings: [] });
+  const [entry] = (await resting.store.list(ids.serverId)).open;
+  resting.agent.status = "closed";
+  const delivered = await resting.store.resolve({ ...ids, expectedRevision: entry.revision, outcome: "approved", note: "", submitFindingIds: [] }, resting.paseo);
+  assert.equal(delivered.decision.resume.phase, "sent");
+  assert.equal(resting.sent.length, 1, "sending resumes the closed agent");
+
+  const waiting = await fixture(t, { kind: "review", findings: [] });
+  const [open] = (await waiting.store.list(ids.serverId)).open;
+  waiting.agent.status = "running";
+  await waiting.store.resolve({ ...ids, expectedRevision: open.revision, outcome: "changes_requested", note: "Fix the transaction", submitFindingIds: [] }, waiting.paseo);
+  assert.equal(waiting.sent.length, 0);
+  waiting.agent.status = "closed";
+  await waiting.store.retryPending(ids.serverId, waiting.paseo);
+  assert.equal(waiting.sent.length, 1, "a saved decision reaches a worker that was released while it waited");
+
+  const gone = await fixture(t, { kind: "review", findings: [] });
+  const [last] = (await gone.store.list(ids.serverId)).open;
+  gone.agent.archivedAt = "2026-10-29T00:00:00Z";
+  const refused = await gone.store.resolve({ ...ids, expectedRevision: last.revision, outcome: "approved", note: "", submitFindingIds: [] }, gone.paseo);
+  assert.match(refused.decision.resume.error, /unavailable or archived/);
+  assert.equal(gone.sent.length, 0);
+});
+
 test("saved decisions retry once after idle, including concurrent scans", async t => {
   const f = await fixture(t, { findings: [] });
   const [entry] = (await f.store.list(ids.serverId)).open;

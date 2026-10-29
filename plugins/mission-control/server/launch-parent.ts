@@ -11,7 +11,8 @@ export async function requireLaunchParent(parent: Parent, paseo: PaseoApi) {
   const handle = paseo.agents.ref(parent.agentId);
   if (handle.address.serverId !== parent.serverId) return;
   const agent = (await handle.refresh())?.agent;
-  if (!agent || agent.archivedAt || agent.status === "closed") throw new Error("The orchestrator chat is unavailable.");
+  // A closed chat is resting (Paseo 0.14 releases idle agents); a worker's finish notice resumes it.
+  if (!agent || agent.archivedAt) throw new Error("The orchestrator chat is unavailable.");
 }
 export async function probeLaunchParent(parent: Parent, paseo: PaseoApi) {
   try { await requireLaunchParent(parent, paseo); return { supported: true }; }

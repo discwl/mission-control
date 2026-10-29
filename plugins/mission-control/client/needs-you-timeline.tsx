@@ -26,7 +26,8 @@ export function NeedsYouTimelineCard({ host, agentId, item, theme, layout }: Plu
   if (request.isError || roster.isError) return text("Needs you could not be loaded. Reopen the chat or check Attention to retry.", true);
   if (!request.isSuccess || !roster.isSuccess) return text("Loading Needs you…");
   const agent = roster.data?.agents.find(candidate => candidate.id === agentId);
-  if (!agent || agent.archivedAt || agent.status === "closed" || agent.workspaceId !== ref.workspaceId) return text("This request's agent is no longer active in this workspace.");
+  // A closed agent is resting (Paseo 0.14 releases idle agents); answering resumes it.
+  if (!agent || agent.archivedAt || agent.workspaceId !== ref.workspaceId) return text("This request's agent is no longer active in this workspace.");
   const content = ref.kind === "question" ? (() => {
     const card = waitingCards({ hosts: [{ serverId: host.id, label: host.label, status: "online" }], rosters: [roster], localServerId: host.id, questions: waiting.data?.questions })
       .find(candidate => candidate.question?.question.questionId === ref.requestId && candidate.agentId === agentId);

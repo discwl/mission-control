@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { PaseoApi } from "@getpaseo/client";
 import { z } from "zod";
 import { reviewCommentSchema, type CommentAnchor, type ReviewComment } from "../shared/review";
+import { isQuiet } from "../shared/agent-tree";
 import { checkWorkspaceId, createQueue, reviewFolder, writeAtomic } from "./review-marks";
 
 const maxComments = 1000;
@@ -117,9 +118,10 @@ export function createReviewCommentStore(vaultRoot: string) {
       if (!(error instanceof Error && error.message === `Agent not found: ${input.agentId}`)) throw error;
       agent = null;
     }
-    if (!agent || agent.archivedAt || agent.status === "closed") throw new Error("That agent is unavailable or archived.");
+    // A closed agent is resting (Paseo 0.14 releases idle agents); sending resumes it.
+    if (!agent || agent.archivedAt) throw new Error("That agent is unavailable or archived.");
     if (agent.workspaceId !== workspaceId) throw new Error("That agent belongs to another workspace.");
-    if (agent.status !== "idle" || agent.activeTurn || agent.pendingPermissions.length) throw new Error("The agent is busy or waiting on a permission. Send when it is idle.");
+    if (!isQuiet(agent) || agent.activeTurn || agent.pendingPermissions.length) throw new Error("The agent is busy or waiting on a permission. Send when it is idle.");
     const ids = new Set(input.commentIds);
     // Claim the comments first, so a second click or another client cannot send them twice.
     const { result: picked } = await mutate(workspaceId, (comments, now) => {

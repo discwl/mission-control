@@ -274,9 +274,10 @@ export function waitingCards({ hosts, rosters, localServerId, questions, taskTit
     if (question.status !== "open" || question.serverId !== localServerId) continue;
     const key = agentKey(localServerId, question.agentId);
     // A question answered in the chat stays open on disk; only the agent's later message shows it was
-    // answered, so a question is shown only while its agent is in a loaded roster.
+    // answered, so a question is shown only while its agent is in a loaded roster. A closed agent still
+    // counts: Paseo 0.14 releases an agent that has waited an idle hour, and the reply resumes it.
     const agent = localRoster?.agents.find(candidate => candidate.id === question.agentId);
-    if (!agent || agent.workspaceId !== question.workspaceId || agent.archivedAt || agent.status === "closed" || agent.permissions.length) continue;
+    if (!agent || agent.workspaceId !== question.workspaceId || agent.archivedAt || agent.permissions.length) continue;
     if (later(agent.lastUserMessageAt, question.askedAt) || later(replied[key], question.askedAt)) continue;
     // Only a question on screen stands in for the agent's error card.
     asking.add(key);

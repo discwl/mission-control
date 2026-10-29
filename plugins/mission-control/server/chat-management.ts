@@ -17,7 +17,8 @@ export async function manageChatCommand(command: string, context: { local: strin
     if (!host.complete || host.serverId !== target) throw new Error("A complete, current host snapshot is needed before linking existing work.");
     const entry = host.tasks.find(entry => entry.task.taskId === adopt[1]);
     if (!entry || entry.problem || ["closed", "delivered"].includes(entry.task.status)) return { text: "That task is unavailable, completed, or has unreadable records. No worker was linked or resumed." };
-    const candidates = host.agents.filter(worker => !worker.archivedAt && worker.status !== "closed" && worker.workspaceId && (worker.id === entry.run?.agentId || worker.labels["mission-control.task-id"] === entry.task.taskId));
+    // A closed worker is resting (Paseo 0.14 releases idle agents) and can still be linked and resumed.
+    const candidates = host.agents.filter(worker => !worker.archivedAt && worker.workspaceId && (worker.id === entry.run?.agentId || worker.labels["mission-control.task-id"] === entry.task.taskId));
     const matches = adopt[2] ? candidates.filter(worker => worker.id === adopt[2]) : candidates;
     if (matches.length !== 1) return { text: matches.length ? `${label} · ${entry.task.title}\nChoose the worker explicitly:\n${matches.map(worker => `adopt ${entry.task.taskId} worker ${worker.id} — ${worker.name}`).join("\n")}` : "No active worker with an exact task association was found. The task was preserved; open it in Mission Control to select or resume its worker." };
     const worker = matches[0];

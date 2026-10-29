@@ -74,6 +74,13 @@ test("a reply goes to the agent that asked, once, and marks the question answere
   assert.equal(sent.length, 1);
 });
 
+test("a reply reaches an agent that Paseo 0.14 released after an idle hour (closed, not archived)", async t => {
+  const { store, paseo, sent } = await fixture(t, { agent: { status: "closed" } });
+  const { question } = await store.reply({ ...ids, text: "With the task." }, paseo);
+  assert.equal(question.status, "answered");
+  assert.equal(sent.length, 1, "sending resumes the closed agent");
+});
+
 test("a reply is refused, and nothing is sent, when the agent can't take it", async t => {
   for (const [agent, pattern] of [
     [{ archivedAt: "2026-09-28T11:00:00Z" }, /unavailable or archived/],

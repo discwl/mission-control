@@ -35,7 +35,8 @@ export function summarizeProjectAgents(workspaces: readonly SummaryWorkspace[], 
     if (agent.status === "error" || agent.attentionReason === "error") summary.errored++;
     else if (agent.requiresAttention) summary.needsYou++;
     else if (agent.status === "running" || agent.status === "initializing") summary.running++;
-    else if (agent.status === "idle") summary.idle++;
+    // Paseo 0.14 closes an idle agent's runtime after an hour; it's still idle as far as the user is concerned.
+    else if (agent.status === "idle" || agent.status === "closed") summary.idle++;
     const provider = agent.provider.trim();
     if (provider && !summary.providers.some(value => value.toLowerCase() === provider.toLowerCase())) summary.providers.push(provider);
     track(agent.updatedAt);

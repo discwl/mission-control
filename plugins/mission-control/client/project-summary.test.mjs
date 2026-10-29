@@ -14,7 +14,8 @@ test("each agent counts once: errors, then needs-you, then running and idle", ()
     agent({ status: "idle", requiresAttention: true, attentionReason: "error" }),
     agent({ status: "closed" }),
   ]);
-  assert.deepEqual({ ...summary, providers: undefined, lastActivityAt: undefined }, { total: 7, running: 2, idle: 1, needsYou: 1, errored: 2, providers: undefined, lastActivityAt: undefined });
+  // The closed agent counts as idle: Paseo 0.14 closes an idle agent's runtime after an hour.
+  assert.deepEqual({ ...summary, providers: undefined, lastActivityAt: undefined }, { total: 7, running: 2, idle: 2, needsYou: 1, errored: 2, providers: undefined, lastActivityAt: undefined });
 });
 
 test("only agents in the given workspaces are counted and providers are unique", () => {

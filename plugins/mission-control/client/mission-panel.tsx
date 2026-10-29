@@ -98,7 +98,8 @@ export function MissionPanel({ theme, host, workspaceId, navigation, layout }: P
       // A background workspace's agents are left out of Paseo 0.12's lists unless asked for.
       const { entries } = await listIncludingBackground(serverId, {}, filter => getPaseoClient(serverId).agents.list({ filter, page: { limit: 200 } }));
       return entries.map(entry => entry.agent)
-        .filter(agent => agent.workspaceId === workspaceId && !agent.archivedAt && agent.status !== "closed")
+        // A closed agent is resting (Paseo 0.14 releases idle agents) and stays listed; a message resumes it.
+        .filter(agent => agent.workspaceId === workspaceId && !agent.archivedAt)
         .map(agent => ({ id: agent.id, name: agent.title || `${agent.provider} agent`, provider: agent.provider, status: agent.status, role: agent.labels["mission-control.role"] || null, parentAgentId: parentAgentIdOf(agent), permissions: agent.pendingPermissions ?? [], updatedAt: agent.updatedAt }))
         .sort((a, b) => b.permissions.length - a.permissions.length || b.updatedAt.localeCompare(a.updatedAt));
     },

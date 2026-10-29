@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FleetSnapshot } from "../shared/fleet";
 import type { Pipeline } from "../shared/pipeline-state";
+import { isQuiet } from "../shared/agent-tree";
 import type { PipelineInspection } from "../shared/pipeline";
 import { nextPipelineStep, pipelineFingerprint, missingReviewRole, type PipelineStep } from "../shared/pipeline-model";
 import { managedTasks, managedWorkerIds, taskWorkers } from "../shared/fleet-model";
@@ -38,7 +39,7 @@ export function createPipelineEngine(deps: Deps) {
     const coordinator = snapshot.coordinators.find(item => item.agentId === row.coordinatorId && item.remoteServerId === row.remoteServerId);
     const host = snapshot.hosts.find(item => item.serverId === row.remoteServerId)?.snapshot;
     if (snapshot.state.paused || snapshot.warnings.length || !coordinator || !host?.complete || host.serverId !== row.remoteServerId || host.warnings.length || now() - Date.parse(host.observedAt) > 90_000) return false;
-    if (snapshot.state.stoppedAgentIds.includes(coordinator.agentId) || coordinator.agent.status !== "idle" || coordinator.agent.pendingPermissions || coordinator.agent.error || coordinator.agent.archivedAt || (coordinator.agent.attention && coordinator.agent.attentionReason !== "finished")) return false;
+    if (snapshot.state.stoppedAgentIds.includes(coordinator.agentId) || !isQuiet(coordinator.agent) || coordinator.agent.pendingPermissions || coordinator.agent.error || coordinator.agent.archivedAt || (coordinator.agent.attention && coordinator.agent.attentionReason !== "finished")) return false;
     const selected = host.tasks.find(item => item.task.taskId === row.taskId);
     if (!selected || (selected.run && !managedTasks(snapshot.serverId, coordinator, host).some(item => item.task.taskId === row.taskId))) return false;
     const ids = managedWorkerIds(snapshot.serverId, coordinator, host.agents);

@@ -26,6 +26,8 @@ export function createNeedsYouTimeline(localServerId: () => Promise<string>, now
       try {
         if (data.serverId !== await localServerId()) return;
         const agent = (await paseo.agents.ref(data.agentId).refresh())?.agent;
+        // A closed agent (Paseo 0.14 releases idle agents after an hour) can't take a timeline row without being
+        // resumed, which isn't worth it for a row. The request stays in Attention, where answering resumes it.
         if (!agent || agent.archivedAt || agent.status === "closed" || agent.workspaceId !== data.workspaceId) return;
         if (data.kind === "question" && (agent.pendingPermissions.length || (agent.lastUserMessageAt && Date.parse(agent.lastUserMessageAt) > Date.parse(askedAt)))) return;
         // Append is display-only: never send a prompt, resume the agent, or read its provider history.

@@ -13,6 +13,7 @@ import {
 import type { TaskSource } from "./tasks";
 import { readPlanSnapshot, verifyPlanApproval } from "./plan-snapshots.mjs";
 import { decisionPlanSchema } from "../shared/plan-approval";
+import { isQuiet } from "../shared/agent-tree";
 
 type Ref = { serverId: string; workspaceId: string; taskId: string; runId: string; decisionId: string };
 type ResolveInput = Ref & { expectedRevision: string; expectedPlanRevision?: string; outcome: "approved" | "changes_requested" | "blocked"; note: string; submitFindingIds: string[] };
@@ -230,9 +231,10 @@ export function createDecisionStore(deps: { sources: (serverId: string) => Promi
         if (!(error instanceof Error && error.message === `Agent not found: ${decision.agentId}`)) throw error;
         agent = null;
       }
-      if (!agent || agent.archivedAt || agent.status === "closed") return fail("The run's agent is unavailable or archived. Resume the task from its handoff.");
+      if (!agent || agent.archivedAt) return fail("The run's agent is unavailable or archived. Resume the task from its handoff.");
       if (agent.workspaceId !== decision.workspaceId) return fail("The run's agent moved to another workspace.");
-      if (agent.status !== "idle" || agent.activeTurn || agent.pendingPermissions.length) return fail("The agent is busy or waiting on a permission. The saved decision will be sent when it is idle.");
+      // A closed agent is resting (Paseo 0.14 releases idle agents); the send below resumes it.
+      if (!isQuiet(agent) || agent.activeTurn || agent.pendingPermissions.length) return fail("The agent is busy or waiting on a permission. The saved decision will be sent when it is idle.");
       if (automatic) {
         const latest = await list(ref.serverId, Infinity);
         if ([...latest.open, ...latest.recent].some(row => row.decision.taskId === decision.taskId && row.decision.requestedAt > decision.requestedAt)) return fail("A newer request supersedes this saved decision. Read the current request.");
@@ -321,7 +323,7 @@ export function createDecisionStore(deps: { sources: (serverId: string) => Promi
       if (!source || ["delivered", "closed"].includes(source.task.status)) continue;
       // An offline or removed worker must not starve other saved decisions.
       const agent = await paseo.agents.ref(d.agentId).refresh().then(result => result?.agent).catch(() => null);
-      if (!agent || agent.status !== "idle" || agent.activeTurn || agent.pendingPermissions.length || agent.archivedAt || agent.workspaceId !== d.workspaceId) continue;
+      if (!agent || !isQuiet(agent) || agent.activeTurn || agent.pendingPermissions.length || agent.archivedAt || agent.workspaceId !== d.workspaceId) continue;
       // deliver re-reads under the run lock, checks plan version and persists intent before sending.
       // `sending` is intentionally never eligible, even after a restart or lost acknowledgement.
       delivered.push(await deliver(d, paseo, true));

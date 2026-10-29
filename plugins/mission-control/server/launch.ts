@@ -6,6 +6,7 @@ import type { PaseoApi, PaseoAgent } from "@getpaseo/client";
 import { z } from "zod";
 import type { BranchType } from "../shared/branch-names";
 import { launchRecordSchema, type BranchPreview, type LaunchRecord, type LaunchStatus, type TaskBinding } from "../shared/launch";
+import { isQuiet } from "../shared/agent-tree";
 import { runSchema, type RunRecord } from "../shared/runs";
 import { defaultVaultPath } from "../shared/vault";
 import type { TaskRecord, TaskWorktree } from "../shared/tasks";
@@ -149,8 +150,9 @@ async function refreshAgent(paseo: PaseoApi, agentId: string) {
     throw error;
   }
 }
+/** Archived means gone. A closed agent is resting: Paseo 0.14 releases idle agents, and the next message resumes them. */
 function agentUsable(agent: PaseoAgent | null, input: TaskBinding, cwd: string) {
-  if (!agent || agent.archivedAt || agent.status === "closed") return false;
+  if (!agent || agent.archivedAt) return false;
   if (agent.workspaceId !== input.workspaceId) throw new Error("The linked agent moved to another workspace.");
   if (relative(cwd, agent.cwd).replaceAll("\\", "/") !== "") throw new Error("The linked agent directory does not match the workspace.");
   return true;
@@ -194,7 +196,7 @@ export function createTaskLauncher(overrides: Partial<LauncherDeps> = {}) {
       action = "recover"; message = launch.error || "A launch was interrupted before sending. Continue its preparation.";
     } else if (context.run || launch) {
       if (!usable) { action = "blocked"; message = "The linked agent is unavailable or archived. Its run is preserved; continue from the handoff in a workspace agent."; }
-      else if (snapshot!.status !== "idle" || snapshot!.activeTurn || snapshot!.pendingPermissions.length) { action = "open"; message = "This agent is active or needs a response. Open it to continue."; }
+      else if (!isQuiet(snapshot!) || snapshot!.activeTurn || snapshot!.pendingPermissions.length) { action = "open"; message = "This agent is active or needs a response. Open it to continue."; }
       else if (launch && context.run?.updatedAt === launch.runUpdatedAt && !(snapshot!.lastUserMessageAt !== launch.lastUserMessageAt && ["finished", "error"].includes(snapshot!.attentionReason ?? ""))) {
         action = "open"; message = "Prompt accepted. Waiting for the agent to record progress.";
       } else { action = "resume"; message = "Resume the linked agent using the latest task context and handoff."; }
@@ -294,7 +296,7 @@ export function createTaskLauncher(overrides: Partial<LauncherDeps> = {}) {
       }
       const agent = paseo.agents.ref(record.agentId);
       const refreshed = await refreshAgent(paseo, record.agentId);
-      if (!agentUsable(refreshed, bound, context.cwd) || refreshed!.status !== "idle" || refreshed!.activeTurn || refreshed!.pendingPermissions.length) throw new Error("Agent is not idle and ready. Open it before resuming.");
+      if (!agentUsable(refreshed, bound, context.cwd) || !isQuiet(refreshed!) || refreshed!.activeTurn || refreshed!.pendingPermissions.length) throw new Error("Agent is not idle and ready. Open it before resuming.");
       const { prompt } = await deps.taskAgentPrompt(bound.workspaceId, input.taskId);
       const message = [prompt,
         `Your Paseo agent ID is ${record.agentId}. Continue existing run ${record.runId}; do not call start to create another run.`,

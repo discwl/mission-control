@@ -2,6 +2,7 @@ import { readdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import type { PaseoApi } from "@getpaseo/client";
 import { questionSchema, type Question, type QuestionEntry } from "../shared/questions";
+import { isQuiet } from "../shared/agent-tree";
 import { atomicWrite, inside, markdownRecord, parseRecord, regularFile, withRunLock } from "./decisions";
 import type { TaskSource } from "./tasks";
 
@@ -82,10 +83,11 @@ export function createQuestionStore(deps: { sources: (serverId: string) => Promi
       if (!(error instanceof Error && error.message === `Agent not found: ${question.agentId}`)) throw error;
       agent = null;
     }
-    if (!agent || agent.archivedAt || agent.status === "closed") throw new Error("The agent that asked is unavailable or archived. Resume the task from its handoff.");
+    // A closed agent is resting (Paseo 0.14 releases idle agents); the reply resumes it.
+    if (!agent || agent.archivedAt) throw new Error("The agent that asked is unavailable or archived. Resume the task from its handoff.");
     if (agent.workspaceId !== question.workspaceId) throw new Error("The agent that asked moved to another workspace.");
     if (agent.lastUserMessageAt && Date.parse(agent.lastUserMessageAt) > Date.parse(question.askedAt)) throw new Error("This question already received a newer message in the agent chat. Refresh Needs you.");
-    if (agent.status !== "idle" || agent.activeTurn || agent.pendingPermissions.length) throw new Error("The agent is busy or waiting on a permission. Open it to reply.");
+    if (!isQuiet(agent) || agent.activeTurn || agent.pendingPermissions.length) throw new Error("The agent is busy or waiting on a permission. Open it to reply.");
     // Reserve the exact text before sending, under the same lock as the open-state check.
     // If the RPC times out it may have succeeded: leave the receipt for explicit reconciliation.
     await atomicWrite(file, markdownRecord({ ...question, delivery: { text: input.text.trim(), attemptedAt: new Date().toISOString() } }, "# Question"));

@@ -175,7 +175,8 @@ function AgentRow({ node, context }: { node: Node; context: RowContext }) {
     agent.permissions.length ? plural(agent.permissions.length, "permission request", "permission requests") : null,
     node.waiting ? `${plural(node.waiting, "decision", "decisions")} waiting` : null,
   ].filter(Boolean).join(" · ");
-  const canReply = agent.status !== "closed" && !isWorking(agent);
+  // A closed agent is resting (Paseo 0.14 releases idle agents); a reply resumes it.
+  const canReply = !agent.archivedAt && !isWorking(agent);
   const muted = colors.foregroundMuted;
   return <View style={{ flexDirection: "row", gap: 6, paddingVertical: 8, paddingRight: 8, paddingLeft: 6, borderBottomWidth: 1, borderBottomColor: colors.border, backgroundColor: node.depth === 0 ? colors.surface1 : "transparent", opacity: node.contextOnly ? 0.58 : 1 }}>
     <Rail depth={node.depth} colors={colors} />

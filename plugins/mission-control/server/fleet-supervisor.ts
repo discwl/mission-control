@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FleetAgent, FleetCoordinator, FleetSnapshot } from "../shared/fleet";
 import { chooseNextTask, managedWorkerIds, taskFingerprint } from "../shared/fleet-model";
+import { isQuiet } from "../shared/agent-tree";
 import { fleetEvent, type FleetStore } from "./fleet-store";
 
 type Dependencies = {
@@ -10,7 +11,8 @@ type Dependencies = {
   send(id: string, prompt: string, requestId: string): Promise<void>;
   now?: () => number;
 };
-const canWake = (agent: FleetAgent | null) => agent && !agent.archivedAt && agent.status === "idle"
+// A closed coordinator is resting: Paseo 0.14 releases idle agents, and the wake-up message resumes it.
+const canWake = (agent: FleetAgent | null) => agent && !agent.archivedAt && isQuiet(agent)
   && !agent.pendingPermissions && !agent.error && (!agent.attention || agent.attentionReason === "finished");
 
 /** Advances only explicitly queued work. Never resolves decisions or performs delivery. */

@@ -39,6 +39,7 @@ function cardHarness() {
     "@getpaseo/plugin/client/react-native": { useToast: () => ({ show() {} }) },
     "@tanstack/react-query": { useQueryClient: () => ({ invalidateQueries: async () => {} }) },
     "../shared/decisions": { decisionsKey: id => ["decisions", id], resolveDecision: {} },
+    "../shared/review-summary": require("../shared/review-summary.ts"),
     "./decision-card-model": model, "./decision-note": noteModel, "./decision-draft": drafts,
     "./date-time": { formatDateTime: value => value },
     "./attention-model": { decisionNeed: () => "Approve the plan", decisionWhere: () => ({ source: "generic", text: "Plan" }), latestAgentQuote: () => null, mayReadChat: () => false },

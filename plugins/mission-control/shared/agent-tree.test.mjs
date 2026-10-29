@@ -113,7 +113,8 @@ test("state precedence: Failed, Needs input, Working, Ready, Closed, Idle", () =
   assert.equal(agentState(agent("x", { status: "running" })), "working");
   assert.equal(agentState(agent("x", { status: "initializing" })), "working");
   assert.equal(agentState(agent("x", { status: "closed", requiresAttention: true, attentionReason: "finished" })), "ready");
-  assert.equal(agentState(agent("x", { status: "closed" })), "closed");
+  // Paseo 0.14 closes an idle agent's runtime after an hour; a message resumes it, so it shows as idle.
+  assert.equal(agentState(agent("x", { status: "closed" })), "idle");
   assert.equal(agentState(agent("x")), "idle");
   assert.deepEqual(["running", "finished", "error", "stopped", "idle"].map(status => helperState({ status })), ["working", "closed", "failed", "closed", "idle"]);
 });
@@ -162,7 +163,8 @@ test("the chips count every agent and helper by state, and equal-activity siblin
   const waiting = waitingByAgent([{ agentId: "decision-child" }, { agentId: null }]);
   const nodes = buildAgentTree(agents, HERE, { helpers, waiting });
   const summary = summarizeTree(nodes, HERE, helpers);
-  assert.deepEqual(summary.counts, { "needs-input": 2, failed: 2, working: 2, ready: 1, idle: 2, closed: 2 });
+  // The closed agent counts as idle; only the finished helper is closed.
+  assert.deepEqual(summary.counts, { "needs-input": 2, failed: 2, working: 2, ready: 1, idle: 3, closed: 1 });
   assert.equal(summary.agents, 8);
   assert.equal(summary.helpers, 3);
   assert.equal(summary.runningHelpers, 1);
