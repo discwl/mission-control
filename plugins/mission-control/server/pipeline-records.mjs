@@ -41,7 +41,7 @@ export async function readPipelineCheckpoints(runFolder, identity) {
   const result = [];
   for (const name of names) {
     if (!/^[a-f0-9-]{36}\.json$/.test(name)) throw new Error("Unrecognized checkpoint file.");
-    const file = await realpath(join(actual, name)); if (!inside(actual, file) || (await stat(file)).size > 30_000) throw new Error("Invalid checkpoint file.");
+    const file = await realpath(join(actual, name)); if (!inside(actual, file) || (await stat(file)).size > 2_000_000) throw new Error("Invalid checkpoint file.");
     const entry = checkpointSchema.parse(JSON.parse(await readFile(file, "utf8")));
     if (name !== `${entry.id}.json` || Object.entries(identity).some(([key, value]) => entry[key] !== value)) throw new Error("Checkpoint belongs to another task, run, host or workspace.");
     if (entry.stage === "review" && entry.agentId === entry.implementationAgentId) throw new Error("Review checkpoint is not independent.");

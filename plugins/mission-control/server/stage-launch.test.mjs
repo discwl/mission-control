@@ -1,0 +1,61 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
+import { mkdtemp, mkdir, rm, readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
+const require = createRequire(import.meta.url); const ts = require("typescript");
+require.extensions[".ts"] = (module, file) => module._compile(ts.transpileModule(readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, file);
+const { launchManagedStage } = require("./stage-launch.ts");
+const { pipelineFingerprint, nextPipelineStep } = require("../shared/pipeline-model.ts");
+const { resolveRolePolicy } = require("../shared/agent-policy.ts");
+const policies = require("./agent-policy.ts"); const tasks = require("./tasks.ts"); const runs = require("./runs.ts"); const decisions = require("./decisions.ts"); const parent = require("./launch-parent.ts"); const merge = require("./merge.ts"); const ocr = require("./ocr-execution.ts"); const processTree = require("./process-tree.ts");
+async function fixture(t) {
+  const root = await mkdtemp(join(tmpdir(), "mc-stage-launch-")); t.after(() => rm(root, { recursive: true, force: true }));
+  const runId = `run_${randomUUID()}`; await mkdir(join(root, "runs", runId), { recursive: true });
+  const candidate = { head: "a".repeat(40), tree: "b".repeat(40) }; const planRevision = "c".repeat(64);
+  const task = { taskId: "task_a", projectId: "project", title: "Example", status: "ready" };
+  const profiles = ["planner", "builder", "reviewer", "reviewer2"].map((id, i) => ({ id, name: id, provider: "provider", model: `model-${i}`, modeId: "safe", thinkingOptionId: "high", featureValues: { fast: false } }));
+  const policy = resolveRolePolicy([{ projectId: null, taskId: null, updatedAt: "now", mapping: { planner: "planner", builder: "builder", validator: null, reviewer: "reviewer", reviewer2: "reviewer2", reviewCount: 2 } }], profiles, null, null);
+  const facts = { entry: { task, run: { runId, agentId: "old-worker", outcome: "completed" }, decisions: [], questions: [] }, candidate, planRevision, checkpoints: [], agentPolicy: policy, problem: null };
+  const row = { taskId: task.taskId, coordinatorId: "coordinator", remoteServerId: "remote", stage: "execute", repairs: 0, repairIds: [] };
+  const created = []; const sent = []; const calls = [];
+  const paseo = { workspaces: { ref: () => ({ refresh: async () => ({ workspaceDirectory: root, projectId: "project" }), agents: { create: async input => { created.push(input); return { send: async (...args) => sent.push(args) }; } } }) } };
+  t.mock.method(tasks, "assignedTask", async () => ({ task, folder: root }));
+  t.mock.method(policies, "effectiveAgentPolicy", async () => policy); t.mock.method(policies, "verifyProfileAvailability", async () => {});
+  t.mock.method(parent, "requireLaunchParent", async value => calls.push(value));
+  t.mock.method(merge, "reviewCandidate", async () => candidate); t.mock.method(decisions, "profileKitRoot", async () => root); t.mock.method(runs, "taskAgentPrompt", async () => ({ prompt: "Exact task" }));
+  t.mock.method(ocr, "executeOcr", async (_cwd, _base, _candidate, assignmentId) => ({ assignmentId, candidate, files: [], excluded: [], previews: [], rules: [], version: "test" }));
+  t.mock.method(ocr, "resolveOcrScope", async () => ({ base: candidate.head, rootCommit: null, source: "task", from: null, since: candidate.head }));
+  t.mock.method(require("./review-marks.ts"), "createReviewMarkStore", () => ({ read: async () => ({ from: null, since: null, branchBase: null }) }));
+  const input = () => ({ serverId: "remote", workspaceId: "work", row, parent: { serverId: "personal", agentId: "coordinator" }, fingerprint: pipelineFingerprint(facts, nextPipelineStep(row, facts)), requestId: `mc-${randomUUID()}` });
+  return { root, runId, facts, row, paseo, input, created, sent, calls };
+}
+test("native stage launch copies the entire selected profile and keeps the original parent, task and run", async t => {
+  const f = await fixture(t); const result = await launchManagedStage(f.input(), f.facts, f.paseo, {});
+  assert.equal(result.runId, f.runId); assert.equal(f.created.length, 1);
+  assert.deepEqual(f.created[0].config, { provider: "provider/model-1", modeId: "safe", thinkingOptionId: "high", featureValues: { fast: false } });
+  assert.deepEqual(f.created[0].parent, { serverId: "personal", agentId: "coordinator" });
+  assert.equal(f.created[0].labels["mission-control.task-id"], "task_a");
+  assert.match(f.sent[0][0], /smallest useful change/); assert.match(f.sent[0][0], /Do not create another worker or run/);
+  const directory = join(f.root, "runs", f.runId, "stage-assignments"); const record = JSON.parse(await readFile(join(directory, (await readdir(directory))[0]), "utf8"));
+  assert.equal(record.agentId, result.agentId); assert.equal(record.execution.model, "model-1");
+});
+test("failed worker creation cannot leave a new run pointing to a nonexistent worker", async t => {
+  const f = await fixture(t); f.facts.entry.run = null; f.facts.planRevision = null;
+  f.paseo.workspaces.ref = () => ({ refresh: async () => ({ workspaceDirectory: f.root, projectId: "project" }), agents: { create: async () => { throw new Error("provider unavailable"); } } });
+  const start = t.mock.method(processTree, "runProcess", async () => { throw new Error("must not create a run"); });
+  await assert.rejects(launchManagedStage(f.input(), f.facts, f.paseo, {}), /provider unavailable/);
+  assert.equal(start.mock.callCount(), 0); assert.equal(f.sent.length, 0);
+});
+test("review does not start if OCR fails or the exact stage fingerprint changes", async t => {
+  const f = await fixture(t);
+  const base = { runId: f.runId, candidate: f.facts.candidate, planRevision: f.facts.planRevision, verdict: "pass", scope: "approved", agentId: "old-worker" };
+  f.facts.checkpoints = [{ ...base, id: "execute", stage: "execute", createdAt: "1" }, { ...base, id: "validate", stage: "validate", createdAt: "2" }];
+  t.mock.method(ocr, "executeOcr", async () => { throw new Error("OCR unavailable"); });
+  await assert.rejects(launchManagedStage(f.input(), f.facts, f.paseo, {}), /OCR unavailable/);
+  assert.equal(f.created.length, 0);
+  await assert.rejects(launchManagedStage({ ...f.input(), fingerprint: "old" }, f.facts, f.paseo, {}), /Stage changed/);
+});

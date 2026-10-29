@@ -145,6 +145,10 @@ export function DecisionCard({ entry, serverId, hostLabel, colors, actions, brie
       {!review && summary.source === "generic" ? <Text style={muted}>Open More for the details.</Text> : null}
     </>}
     <NeedLine need={decisionNeed(entry)} recommendation={recommended} colors={colors} />
+    {review && decision.reviewVerification ? <View style={{ gap: 4 }}>
+      <Text style={{ color: colors.foreground, fontWeight: "600" }}>Independent review evidence</Text>
+      {decision.reviewVerification.reviewers.map(reviewer => <Text key={reviewer.checkpointId} style={{ color: colors.foregroundMuted }}>{reviewer.profile} · {reviewer.model} · {reviewer.reviewed}/{reviewer.selected} selected files reviewed · {reviewer.excluded} excluded</Text>)}
+    </View> : null}
     {!review ? <>
       <PlanApprovalView entry={entry} query={planQuery} colors={colors} />
       {!confirm && !draftState.stale && !planQuery.isPending && (!planQuery.data?.canApprove || planQuery.isError) ? <Link label="Request readable plan" colors={colors} onPress={() => {

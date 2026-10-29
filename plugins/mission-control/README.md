@@ -90,6 +90,18 @@ node plugins/mission-control/scripts/remote.mjs --offer-file <file> status --wor
 - **What it can't do:** there are no commands for decisions, merges or pull requests. Those stay with you.
 - **How it connects:** like the agent rename, it uses Paseo's internal `DaemonClient`, over the relay with end-to-end encryption, from the plugin's own dependencies.
 
+## Phase agents and independent reviews
+
+In **Orchestrator → Run to draft PR → Agent profiles**, choose native Paseo profiles for Planning, Implementation and fixes, Validation, and Independent review. Validation can inherit the implementation profile. Select **Two different models** to require a second independent reviewer. Profiles own provider, model, reasoning, permissions and feature settings; Mission Control maps those profiles to workflow phases. Each remote host uses its own native profiles and installed providers. Models must be explicit and available on that host.
+
+Host defaults can be overridden for a project or a task from its runner card. Changes apply to future stage launches; existing agents, task IDs, plans, workspaces and history remain intact. Until choices are saved, existing coordinator routing continues. A managed phase creates a fresh native child of the original coordinator in the task's existing remote workspace and run. It stops after recording that phase's result. No reverse Personal host pairing is needed.
+
+Managed review executes Open Code Review's deterministic preview and rule commands before launching the reviewer. The assigned agent performs the review using those files and rules; OCR does not call another model endpoint. The review includes uncommitted changes and the recorded committed range. Existing shared workspaces need an explicit starting point in **Review → Change what to review** when the task has no saved base. Missing OCR, invalid ranges, incomplete rules or coverage stop the review instead of silently reducing its scope.
+
+Reviewer checkpoints include a `coverage` entry for every selected `(path, status)` pair (`outcome: reviewed|skipped`, with a concrete reason for each skip) and `findings` containing title, severity, detail and file. A passing checkpoint cannot skip selected files or include unresolved findings. Mission Control hashes the assignment, OCR manifest and reports, and verifies the native agent identity, approved plan and code candidate before requesting human review. **Reviewers and evidence** shows the models, coverage, reports and retained disagreements. Two-model mode requires separate agents and distinct models; one passing report never cancels another reviewer's findings.
+
+Existing implementation and validation evidence can be reused when the saved plan and code still match. Enabling managed reviews requires fresh matching review evidence before a new human review request. Plan approval, code acceptance and the exact draft PR publication approval remain separate. Prompts require the approved scope, existing patterns and the smallest useful change; scope changes return to planning. Unconfirmed dispatches stay paused and provide the matching remote worker for inspection before acknowledgment.
+
 ## Morning check
 
 The workspace page's **Morning check** section starts an agent with the kit's `morning-check` skill, shows the latest report from `C:\dev-vault\Daily`, and imports the current-sprint Jira or Azure DevOps items you pick as tasks with their ticket. The agent reads the tracker through its own MCP tools; this plugin never calls Jira or Azure DevOps. See [Morning check](../../docs/agent-workflow.md#morning-check).

@@ -85,6 +85,7 @@ export function taskPromptText({ serverId, workspaceId, taskId, title, projectId
     dueDate ? `It is due ${dueDate}. Plan to finish, validate and hand off before then; if that isn't feasible, say so early and explain what would fit.` : "",
     `Its record is ${file}. Use the installed check-environment skill to load and verify that exact task before planning or editing.`,
     "Follow the Development Flow plan, execute, validate, fresh review, and handoff skills. Save run evidence in the task folder.",
+    "Stay within the approved acceptance criteria and non-goals. Reuse existing project patterns and dependencies; make the smallest useful change. Avoid speculative abstractions, unrelated cleanup and new infrastructure unless required by the approved plan. If the required work expands the scope, request a revised plan before implementing it. Reviewers must check these constraints as well as correctness.",
     "A displayed task status is not an approval or validation result. Preserve the existing decision and delivery permissions.",
     "Whenever you stop to ask the user something that isn't a plan or review decision, first record it with the kit's scripts/dev-flow.mjs ask command (its help lists the short plain fields: where things stand and what you need). Mission Control's Attention tab shows it with a Reply box.",
     "Read workflowInstructions from dev-flow context on every start and resume. Apply the effective Intake and Planning guidance in its respective stage; resolve missing requirements before implementation.",

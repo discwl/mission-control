@@ -1,0 +1,11 @@
+import type { z } from "zod";
+export type Execution = { assignmentId: string; policyRevision: string; role: "planner" | "builder" | "validator" | "reviewer" | "reviewer2"; profileId: string; profileName: string; provider: string; model: string };
+export type Coverage = { path: string; status: string; outcome: "reviewed" | "skipped"; reason: string }[];
+export type ReviewFinding = { title: string; severity: "high" | "medium" | "low"; detail: string; file: string | null };
+export type OcrEvidence = { manifest: string; coverage: Coverage; excluded: number; findings: ReviewFinding[] };
+export const executionSchema: z.ZodType<Execution>;
+export const coverageSchema: z.ZodType<Coverage>;
+export const reviewFindingSchema: z.ZodType<ReviewFinding>;
+export const ocrEvidenceSchema: z.ZodType<OcrEvidence>;
+export function verifyCoverage(files: { path: string; status: string }[], coverage: Coverage, passing: boolean): void;
+export function combineReviewFindings(reviews: { agentId: string; execution?: Execution; ocr?: OcrEvidence }[]): (ReviewFinding & { reviewers: { agentId: string; model: string }[] })[];

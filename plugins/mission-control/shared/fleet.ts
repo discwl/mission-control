@@ -55,10 +55,12 @@ export const fleetEventSchema = z.object({
 });
 export type FleetEvent = z.infer<typeof fleetEventSchema>;
 import { pipelineSchema } from "./pipeline-state";
+import { agentPolicySchema } from "./agent-policy";
 export const fleetStateSchema = z.object({
   schemaVersion: z.literal(1), revision: z.number().int().nonnegative(), paused: z.boolean(),
   coordinators: z.array(supervisorEntrySchema), queue: z.array(fleetQueueSchema), events: z.array(fleetEventSchema),
   stoppedAgentIds: z.array(z.string()), seen: z.record(z.string(), z.string()), pipelines: z.array(pipelineSchema).default([]),
+  agentPolicies: z.array(agentPolicySchema).default([]),
 });
 export type FleetState = z.infer<typeof fleetStateSchema>;
 export const fleetSnapshotSchema = z.object({

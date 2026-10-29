@@ -7,6 +7,7 @@ import { assignedTask } from "./tasks";
 import { readPipelineCheckpoints } from "./pipeline-records.mjs";
 import { verifyPlanApproval } from "./plan-snapshots.mjs";
 import { reviewCandidate } from "./merge";
+import { readStageAssignments } from "./stage-records.mjs";
 
 export async function inspectPipelineTask(serverId: string, workspaceId: string, taskId: string, entry: FleetTask, paseo: PaseoApi): Promise<PipelineInspection> {
   const source = await assignedTask(serverId, workspaceId, taskId);
@@ -21,6 +22,7 @@ export async function inspectPipelineTask(serverId: string, workspaceId: string,
   if (!rel || isAbsolute(rel) || rel === ".." || rel.startsWith("..\\") || rel.startsWith("../")) throw new Error("Pipeline run escapes its task.");
   const candidate = await reviewCandidate(workspace.workspaceDirectory);
   const checkpoints = await readPipelineCheckpoints(runFolder, { taskId, runId: run.runId, serverId, workspaceId });
+  const assignments = (await readStageAssignments(runFolder, { taskId, runId: run.runId, serverId, workspaceId })).map(item => ({ requestId: item.requestId, agentId: item.agentId, stage: item.stage, model: item.execution.model, createdAt: item.createdAt }));
   const plan = entry.decisions.filter(item => item.decision.runId === run.runId && item.decision.kind === "plan").sort((a, b) => b.decision.requestedAt.localeCompare(a.decision.requestedAt))[0]?.decision;
   let planRevision: string | null = null; let problem = entry.problem;
   if (plan?.status === "approved") {
@@ -32,5 +34,5 @@ export async function inspectPipelineTask(serverId: string, workspaceId: string,
   }
   const after = await reviewCandidate(workspace.workspaceDirectory);
   if (candidate.head !== after.head || candidate.tree !== after.tree) throw new Error("Code changed during checkpoint inspection; retry after the worker finishes.");
-  return { version: 1, entry, candidate, planRevision, checkpoints, problem };
+  return { version: 1, entry, candidate, planRevision, checkpoints, assignments, problem };
 }

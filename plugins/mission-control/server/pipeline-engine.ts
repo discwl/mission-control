@@ -2,20 +2,23 @@ import { randomUUID } from "node:crypto";
 import type { FleetSnapshot } from "../shared/fleet";
 import type { Pipeline } from "../shared/pipeline-state";
 import type { PipelineInspection } from "../shared/pipeline";
-import { nextPipelineStep, pipelineFingerprint, type PipelineStep } from "../shared/pipeline-model";
+import { nextPipelineStep, pipelineFingerprint, missingReviewRole, type PipelineStep } from "../shared/pipeline-model";
 import { managedTasks, managedWorkerIds, taskWorkers } from "../shared/fleet-model";
 import { fleetEvent, type FleetStore } from "./fleet-store";
 
 type Deps = { store: FleetStore; snapshot(): Promise<FleetSnapshot>; inspect(row: Pipeline, snapshot: FleetSnapshot): Promise<PipelineInspection>;
+  dispatch?(row: Pipeline, facts: PipelineInspection, fingerprint: string, requestId: string): Promise<{ agentId: string; runId: string }>;
   send(id: string, prompt: string, requestId: string): Promise<void>; prepare(id: string, taskId: string): Promise<void>; now?: () => number };
 const active = (row: Pipeline) => ["running", "waiting", "ready"].includes(row.mode);
 export function pipelinePrompt(row: Pipeline, facts: PipelineInspection, next: PipelineStep): string {
+  const readyForHuman = next.stage === "review" && Boolean(facts.agentPolicy) && !missingReviewRole(facts, facts.checkpoints.find(item => item.stage === "validate" && item.verdict === "pass")?.createdAt);
   return ["Mission Control — Run to draft PR", `Task ${row.taskId}; host ${row.remoteServerId}; run ${facts.entry.run?.runId ?? "start one for this existing task"}.`,
     `This wake-up authorizes only the ${next.stage} stage: ${next.message}`,
     "Use this coordinator's existing one-way registered host connection and native linked workers. Do not recreate pairing URLs or register Personal remotely.",
     "Keep this task, run and assigned workspace identity. Read context and the latest handoff. Existing work must be inspected and reused; do not create a duplicate task or PR.",
     next.stage === "plan" ? "Use intake/check-environment/plan-task as applicable. Save plan.md, a versioned readable planBrief and a Mission Control plan decision. Stop for human approval; do not implement." :
-    next.stage === "review" ? "Start a fresh independent Reviewer agent, distinct from every implementer/fixer. Use review-changes and its OCR/Gortex workflow. It must inspect the exact current candidate and save actual findings. Never review your own work or treat a review worker's final text as evidence." :
+    readyForHuman ? "The configured independent reviews are complete. Read their saved reports and combine exact duplicate findings while retaining every model's concerns and provenance. Request the human code-review decision with a readable summary. Do not launch another reviewer or resolve any human decision." :
+    next.stage === "review" ? "Use a fresh independent Reviewer agent, distinct from every implementer/fixer. Use review-changes and its OCR/Gortex workflow. Inspect the exact current candidate and save actual findings. Never review your own work or treat a review worker's final text as evidence." :
     next.stage === "validate" ? "Use validate-changes for the approved implementation. Run the relevant checks, save actual output and report failures honestly. Do not edit code in this stage." :
     next.stage === "fix" ? "Use fix-findings for the recorded issues within the approved scope only. Material scope changes require a revised plan. Do not hide failing checks or unresolved findings." :
     "Use execute-task for the approved scope. For existing completed work, inspect it and save an implementation checkpoint; do not redo it merely because it predates this runner.",
@@ -23,7 +26,8 @@ export function pipelinePrompt(row: Pipeline, facts: PipelineInspection, next: P
     'Checkpoint JSON: {"stage":"execute|fix|validate|review","verdict":"pass|repair|blocked","scope":"approved|needs_plan","summary":"actual result","evidence":["saved report path"]}. Choose actual enum values. A repair verdict must describe a substantiated, in-scope fix. Use blocked for dependencies, permissions or uncertain results.',
     "For a passing independent review, also request the human review decision with plain built/found/checks/limitations and findings. Acceptance and findings remain in Mission Control. Do not resolve or simulate any human decision.",
     `Saved plan version: ${facts.planRevision ?? "not approved"}; candidate: ${JSON.stringify(facts.candidate)}. Recheck these before changing code.`,
-    `Recent saved stage reports (paths are relative to this exact run folder; read the reports before acting): ${JSON.stringify(facts.checkpoints.slice(0, 3).map(item => ({ stage: item.stage, verdict: item.verdict, scope: item.scope, author: item.agentId, summary: item.summary, evidence: item.evidence.map(file => file.path) })))}`,
+    `Recent saved stage reports (paths are relative to this exact run folder; read the reports before acting): ${JSON.stringify(facts.checkpoints.filter(item => readyForHuman || next.stage !== "review" || item.stage !== "review").slice(0, readyForHuman ? 6 : 3).map(item => ({ stage: item.stage, verdict: item.verdict, scope: item.scope, author: item.agentId, model: item.execution?.model, summary: item.summary, evidence: item.evidence.map(file => file.path) })))}`,
+    "Use existing project patterns and dependencies. Implement only the approved acceptance criteria. Avoid speculative abstractions and unrelated cleanup; material scope changes need a revised plan.",
     "Stop after this stage. The durable controller will choose the next step from saved checkpoints. No commit, push, PR publication, merge, deployment, Jira/ADO comments or other external updates are authorized by this wake-up.",
   ].join("\n\n");
 }
@@ -61,7 +65,7 @@ export function createPipelineEngine(deps: Deps) {
       if (stopped || dispatched >= 2) return;
       let row = (await deps.store.read()).pipelines.find(item => item.id === initial.id)!;
       if (!row || !active(row) || row.intake?.phase === "pending") continue;
-      if (row.pending) { await set(row.id, { mode: "blocked", message: "A dispatch has no confirmed receipt. Inspect the coordinator's last message before acknowledging it; it will not be replayed." }); continue; }
+      if (row.pending) { await set(row.id, { mode: "blocked", message: "A dispatch has no confirmed receipt. Inspect its remote stage worker under Reviewers and evidence or native Subagents; legacy messages and draft PR previews go to the coordinator. It will not be replayed." }); continue; }
       if (busyHosts.size >= 2 || !permitted(row, snapshot)) continue;
       let facts: PipelineInspection;
       try { facts = await deps.inspect(row, snapshot); }
@@ -78,6 +82,7 @@ export function createPipelineEngine(deps: Deps) {
       const date = new Date(now()).toISOString().slice(0, 10); const wakeups = row.date === date ? row.wakeups : 0;
       if (wakeups >= 24) { await set(row.id, { mode: "blocked", message: "The daily limit of 24 stage dispatches was reached. Inspect progress before resuming." }); continue; }
       const requestId = `mc-pipeline-${randomUUID()}`; const pending = { requestId, fingerprint, stage: next.stage, attemptedAt: new Date(now()).toISOString() };
+      let worker: { agentId: string; runId: string } | null = null;
       const before = await deps.store.read();
       await deps.store.update(state => {
         const current = state.pipelines.find(item => item.id === row.id);
@@ -90,13 +95,16 @@ export function createPipelineEngine(deps: Deps) {
         if (latestState.paused || !latest || !active(latest) || latest.pending?.requestId !== requestId || !permitted(latest, fresh) || pipelineFingerprint(verified, nextPipelineStep(latest, verified)) !== fingerprint) {
           await deps.store.update(state => { const current = state.pipelines.find(item => item.id === row.id); if (current?.pending?.requestId === requestId) current.pending = null; }); continue;
         }
-        if (prepare) await deps.prepare(row.coordinatorId, row.taskId); else await deps.send(row.coordinatorId, pipelinePrompt(row, verified, next), requestId);
+        if (prepare) await deps.prepare(row.coordinatorId, row.taskId);
+        else if (verified.agentPolicy && deps.dispatch && (next.stage !== "review" || missingReviewRole(verified, verified.checkpoints.find(item => item.stage === "validate" && item.verdict === "pass")?.createdAt))) worker = await deps.dispatch(row, verified, fingerprint, requestId);
+        else await deps.send(row.coordinatorId, pipelinePrompt(row, verified, next), requestId);
       } catch (error) {
-        await set(row.id, { mode: "blocked", message: `Dispatch outcome is unconfirmed; it will not be replayed. Inspect the coordinator: ${error instanceof Error ? error.message : String(error)}` }); continue;
+        await set(row.id, { mode: "blocked", message: `Dispatch outcome is unconfirmed; it will not be replayed. Check its remote stage worker and coordinator before acknowledging delivery: ${error instanceof Error ? error.message : String(error)}` }); continue;
       }
       await deps.store.update(state => {
         const current = state.pipelines.find(item => item.id === row.id); if (current?.pending?.requestId !== requestId) return;
         current.pending = null; current.lastDispatch = fingerprint; current.lastSentAt = new Date(now()).toISOString(); current.date = date; current.wakeups = wakeups + 1;
+        if (worker) { current.lastWorker = worker; current.runId = worker.runId; }
         if (next.failureId) { current.repairIds.push(next.failureId); current.repairs++; }
         current.updatedAt = new Date(now()).toISOString();
         fleetEvent(state, { coordinatorId: row.coordinatorId, remoteServerId: row.remoteServerId, taskId: row.taskId, kind: "dispatch", message: prepare ? "Draft PR preview prepared. Waiting for exact publication approval." : `Run to draft PR: ${next.stage} stage dispatched.` });

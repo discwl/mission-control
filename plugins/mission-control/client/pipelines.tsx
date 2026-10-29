@@ -7,6 +7,8 @@ import { controlPipeline, startPipeline } from "../shared/pipeline";
 import { CompactLink } from "./compact-link";
 import { PipelineIntakeForm } from "./pipeline-intake";
 import { formatDateTime } from "./date-time";
+import { AgentPolicyEditor, TaskAgentPolicyEditor } from "./agent-policy";
+import { PipelineReviewEvidence } from "./pipeline-review";
 type Colors = PluginSurfaceProps["theme"]["colors"];
 export function PipelineBoard({ snapshot, coordinators, colors, busy, act, openAgent, openTask }: {
   snapshot: FleetSnapshot; coordinators: FleetCoordinator[]; colors: Colors; busy: boolean;
@@ -45,6 +47,7 @@ export function PipelineBoard({ snapshot, coordinators, colors, busy, act, openA
         {remote?.error ? <Text style={{ color: colors.statusWarning }}>Host is unavailable. Future stages wait for its connection.</Text> : null}
         <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{row.repairs}/2 repair attempts · Updated {formatDateTime(row.updatedAt)}</Text>
         <View style={buttonRow}>
+          {row.lastWorker ? <CompactLink label="Open current stage agent" colors={colors} onPress={() => openAgent(row.remoteServerId, row.lastWorker!.agentId)} /> : null}
           <CompactLink label="Open task and decisions" colors={colors} disabled={!task} onPress={() => openTask(row.coordinatorId, row.taskId)} />
           <CompactLink label="Open coordinator" colors={colors} onPress={() => openAgent(snapshot.serverId, row.coordinatorId)} />
           {!["stopped", "done"].includes(row.mode) ? <>
@@ -52,8 +55,10 @@ export function PipelineBoard({ snapshot, coordinators, colors, busy, act, openA
             <CompactLink label="Stop this runner" colors={colors} disabled={busy} onPress={() => change("stop")} />
           </> : null}
         </View>
+        {task?.run ? <PipelineReviewEvidence serverId={row.remoteServerId} workspaceId={task.run.workspaceId} taskId={row.taskId} pendingRequestId={row.pending?.requestId} colors={colors} openAgent={openAgent} /> : null}
+        {task ? <TaskAgentPolicyEditor key={`${row.remoteServerId}:${row.taskId}`} serverId={row.remoteServerId} projectId={task.task.projectId} taskId={row.taskId} colors={colors} /> : null}
         {row.pending ? <View style={{ gap: 8 }}>
-          <Text selectable style={{ color: colors.statusWarning }}>Check the coordinator conversation for dispatch {row.pending.requestId}. Confirm whether it arrived. This stays paused after your answer.</Text>
+          <Text selectable style={{ color: colors.statusWarning }}>Check dispatch {row.pending.requestId} in its remote stage worker, shown above or under the coordinator's native Subagents. Legacy messages and draft PR previews go to the coordinator. Confirm whether it arrived; this stays paused after your answer.</Text>
           <View style={buttonRow}>{(["sent", "not_sent"] as const).map(delivery => <CompactLink key={delivery} label={delivery === "sent" ? "I checked: message was delivered" : "I checked: message was not delivered"} colors={colors} disabled={busy} onPress={() => act(row.id, () => control({ id: row.id, action: "acknowledge", requestId: row.pending!.requestId, delivery, expectedRevision: snapshot.state.revision }))} />)}</View>
         </View> : null}
       </View>;
@@ -62,6 +67,7 @@ export function PipelineBoard({ snapshot, coordinators, colors, busy, act, openA
       <Text style={{ color: colors.foreground, fontSize: 17, fontWeight: "600" }}>Start one task</Text>
       <View style={buttonRow}>{ordered.map(item => <CompactLink key={item.agentId} accessibilityLabel={`${item.hostLabel} · ${item.name}`} label={`${item.hostLabel} · ${item.name.length > 45 ? `${item.name.slice(0, 45)}…` : item.name}`} colors={colors} selected={coordinator?.agentId === item.agentId} onPress={() => setCoordinatorId(item.agentId)} />)}</View>
       <PipelineIntakeForm snapshot={snapshot} coordinator={coordinator} colors={colors} busy={busy} act={act} />
+      {coordinator ? <AgentPolicyEditor key={coordinator.remoteServerId} serverId={coordinator.remoteServerId} label={coordinator.hostLabel} colors={colors} /> : null}
       <TextInput accessibilityLabel="Find a task for Run to draft PR" value={search} onChangeText={setSearch} placeholder="Find an existing task" placeholderTextColor={colors.foregroundMuted} style={{ padding: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 6, color: colors.foreground }} />
       <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>For older work, first use “adopt &lt;task ID&gt;” in this coordinator's chat, or link its worker under Supervisor. A saved plan or code review is reused only when its version still matches.</Text>
       {!host ? <Text style={{ color: colors.statusWarning }}>Connect the selected host to choose a task.</Text> : null}

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
-import { capturePlanSnapshot } from "../plugins/mission-control/server/plan-snapshots.mjs";
+import { capturePlanSnapshot, verifyPlanApproval } from "../plugins/mission-control/server/plan-snapshots.mjs";
 import { normalizePlanBrief } from "../plugins/mission-control/shared/plan-brief.mjs";
 import { createWorkflowInstructionsStore } from "../plugins/mission-control/server/workflow-instructions-store.mjs";
 import { workflowInstructionsPrompt } from "../plugins/mission-control/shared/workflow-instructions.mjs";
@@ -297,6 +297,8 @@ async function loadRun(bound, folder, runId) {
 }
 
 import { preparePipelineCheckpoint, savePipelineCheckpoint, readPipelineCheckpoints } from "../plugins/mission-control/server/pipeline-records.mjs";
+import { checkpointStageEvidence } from "../plugins/mission-control/server/stage-records.mjs";
+import { verifyManagedReviewDecision } from "../plugins/mission-control/server/review-decision-evidence.mjs";
 
 async function checkpoint(args) {
   const bound = await binding(args);
@@ -318,7 +320,8 @@ async function checkpoint(args) {
     const implementationAgentId = ["execute", "fix"].includes(input.stage) ? agentId : previous.find(entry => ["execute", "fix"].includes(entry.stage))?.agentId ?? current.agentId;
     if (!implementationAgentId) throw new Error("Record implementation evidence before validation or review.");
     const candidate = reviewedCandidate(bound.cwd, bound.repository, bound.checkoutRoot);
-    const prepared = await preparePipelineCheckpoint(folder, { ...identity, agentId, implementationAgentId, candidate }, { ...input, planRevision: plan.plan.revision });
+    const stageInput = await checkpointStageEvidence(folder, { ...identity, agentId, candidate }, { ...input, planRevision: plan.plan.revision });
+    const prepared = await preparePipelineCheckpoint(folder, { ...identity, agentId, implementationAgentId, candidate }, stageInput);
     await appendEvent(bound, folder, current, { stage: input.stage, outcome: input.verdict === "pass" && input.scope === "approved" ? "completed" : "blocked", summary: input.summary,
       nextAction: input.verdict === "pass" ? "Continue the pipeline from its saved checkpoint." : "Inspect this checkpoint before further work.", evidence: input.evidence }, agentId);
     const after = reviewedCandidate(bound.cwd, bound.repository, bound.checkoutRoot);
@@ -502,7 +505,16 @@ async function requestDecision(args) {
     if (open) throw new Error(`Decision ${open.decision.decisionId} is still open. Wait for the user.`);
     const now = new Date().toISOString();
     const decisionId = `decision_${randomUUID()}`;
+    const reviewVerification = input.kind === "review" ? await verifyManagedReviewDecision(folder, { taskId: current.taskId, runId: current.runId, serverId: current.serverId, workspaceId: current.workspaceId }, candidate, requested, async () => {
+      const approved = (await readDecisions(folder)).map(item => item.decision).filter(item => item.kind === "plan" && item.runId === current.runId).sort((a, b) => b.requestedAt.localeCompare(a.requestedAt))[0];
+      if (approved?.status !== "approved" || !approved.plan || approved.resume && approved.resume.phase !== "sent") throw new Error("A current delivered plan approval is required before requesting managed code review.");
+      return (await verifyPlanApproval({ taskFolder: bound.folder, runFolder: folder, decision: approved }, approved.plan.revision)).revision;
+    }) : null;
     const plan = input.kind === "plan" ? await capturePlanSnapshot({ taskFolder: bound.folder, runFolder: folder, taskId: current.taskId, runId: current.runId, decisionId, requestedAt: now, brief: planBrief }) : null;
+    if (candidate) {
+      const after = reviewedCandidate(bound.cwd, bound.repository, bound.checkoutRoot);
+      if (candidate.head !== after.head || candidate.tree !== after.tree) throw new Error("Code changed during review verification; request review again after work stops.");
+    }
     const findings = requested.map((item, index) => ({
       findingId: `finding_${randomUUID()}`, decisionId, title: item.title.trim(), severity: item.severity,
       detail: (item.detail ?? "").trim(), file: item.file ?? null, status: "open", updatedAt: now, evidence: [], plain: plains[index],
@@ -512,7 +524,7 @@ async function requestDecision(args) {
       schemaVersion: 1, decisionId, taskId: current.taskId, runId: current.runId, serverId: current.serverId, workspaceId: current.workspaceId,
       agentId: agentId || current.agentId || null, kind: input.kind, status: "open", question, requestedAt: now,
       gitHead: bound.git.head, gitDirty: bound.git.dirty, evidence, findingIds: findings.map(item => item.findingId),
-      resolvedAt: null, note: null, resume: null, candidate, plain, plan,
+      resolvedAt: null, note: null, resume: null, candidate, plain, plan, reviewVerification,
     };
     await mkdir(join(folder, "decisions"), { recursive: true });
     await writeFile(join(folder, "decisions", `${decisionId}.md`), markdownRecord(decision, summary), { flag: "wx" });

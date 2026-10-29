@@ -7,5 +7,6 @@ export const pipelineSchema = z.object({
   runId: z.string().nullable(), message: z.string(), updatedAt: z.string(), repairs: z.number().int().min(0).max(2), repairIds: z.array(z.string()),
   lastDispatch: z.string().nullable(), lastSentAt: z.string().nullable(), date: z.string(), wakeups: z.number().int().nonnegative(),
   pending: z.object({ requestId: z.string(), fingerprint: z.string(), stage: pipelineStageSchema, attemptedAt: z.string() }).nullable(),
+  lastWorker: z.object({ agentId: z.string(), runId: z.string() }).nullable().default(null),
 });
 export type Pipeline = z.infer<typeof pipelineSchema>;

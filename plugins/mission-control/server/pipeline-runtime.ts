@@ -12,11 +12,43 @@ import { managedTasks } from "../shared/fleet-model";
 import { daemonServerId } from "./agent-names";
 import { withFleetConnection } from "./fleet-transport";
 import { fleetEvent, type FleetStore } from "./fleet-store";
+import { registerAgentPolicies, effectiveAgentPolicy } from "./agent-policy";
+import { launchPipelineStage } from "../shared/stage-launch";
+import { launchManagedStage } from "./stage-launch";
+import type { PaseoApi } from "@getpaseo/client";
+import { readPipelineEvidence } from "../shared/pipeline";
 
 export function registerPipelineRuntime(server: PluginServerContext, store: FleetStore, hostDeps: FleetHostDeps,
   snapshot: () => Promise<FleetSnapshot>, send: (id: string, prompt: string, requestId: string) => Promise<void>, invalidate: () => void) {
   const finishIntake = registerPipelineIntake(server, store, snapshot, invalidate);
+  registerAgentPolicies(server, store);
+  async function inspectLocal(input: { serverId: string; workspaceId: string; taskId: string }, paseo: PaseoApi) {
+    if (input.serverId !== await daemonServerId()) throw new Error("This vault belongs to a different host.");
+    const host = await collectFleetHost(paseo, input.serverId, hostDeps);
+    if (!host.complete || host.warnings.length) throw new Error("A complete task snapshot is required.");
+    const entry = host.tasks.find(item => item.task.taskId === input.taskId);
+    if (!entry) throw new Error("Task not found on this host.");
+    const facts = await inspectPipelineTask(input.serverId, input.workspaceId, input.taskId, entry, paseo);
+    facts.agentPolicy = await effectiveAgentPolicy(store, paseo, entry.task.projectId, entry.task.taskId);
+    for (const checkpoint of facts.checkpoints.filter(item => item.execution?.policyRevision === facts.agentPolicy?.revision && item.execution)) {
+      const agent = (await paseo.agents.ref(checkpoint.agentId).refresh())?.agent;
+      if (!agent || agent.workspaceId !== input.workspaceId || agent.provider !== checkpoint.execution!.provider || agent.model !== checkpoint.execution!.model) throw new Error("A stage agent's actual provider/model no longer matches its saved assignment. Inspect it before continuing.");
+    }
+    return facts;
+  }
+  server.handle(launchPipelineStage, async (input, { paseo }) => {
+    const facts = await inspectLocal({ ...input, taskId: input.row.taskId }, paseo);
+    const host = await collectFleetHost(paseo, input.serverId, hostDeps);
+    if (host.agents.some(agent => agent.workspaceId === input.workspaceId && (["running", "initializing"].includes(agent.status) || agent.pendingPermissions))) throw new Error("Another agent is active in this workspace.");
+    return launchManagedStage(input, facts, paseo, store);
+  });
   const engine = createPipelineEngine({ store, snapshot, send,
+    dispatch: async (row, facts, fingerprint, requestId) => {
+      const current = await snapshot();
+      const workspaceId = facts.entry.run?.workspaceId ?? facts.entry.task.worktree?.workspaceId ?? facts.entry.task.assignments.find(item => item.serverId === row.remoteServerId)?.workspaceId;
+      if (!workspaceId) throw new Error("Task workspace is unavailable.");
+      return launchPipelineStage.output.parse(await invokeChatHost(row.remoteServerId, launchPipelineStage.name, { serverId: row.remoteServerId, workspaceId, row, fingerprint, requestId, parent: { serverId: current.serverId, agentId: row.coordinatorId } }));
+    },
     inspect: async (row, current) => {
       const task = current.hosts.find(host => host.serverId === row.remoteServerId)?.snapshot?.tasks.find(entry => entry.task.taskId === row.taskId);
       const workspaceId = task?.run?.workspaceId ?? task?.task.worktree?.workspaceId ?? task?.task.assignments.find(item => item.serverId === row.remoteServerId)?.workspaceId;
@@ -28,14 +60,8 @@ export function registerPipelineRuntime(server: PluginServerContext, store: Flee
       if (!result.offerId || result.state !== "pending") throw new Error(result.text || "Draft PR preview is not ready.");
     },
   });
-  server.handle(inspectPipeline, async (input, { paseo }) => {
-    if (input.serverId !== await daemonServerId()) throw new Error("This vault belongs to a different host.");
-    const host = await collectFleetHost(paseo, input.serverId, hostDeps);
-    if (!host.complete || host.warnings.length) throw new Error("A complete task snapshot is required.");
-    const entry = host.tasks.find(item => item.task.taskId === input.taskId);
-    if (!entry) throw new Error("Task not found on this host.");
-    return inspectPipelineTask(input.serverId, input.workspaceId, input.taskId, entry, paseo);
-  });
+  server.handle(inspectPipeline, (input, { paseo }) => inspectLocal(input, paseo));
+  server.handle(readPipelineEvidence, async (input, { paseo }) => input.serverId === await daemonServerId() ? inspectLocal(input, paseo) : pipelineInspectionSchema.parse(await invokeChatHost(input.serverId, inspectPipeline.name, input)));
   server.handle(startPipeline, async input => {
     const current = await snapshot();
     const coordinator = current.coordinators.find(item => item.agentId === input.coordinatorId && item.remoteServerId === input.remoteServerId);

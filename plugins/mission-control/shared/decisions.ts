@@ -80,6 +80,7 @@ export const decisionSchema = z.object({
   plain: decisionPlainSchema.nullable().catch(null),
   // Immutable full plan and brief captured when approval was requested. Legacy records have none.
   plan: planReferenceSchema.nullable().optional(),
+  reviewVerification: z.object({ reviewers: z.array(z.object({ agentId: z.string(), model: z.string(), profile: z.string(), checkpointId: z.string(), reviewed: z.number().int(), selected: z.number().int(), excluded: z.number().int() })), findings: z.number().int() }).nullable().optional(),
 });
 export type Decision = z.infer<typeof decisionSchema>;
 
