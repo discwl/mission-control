@@ -37,7 +37,10 @@ import { ReviewFileScreen, reviewFileScreenId } from "./client/review-file-scree
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { setUnifiedExplorer } from "./client/layout";
 
+import { registerChatClient } from "./client/chat-workflow";
+
 export default function contribute(client: PluginClientContext) {
+  const stopChat = registerChatClient(client);
   setPluginClient(client);
   const stopFleet = registerFleetClient(client);
   const stopWorkerHistory = registerWorkerHistory(client);
@@ -182,6 +185,7 @@ export default function contribute(client: PluginClientContext) {
   const removeSetupSettings = client.addSettingsScreen({ id: "setup", title: "Setup", icon: "PackageCheck", Component: SetupSettings });
   const removeAgentsSettings = client.addSettingsScreen({ id: "agents-panel", title: "Agents panel", icon: "Network", Component: AgentsSettingsScreen });
   return () => {
+    stopChat();
     stopCoordinatorReturn();
     stopWorkerHistory();
     stopFleet();

@@ -64,6 +64,8 @@ import { applyPluginUpdate, checkPluginUpdate } from "./shared/plugin-updates";
 import { createVaultStore } from "./server/vault";
 import { defaultVaultPath, getVaultStatus, initializeVault, listVaultFolder, readVaultFile, saveVaultFile, createVaultEntry, moveVaultEntry, trashVaultEntry, locateTaskInVault } from "./shared/vault";
 
+import { registerChatWorkflow } from "./server/chat-workflow";
+
 export default function contribute(context: PluginServerContext) {
   // The status label sync runs outside handlers; it lists through the host's own Paseo API once a handler has seen it.
   const { server, current: hostPaseo } = rememberHostPaseo(context);
@@ -168,6 +170,7 @@ export default function contribute(context: PluginServerContext) {
     clearReviewMarks: workspaceId => review.marks.clear(workspaceId),
   });
   registerAgentCleanup(server, { decisions, questions, pullRequests });
+  registerChatWorkflow(server, { decisions, pullRequests, questions });
   server.handle(checkPullRequest, (input, { paseo }) => pullRequests.check(input, paseo));
   server.handle(runPullRequest, (input, { paseo }) => pullRequests.start(input, paseo));
   server.handle(listPullRequests, input => pullRequests.list(input));
