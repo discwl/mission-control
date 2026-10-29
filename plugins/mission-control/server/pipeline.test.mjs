@@ -38,6 +38,13 @@ test("stale code or plan cannot reuse validation, independent review or human ac
   f.candidate = { ...candidate }; f.planRevision = "e".repeat(64); assert.equal(nextPipelineStep(row(), f).stage, "execute");
   f.planRevision = planRevision; f.checkpoints[2].agentId = "worker"; assert.equal(nextPipelineStep(row(), f).stage, "review");
 });
+test("a changed candidate after the PR preview stops for delivery inspection instead of restarting implementation", () => {
+  const f = facts(); f.entry.decisions = [decision("review", "approved", { candidate })]; f.candidate.head = "e".repeat(40);
+  const next = nextPipelineStep(row({ stage: "delivery", mode: "ready" }), f);
+  assert.equal(next.mode, "blocked"); assert.equal(next.dispatch, false); assert.match(next.message, /delivery result/);
+  f.entry.task.pullRequest = { url: "https://example.test/pr/1" }; assert.equal(nextPipelineStep(row({ stage: "delivery", mode: "ready" }), f).mode, "done");
+});
+
 test("repair is bounded, scope changes need a new plan and questions stop dispatch", () => {
   const p = row(); const f = facts(); const failure = checkpoint("validate", { verdict: "repair" }); f.checkpoints = [checkpoint("execute"), failure];
   assert.equal(nextPipelineStep(p, f).stage, "fix"); assert.equal(nextPipelineStep(row({ repairs: 2 }), f).mode, "blocked");

@@ -11,12 +11,13 @@ export function nextPipelineStep(pipeline: Pipeline, facts: PipelineInspection):
   const open = decisions.find(item => item.decision.status === "open");
   if (open) return step(open.decision.kind === "plan" ? "plan" : "approval", "waiting", open.decision.kind === "plan" ? "Read and approve the saved implementation plan, or request changes." : "Review the saved result and code, then accept or request changes.");
   if (decisions.some(item => item.decision.status === "blocked")) return step(pipeline.stage, "blocked", "You stopped this task. Resolve its saved decision before resuming.");
+  const reviewDecision = decisions.find(item => item.decision.kind === "review");
+  if (pipeline.stage === "delivery" && pipeline.mode === "ready" && (!run || !planRevision || !candidate || reviewDecision?.decision.status === "approved" && (reviewDecision.decision.candidate?.head !== candidate.head || reviewDecision.decision.candidate?.tree !== candidate.tree))) return step("delivery", "blocked", "Code or delivery state changed after the draft PR preview. Inspect the delivery result before resuming; no build or publication will be retried automatically.");
   if (!run || !planRevision) return step("plan", "running", "Prepare a readable plan and wait for your approval.", true);
   if (!candidate) return step(pipeline.stage, "blocked", "The current code revision could not be verified.");
   const current = facts.checkpoints.filter(item => item.runId === run.runId && item.planRevision === planRevision && item.candidate.head === candidate.head && item.candidate.tree === candidate.tree).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const latest = current[0];
   if (latest?.scope === "needs_plan") return step("plan", "running", "The required work exceeds the saved scope. Prepare a revised plan and wait for approval.", true);
-  const reviewDecision = decisions.find(item => item.decision.kind === "review");
   const failed = latest && latest.verdict !== "pass" ? latest : null;
   if (failed?.verdict === "blocked") return step(pipeline.stage, "blocked", failed.summary);
   const failureId = failed?.verdict === "repair" ? failed.id : reviewDecision?.decision.status === "changes_requested" && !pipeline.repairIds.includes(reviewDecision.decision.decisionId) ? reviewDecision.decision.decisionId : undefined;
