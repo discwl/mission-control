@@ -49,6 +49,40 @@ test("new revision invalidates only the prior pending proposal; corruption is pr
   await store.answer(old.owner, "yes approve", async () => { calls++; return "ok"; }, old.id); assert.equal(calls, 0);
   await writeFile(file, "corrupt"); await assert.rejects(store.prepare(proposal())); assert.equal(await readFile(file, "utf8"), "corrupt");
 });
+test("known stale-review refusal survives reload, reopening and expiry without repeating approval", async t => {
+  const file = await fixture(t); let now = 1; const store = createChatActions(file, () => now);
+  const input = proposal({ kind: "review", context: { host: "CNS", type: "review", observedAt: "2026-10-15T00:00:00Z", evidence: "saved_record" } });
+  const offer = await store.prepare(input); let calls = 0;
+  const run = async () => { calls++; throw new Error("Request failed: The code changed after this review. Request a fresh review before accepting it. requestType=plugin.rpc.invoke.request code=handler_error"); };
+  const rejected = await store.answer(offer.owner, "yes approve", run, offer.id);
+  assert.equal(rejected.state, "rejected"); assert.equal(rejected.context.status, "Review out of date"); assert.match(rejected.text, /Nothing was approved/);
+  assert.doesNotMatch(rejected.text, /Could not confirm|handler_error/);
+  now += 25 * 60 * 60 * 1000;
+  const reloaded = createChatActions(file, () => now), reopened = await reloaded.prepare(input);
+  assert.equal(reopened.id, offer.id); assert.equal(reopened.state, "rejected");
+  await reloaded.answer(offer.owner, "yes approve", run, offer.id); assert.equal(calls, 1);
+  const fresh = await reloaded.prepare({ ...input, input: { ...input.input, expectedRevision: "rev2" } });
+  assert.equal(fresh.state, "pending"); assert.notEqual(fresh.id, offer.id);
+  assert.equal((await reloaded.prepare({ ...input, owner: "other-topic" })).state, "pending");
+});
+test("legacy exact stale errors migrate without treating unknown transport failures as rejected", async t => {
+  const file = await fixture(t), store = createChatActions(file), input = proposal({ kind: "review" });
+  const offer = await store.prepare(input);
+  const saved = JSON.parse(await readFile(file, "utf8"));
+  saved.offers[0].state = "uncertain";
+  saved.offers[0].receipt = "Could not confirm the result: Request failed: The code changed after this review. Request a fresh review before accepting it. requestType=plugin.rpc.invoke.request code=handler_error. Refresh the task before trying another action.";
+  saved.offers.push({ ...saved.offers[0], id: "123456abcd", state: "pending", receipt: undefined });
+  await writeFile(file, JSON.stringify(saved));
+  const reopened = await createChatActions(file).prepare(input);
+  assert.equal(reopened.id, offer.id); assert.equal(reopened.state, "rejected");
+  const duplicate = await createChatActions(file).answer(offer.owner, "yes approve", async () => assert.fail("must not execute a known stale revision"), "123456abcd");
+  assert.equal(duplicate.state, "rejected");
+  const unrelated = await store.prepare({ ...input, input: { taskId: "task_b", expectedRevision: "rev1" } });
+  const unknown = await store.answer(unrelated.owner, "yes approve", async () => { throw new Error("timeout: The code changed after this review. Request a fresh review before accepting it."); }, unrelated.id);
+  assert.equal(unknown.state, "uncertain");
+  assert.equal((await createChatActions(file).details(unrelated.owner, unrelated.id)).state, "uncertain");
+});
+
 test("request changes and stop preserve the human note and cannot be empty", () => {
   assert.equal(parseChatConsent("request changes:", "plan", "abc"), null);
   assert.deepEqual(parseChatConsent("request changes: Keep existing discounts", "plan", "abc"), { outcome: "changes_requested", note: "Keep existing discounts" });

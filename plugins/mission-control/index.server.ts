@@ -101,7 +101,7 @@ export default function contribute(context: PluginServerContext) {
   server.handle(checkLaunchParent, (input, { paseo }) => probeLaunchParent(input, paseo));
   server.handle(launchTask, (input, { paseo }) => launcher.dispatch(input, paseo));
   const decisions = createDecisionStore({ sources: taskSources, kitRoot: source => profileKitRoot(defaultVaultPath, source.task.projectId) });
-  // Task-message receipts v3: preserve consent identity and recheck current code before delayed delivery.
+  // Task-message receipts v4: keep rejected review versions out of approval prompts.
   let deliveringDecisions = false;
   let deliveryStopped = false;
   const retryDecisions = async () => {

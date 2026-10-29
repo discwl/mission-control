@@ -141,15 +141,16 @@ export function registerChatWorkflow(server: PluginServerContext, deps: { decisi
         const waiting = await call(listWaiting, { serverId: target });
         const questions = waiting.questions.filter(entry => entry.question.status === "open" && (all || (binding ? owned.some(link => link.taskId === entry.question.taskId || link.remoteAgentId === entry.question.agentId) || displayed.some(offer => offer.input.taskId === entry.question.taskId) : entry.question.workspaceId === agent.workspaceId)));
         const recent = decisions.recent.filter(entry => all || belongs(entry));
+        const rejectedFor = (entry: typeof selected[number]) => displayed.find(offer => offer.state === "rejected" && offer.input.decisionId === entry.decision.decisionId && offer.input.expectedRevision === entry.revision);
         const sections = [
-          ...selected.map(entry => `**${entry.taskTitle}**\n${entry.decision.kind === "plan" ? "Plan approval · Planning" : "Code review · Review"}\nWaiting on: You\nNext step: Open this ${entry.decision.kind} and choose your decision.`),
+          ...selected.map(entry => { const rejected = rejectedFor(entry); return rejected ? `**${entry.taskTitle}**\nReview out of date\nWaiting on: Worker — fresh review required\nNext step: The current code needs a fresh review and a new approval request.` : `**${entry.taskTitle}**\n${entry.decision.kind === "plan" ? "Plan approval · Planning" : "Code review · Review"}\nWaiting on: You\nNext step: Open this ${entry.decision.kind} and choose your decision.`; }),
           ...questions.map(entry => `**${entry.taskTitle}**\nQuestion · Waiting on you\n${entry.question.question}\nNext step: Open this question to answer.`),
           ...recent.filter(entry => entry.decision.resume?.phase !== "sent").map(entry => { const receipt = decisionReceipt(entry, label, [...decisions.open, ...decisions.recent]); return `**${entry.taskTitle}**\n${receipt.context.status}\nWaiting on: ${receipt.context.waitingOn}\nNext step: ${receipt.context.nextStep}`; }),
         ];
         return { text: `${label} · What needs me\n${selected.length + questions.length} decisions or questions${all ? " across this host" : " linked to this chat"}.\n\n${sections.join("\n\n") || "No linked decisions are waiting. Older work may be unlinked; use All host work to inspect it without changing ownership."}\n\nNative tool permissions still appear in Paseo.`,
           context: { host: label, type: "summary", status: "Current saved requests", observedAt: new Date().toISOString(), evidence: "saved_record" },
           actions: [
-            ...selected.map(entry => ({ label: `${entry.decision.kind === "plan" ? "Plan" : "Review"} · ${entry.taskTitle}`.slice(0, 60), command: `${entry.decision.kind} ${entry.decision.decisionId}` })),
+            ...selected.map(entry => ({ label: `${rejectedFor(entry) ? "Outdated review" : entry.decision.kind === "plan" ? "Plan" : "Review"} · ${entry.taskTitle}`.slice(0, 60), command: `${entry.decision.kind} ${entry.decision.decisionId}` })),
             ...questions.map(entry => ({ label: `Question · ${entry.taskTitle}`.slice(0, 60), command: `question ${entry.question.questionId}` })),
             ...recent.filter(entry => entry.decision.resume?.phase !== "sent").map(entry => ({ label: `Receipt · ${entry.taskTitle}`.slice(0, 60), command: `decision status ${entry.decision.decisionId}` })),
             ...(!all ? [{ label: "All host work (including unlinked)", command: "all needs" }] : []),
@@ -178,6 +179,7 @@ export function registerChatWorkflow(server: PluginServerContext, deps: { decisi
         presentation = chatReview(entry, label);
       }
       const offer = await offers.prepare({ owner, target, title: entry.taskTitle, kind: d.kind, context: decisionContext(entry, label), text: presentation, input: { ...ref, ...(d.candidate ? { expectedCandidate: d.candidate } : {}), changeFindingIds: entry.findings.filter(finding => finding.status === "open").map(finding => finding.findingId), ...(expectedPlanRevision ? { expectedPlanRevision } : {}) } });
+      if (offer.state === "rejected") return { text: offer.receipt!, state: offer.state, context: offer.receiptContext };
       return { text: `${offer.text}\n\nProposal ${offer.id}\nReply: yes approve ${offer.id}\nOr: request changes: <what to change>\nOr: stop: <reason>\n${chatLinks(target, d.workspaceId, d.agentId)}`, offerId: offer.id, state: offer.state, proposalKind: offer.kind, context: offer.receiptContext ?? offer.context };
     }
   };

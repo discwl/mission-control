@@ -131,7 +131,20 @@ test("review approval checks the current working tree and refuses changed code",
   f.paseo.workspaces = { ref: id => ({ refresh: async () => ({ workspaceDirectory: "C:/fixture", archivingAt: null }) }) };
   let resolves = 0; f.deps.decisions.resolve = async input => { resolves++; return { ...f.current, decision: { ...f.current.decision, status: input.outcome } }; };
   const shown = await f.command("review task_a"); const refused = await f.command(`yes approve ${shown.offerId}`);
-  assert.match(refused.text, /code changed/); assert.equal(resolves, 0);
-  actual = { head: sha, tree: sha }; const fresh = await f.command("review task_a");
+  assert.match(refused.text, /code changed/); assert.equal(refused.state, "rejected"); assert.equal(resolves, 0);
+  const reopened = await f.command("review task_a");
+  assert.equal(reopened.state, "rejected"); assert.equal(reopened.offerId, undefined);
+  assert.equal(reopened.context.status, "Review out of date"); assert.match(reopened.context.waitingOn, /Worker/);
+  assert.doesNotMatch(reopened.text, /yes approve|Could not confirm/);
+  assert.match((await f.command("needs")).text, /Waiting on: Worker — fresh review required/);
+  await f.command(`yes approve ${shown.offerId}`); assert.equal(resolves, 0);
+  t.mock.method(bindings, "readOrchestratorBindings", async () => ({ bindings: { w: { serverId: "local", label: "CNS" } }, problems: {} }));
+  t.mock.method(transport, "invokeChatHost", async (_host, method) => method === "decisions.list" ? f.deps.decisions.list("local") : { questions: [], taskTitles: {} });
+  const inbox = await f.handlers.get("chat.inbox")({ agentId: "coordinator" }, { paseo: f.paseo });
+  assert.equal(inbox.entries.length, 1); assert.equal(inbox.entries[0].offerId, undefined);
+  assert.equal(inbox.entries[0].proposalKind, undefined); assert.equal(inbox.entries[0].context.type, "blocker");
+  // A new saved review is required; changing code back cannot revive the rejected card.
+  actual = { head: sha, tree: sha }; f.current.revision = "request2";
+  const fresh = await f.command("review task_a"); assert.equal(fresh.state, "pending");
   await f.command(`yes approve ${fresh.offerId}`); assert.equal(resolves, 1);
 });

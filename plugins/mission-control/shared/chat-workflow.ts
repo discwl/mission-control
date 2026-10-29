@@ -7,7 +7,7 @@ export const chatContext = defineRpc({ name: "chat.context", input: z.object({ a
 export const chatCommand = defineRpc({
   name: "chat.command",
   input: z.object({ agentId: z.string().min(1), conversationId: z.string().min(1).max(300).optional(), text: z.string().trim().min(1).max(4000), offerId: z.string().regex(/^[a-f0-9]{10}$/).optional() }),
-  output: z.object({ context: chatMessageContext.optional(), actions: z.array(chatReadAction).optional(), text: z.string(), offerId: z.string().optional(), proposalKind: z.enum(["plan", "review", "question", "draft-pr"]).optional(), state: z.enum(["pending", "executing", "complete", "uncertain"]).optional() }),
+  output: z.object({ context: chatMessageContext.optional(), actions: z.array(chatReadAction).optional(), text: z.string(), offerId: z.string().optional(), proposalKind: z.enum(["plan", "review", "question", "draft-pr"]).optional(), state: z.enum(["pending", "executing", "complete", "uncertain", "rejected"]).optional() }),
 });
 
 export const chatInbox = defineRpc({

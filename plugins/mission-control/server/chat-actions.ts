@@ -6,7 +6,7 @@ import type { ChatMessageContext } from "../shared/chat-message";
 export type ChatOffer = {
   id: string; owner: string; target: string; title: string; kind: "plan" | "review" | "draft-pr" | "question";
   text: string; input: Record<string, unknown>; expiresAt: number;
-  state: "pending" | "executing" | "complete" | "uncertain"; receipt?: string;
+  state: "pending" | "executing" | "complete" | "uncertain" | "rejected"; receipt?: string;
   context?: ChatMessageContext; receiptContext?: ChatMessageContext;
 };
 type State = { version: 1; offers: ChatOffer[] };
@@ -33,6 +33,18 @@ export function parseChatConsent(text: string, kind: ChatOffer["kind"], id: stri
   return null;
 }
 
+// This exact guard runs before decisions.resolve, so it is a refusal, not an uncertain write.
+const staleReviewGuard = "The code changed after this review. Request a fresh review before accepting it.";
+function staleReviewFailure(message: string) {
+  const error = message.replace(/^Could not confirm the result: /, "").replace(/\. Refresh the task before trying another action\.$/, "");
+  return error === staleReviewGuard || error === `Request failed: ${staleReviewGuard} requestType=plugin.rpc.invoke.request code=handler_error`;
+}
+function rejectStaleReview(offer: ChatOffer) {
+  offer.state = "rejected";
+  offer.receipt = `${offer.context?.host ?? offer.target} · ${offer.title}\nThis review is out of date: the code changed after it was saved. Nothing was approved or sent to the worker.\nThe current code needs a fresh review and a new saved approval request. Reopening this old review or clicking Accept again cannot approve the changed code.`;
+  offer.receiptContext = offer.context ? { ...offer.context, type: "blocker", status: "Review out of date", waitingOn: "Worker — fresh review required", actionNeeded: "A fresh review is needed before you can accept code", nextStep: "Have the task reviewed at its current revision, then read the new approval request" } : undefined;
+}
+
 export function createChatActions(file: string, now = Date.now) {
   let chain: Promise<unknown> = Promise.resolve();
   async function load(): Promise<State> {
@@ -55,6 +67,14 @@ export function createChatActions(file: string, now = Date.now) {
     prepare(input: Omit<ChatOffer, "id" | "state" | "expiresAt">): Promise<ChatOffer> {
       return serialized(async () => {
         const state = await load();
+        // A new display must not turn a known rejected revision into a new approval opportunity.
+        // Also migrate earlier versions' misleading 'uncertain' receipt for this exact guard.
+        const rejected = state.offers.find(offer => offer.owner === input.owner && offer.target === input.target && offer.kind === "review" && input.kind === "review" && JSON.stringify(offer.input) === JSON.stringify(input.input) && (offer.state === "rejected" || offer.state === "uncertain" && staleReviewFailure(offer.receipt ?? "")));
+        if (rejected) {
+          rejected.context = input.context; rejected.title = input.title;
+          rejectStaleReview(rejected); rejected.expiresAt = Math.max(rejected.expiresAt, now() + 24 * 60 * 60 * 1000);
+          await save(state); return rejected;
+        }
         const same = state.offers.find(offer => offer.owner === input.owner && offer.target === input.target && offer.kind === input.kind && offer.title === input.title && offer.text === input.text && JSON.stringify(offer.input) === JSON.stringify(input.input) && offer.state === "pending" && offer.expiresAt > now());
         if (same) {
           // Add presentation metadata to pre-upgrade offers without replacing their consent identity.
@@ -80,7 +100,10 @@ export function createChatActions(file: string, now = Date.now) {
           if (offerId || candidates.length > 1 || pending.length !== 1) return { text: "Choose the exact proposal first. Show its plan/review again, or include its proposal code in your reply. Nothing was approved." };
           offer = pending[0];
         }
-        if (offer.state === "complete") return { text: offer.receipt!, offerId: offer.id, state: offer.state, context: offer.receiptContext };
+        if (offer.kind === "review" && (offer.state === "uncertain" && staleReviewFailure(offer.receipt ?? "") || offer.state === "pending" && state.offers.some(other => other.owner === owner && other.target === offer!.target && other.state === "rejected" && JSON.stringify(other.input) === JSON.stringify(offer!.input)))) {
+          rejectStaleReview(offer); await save(state);
+        }
+        if (offer.state === "complete" || offer.state === "rejected") return { text: offer.receipt!, offerId: offer.id, state: offer.state, context: offer.receiptContext };
         if (offer.state !== "pending") return { text: "This action may already have run. Check its task and delivery result before retrying; it will not be sent again automatically.", offerId: offer.id, state: offer.state };
         if (offer.expiresAt <= now()) return { text: "This proposal expired. Ask for a fresh plan/review or draft PR preview; nothing was approved." };
         const consent = parseChatConsent(text, offer.kind, offer.id);
@@ -93,6 +116,10 @@ export function createChatActions(file: string, now = Date.now) {
           offer.state = "complete"; await save(state);
           return { text: offer.receipt, offerId: offer.id, state: offer.state, context: offer.receiptContext };
         } catch (error) {
+          if (offer.kind === "review" && consent.outcome === "approved" && error instanceof Error && staleReviewFailure(error.message)) {
+            rejectStaleReview(offer); await save(state);
+            return { text: offer.receipt!, offerId: offer.id, state: offer.state, context: offer.receiptContext };
+          }
           // A timeout may occur after the remote action committed. Never retry the mutation blindly.
           offer.state = "uncertain"; offer.receipt = `Could not confirm the result: ${error instanceof Error ? error.message : String(error)}. Refresh the task before trying another action.`;
           await save(state); return { text: offer.receipt, offerId: offer.id, state: offer.state };
