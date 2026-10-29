@@ -18,7 +18,7 @@ async function fixture(t) {
   t.mock.method(names, "daemonServerId", async () => "local"); t.mock.method(bindings, "readOrchestratorBindings", async () => ({ bindings: {}, problems: {} }));
   const calls = [], handlers = new Map(), hooks = new Map(); let current = entry(); let canApprove = true;
   const plan = { taskTitle: current.taskTitle, forge: "github", repository: "owner/repo", webUrl: "https://github.com/owner/repo", remote: "https://github.com/owner/repo.git", targetBranch: "main", taskBranch: "task/escrow", worktreeDirectory: "C:/fixture", worktreeWorkspaceId: "w", uncommittedFiles: [], uncommittedCount: 0, undoneFiles: [], undoneCount: 0, commitMessage: "Fix escrow", commitsAhead: 1, pushCommit: sha, title: "Fix duplicate escrow numbers", body: "Adds validation and tests.", template: null, templateText: null, workItem: null, commands: [], fingerprint: "exact-tree-and-text" };
-  const deps = { decisions: { list: async () => ({ open: current.decision.status === "open" ? [structuredClone(current)] : [], recent: [] }), plan: async () => ({ source: "snapshot", revision, documentRevision: revision, requestedAt: current.decision.requestedAt, markdown: "# Plan", brief, previous: null, currentMatch: canApprove, canApprove, warning: canApprove ? null : "Plan changed" }), resolve: async input => {
+  const deps = { decisions: { list: async () => ({ open: current.decision.status === "open" ? [structuredClone(current)] : [], recent: current.decision.status === "open" ? [] : [structuredClone(current)] }), plan: async () => ({ source: "snapshot", revision, documentRevision: revision, requestedAt: current.decision.requestedAt, markdown: "# Plan", brief, previous: null, currentMatch: canApprove, canApprove, warning: canApprove ? null : "Plan changed" }), resolve: async input => {
     if (input.expectedRevision !== current.revision) throw new Error("The request changed");
     if (input.outcome === "approved" && input.expectedPlanRevision !== revision) throw new Error("Wrong plan revision");
     calls.push({ operation: "decision", input }); current.decision.status = input.outcome; return structuredClone(current);
@@ -35,6 +35,48 @@ test("chat uses the saved brief and exact revision; plan approval never publishe
   assert.equal(f.calls.length, 1); assert.equal(f.calls[0].operation, "decision"); assert.equal(f.calls[0].input.expectedPlanRevision, revision); assert.equal(f.calls[0].input.expectedRevision, "request1");
   await f.command(`yes approve ${shown.offerId}`); assert.equal(f.calls.length, 1);
 });
+test("explicitly viewed tasks appear only in that conversation's menu and retain receipt identity", async t => {
+  const f = await fixture(t), scope = { conversationId: "telegram:topic2:owner" };
+  t.mock.method(bindings, "readOrchestratorBindings", async () => ({ bindings: { w: { serverId: "local", label: "AACN" } }, problems: {} }));
+  await f.command("plan CDR-1316", scope);
+  const needs = await f.command("needs", scope);
+  assert.equal(needs.context.type, "summary"); assert.equal(needs.context.taskId, undefined);
+  assert.ok(needs.actions.some(a => a.command === "plan decision_a"));
+  const other = await f.command("needs", { conversationId: "telegram:topic17:owner" });
+  assert.ok(!other.actions?.some(a => a.command === "plan decision_a"));
+  const proposal = await f.command("plan CDR-1316", scope);
+  assert.equal(proposal.context.taskId, "task_a"); assert.equal(proposal.context.waitingOn, "You");
+  const receipt = await f.command(`yes approve ${proposal.offerId}`, scope);
+  assert.equal(receipt.context.type, "receipt"); assert.equal(receipt.context.taskId, "task_a");
+  assert.deepEqual((await f.command(`yes approve ${proposal.offerId}`, scope)).context, receipt.context);
+  const refreshed = await f.command("decision status task_a", scope);
+  assert.equal(refreshed.context.type, "receipt");
+  assert.equal(f.calls.length, 1);
+});
+
+test("pre-upgrade offers gain metadata while preserving the exact proposal ID and expiry", async t => {
+  const f = await fixture(t), { createChatActions } = require("./chat-actions.ts");
+  const actions = createChatActions(join(f.root, "legacy-offers.json"));
+  const input = { owner: "topic2", target: "local", title: "Task", kind: "plan", text: "Exact saved plan", input: { taskId: "task_a", expectedRevision: "one" } };
+  const legacy = await actions.prepare(input);
+  const upgraded = await actions.prepare({ ...input, context: { host: "AACN", taskId: "task_a", type: "plan", observedAt: "2026-10-28T00:00:00Z", evidence: "saved_record" } });
+  assert.equal(upgraded.id, legacy.id); assert.equal(upgraded.expiresAt, legacy.expiresAt);
+  assert.equal(upgraded.state, "pending"); assert.equal(upgraded.context.taskId, "task_a");
+  assert.deepEqual(upgraded.input, legacy.input);
+});
+
+test("an earlier receipt points to a newer request without approving it or promising a stale retry", () => {
+  const { decisionReceipt } = require("./chat-message.ts");
+  const old = entry(); old.decision.status = "changes_requested"; old.decision.resume = { phase: "pending", updatedAt: "2026-10-28T01:00:00Z", error: null };
+  const newer = entry(); newer.decision.decisionId = "decision_new"; newer.decision.requestedAt = "2026-10-28T02:00:00Z";
+  const result = decisionReceipt(old, "AACN", [old, newer]);
+  assert.match(result.context.status, /Earlier decision/);
+  assert.match(result.context.waitingOn, /newer request/);
+  assert.match(result.context.actionNeeded, /newer request/);
+  assert.doesNotMatch(result.context.nextStep, /retried|Worker continues/);
+  assert.equal(newer.decision.status, "open");
+});
+
 test("legacy or changed plan cannot create an approvable proposal", async t => {
   const f = await fixture(t); f.canApprove(false); const shown = await f.command("plan CDR-1316");
   assert.equal(shown.offerId, undefined); assert.match(shown.text, /fresh readable proposal/);

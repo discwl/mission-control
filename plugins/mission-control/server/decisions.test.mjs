@@ -91,14 +91,61 @@ test("a busy agent keeps the saved decision pending until it is resent", async t
   await assert.rejects(store.resend({ ...ids, expectedRevision: delivered.revision }, paseo), /already sent/);
 });
 
+test("saved decisions retry once after idle, including concurrent scans", async t => {
+  const f = await fixture(t, { findings: [] });
+  const [entry] = (await f.store.list(ids.serverId)).open;
+  f.agent.status = "running";
+  await f.store.resolve({ ...ids, expectedRevision: entry.revision, outcome: "changes_requested", note: "Fix the transaction", submitFindingIds: [] }, f.paseo);
+  await f.store.retryPending(ids.serverId, f.paseo); assert.equal(f.sent.length, 0);
+  f.agent.status = "idle";
+  f.agent.pendingPermissions = [{ id: "p" }];
+  await f.store.retryPending(ids.serverId, f.paseo); assert.equal(f.sent.length, 0);
+  f.agent.pendingPermissions = []; f.agent.workspaceId = "wrong";
+  await f.store.retryPending(ids.serverId, f.paseo); assert.equal(f.sent.length, 0);
+  f.agent.workspaceId = ids.workspaceId;
+  await Promise.all([f.store.retryPending(ids.serverId, f.paseo), f.store.retryPending(ids.serverId, f.paseo)]);
+  assert.equal(f.sent.length, 1); assert.equal(f.sent[0].options.messageId, ids.decisionId);
+  await f.store.retryPending(ids.serverId, f.paseo); assert.equal(f.sent.length, 1);
+});
+
+test("a newer request prevents an old pending decision from automatically resuming work", async t => {
+  const f = await fixture(t, { findings: [] });
+  const [entry] = (await f.store.list(ids.serverId)).open; f.agent.status = "running";
+  await f.store.resolve({ ...ids, expectedRevision: entry.revision, outcome: "approved", note: "", submitFindingIds: [] }, f.paseo);
+  const next = { ...entry.decision, decisionId: "decision_dddddddd-dddd-4ddd-dddd-dddddddddddd", requestedAt: "2026-09-26T00:00:00Z" };
+  await writeFile(join(f.runFolder, "decisions", `${next.decisionId}.md`), markdownRecord(next, "New scope"));
+  f.agent.status = "idle"; await f.store.retryPending(ids.serverId, f.paseo);
+  assert.equal(f.sent.length, 0);
+});
+
+test("automatic delivery of accepted code rechecks the exact reviewed candidate", async t => {
+  const f = await fixture(t, { findings: [] });
+  const file = join(f.runFolder, "decisions", `${ids.decisionId}.md`);
+  const saved = parseRecord(await readFile(file, "utf8"));
+  const candidate = { head: "a".repeat(40), tree: "b".repeat(40) };
+  await writeFile(file, markdownRecord({ ...saved.fields, candidate }, saved.body));
+  const [entry] = (await f.store.list(ids.serverId)).open;
+  f.agent.status = "running";
+  await f.store.resolve({ ...ids, expectedRevision: entry.revision, outcome: "approved", note: "", submitFindingIds: [] }, f.paseo);
+  f.agent.status = "idle";
+  f.paseo.workspaces = { ref: () => ({ refresh: async () => ({ workspaceDirectory: f.folder }) }) };
+  const merge = require("./merge.ts"); let current = { ...candidate, tree: "c".repeat(40) };
+  t.mock.method(merge, "reviewCandidate", async () => current);
+  const [blocked] = await f.store.retryPending(ids.serverId, f.paseo);
+  assert.equal(blocked.decision.resume.phase, "pending"); assert.match(blocked.decision.resume.error, /code changed/);
+  assert.equal(f.sent.length, 0);
+  current = candidate; await f.store.retryPending(ids.serverId, f.paseo); assert.equal(f.sent.length, 1);
+});
+
 test("an unconfirmed send is never retried automatically", async t => {
-  const { store, paseo, state } = await fixture(t, { kind: "plan", findings: [] });
+  const { store, paseo, state, sent } = await fixture(t, { kind: "plan", findings: [] });
   const [entry] = (await store.list(ids.serverId)).open;
   state.failSend = true;
   const saved = await store.resolve({ ...ids, expectedRevision: entry.revision, outcome: "blocked", note: "Wait for API keys.", submitFindingIds: [] }, paseo);
   assert.equal(saved.decision.resume.phase, "sending");
   assert.match(saved.decision.resume.error, /socket closed/);
   await assert.rejects(store.resend({ ...ids, expectedRevision: saved.revision }, paseo), /unconfirmed/);
+  state.failSend = false; await store.retryPending(ids.serverId, paseo); assert.equal(sent.length, 0);
 });
 
 test("approving a review waits for earlier findings to be verified and a block needs a note", async t => {
@@ -222,7 +269,7 @@ test("saved plan delivery is rechecked after a busy agent becomes idle", async t
   assert.equal(approved.decision.resume.phase, "pending");
   await writeFile(join(f.folder, "plan.md"), "# New scope\n");
   f.agent.status = "idle";
-  const result = await f.store.resend({ ...ids, expectedRevision: approved.revision }, f.paseo);
+  const [result] = await f.store.retryPending(ids.serverId, f.paseo);
   assert.equal(result.decision.resume.phase, "pending");
   assert.match(result.decision.resume.error, /changed after/);
   assert.equal(f.sent.length, 0);

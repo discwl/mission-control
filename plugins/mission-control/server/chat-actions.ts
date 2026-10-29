@@ -1,14 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import type { ChatMessageContext } from "../shared/chat-message";
 
 export type ChatOffer = {
   id: string; owner: string; target: string; title: string; kind: "plan" | "review" | "draft-pr" | "question";
   text: string; input: Record<string, unknown>; expiresAt: number;
   state: "pending" | "executing" | "complete" | "uncertain"; receipt?: string;
+  context?: ChatMessageContext; receiptContext?: ChatMessageContext;
 };
 type State = { version: 1; offers: ChatOffer[] };
-export type ChatAnswer = { text: string; offerId?: string; state?: ChatOffer["state"] };
+export type ChatAnswer = { text: string; offerId?: string; state?: ChatOffer["state"]; context?: ChatMessageContext };
 
 // Only the native /mc command and the authenticated connector call this layer. Model output,
 // worker completions, quoted text and timeline replay must never be interpreted as consent.
@@ -54,7 +56,11 @@ export function createChatActions(file: string, now = Date.now) {
       return serialized(async () => {
         const state = await load();
         const same = state.offers.find(offer => offer.owner === input.owner && offer.target === input.target && offer.kind === input.kind && offer.title === input.title && offer.text === input.text && JSON.stringify(offer.input) === JSON.stringify(input.input) && offer.state === "pending" && offer.expiresAt > now());
-        if (same) return same;
+        if (same) {
+          // Add presentation metadata to pre-upgrade offers without replacing their consent identity.
+          if (input.context && JSON.stringify(same.context) !== JSON.stringify(input.context)) { same.context = input.context; await save(state); }
+          return same;
+        }
         // A newly displayed revision supersedes only that task's earlier proposal.
         state.offers = state.offers.filter(offer => !(offer.owner === input.owner && offer.target === input.target && offer.input.taskId === input.input.taskId && offer.kind === input.kind && offer.state === "pending"));
         const offer: ChatOffer = { ...input, id: createHash("sha256").update(randomUUID()).digest("hex").slice(0, 10), state: "pending", expiresAt: now() + 24 * 60 * 60 * 1000 };
@@ -62,8 +68,9 @@ export function createChatActions(file: string, now = Date.now) {
       });
     },
     async details(owner: string, id: string): Promise<ChatOffer | undefined> { await chain; return (await load()).offers.find(x => x.owner === owner && x.id === id && x.expiresAt > now()); },
+    async forOwner(owner: string): Promise<ChatOffer[]> { await chain; return (await load()).offers.filter(x => x.owner === owner && x.expiresAt > now()); },
     async pending(owner: string): Promise<ChatOffer[]> { await chain; return (await load()).offers.filter(x => x.owner === owner && x.state === "pending" && x.expiresAt > now()); },
-    answer(owner: string, text: string, execute: (offer: ChatOffer, consent: NonNullable<ReturnType<typeof parseChatConsent>>) => Promise<string>, offerId?: string): Promise<ChatAnswer> {
+    answer(owner: string, text: string, execute: (offer: ChatOffer, consent: NonNullable<ReturnType<typeof parseChatConsent>>) => Promise<string | { text: string; context: ChatMessageContext }>, offerId?: string): Promise<ChatAnswer> {
       return serialized(async () => {
         const state = await load();
         const candidates = state.offers.filter(x => x.owner === owner && (offerId ? x.id === offerId : text.trim().endsWith(` ${x.id}`)));
@@ -73,15 +80,18 @@ export function createChatActions(file: string, now = Date.now) {
           if (offerId || candidates.length > 1 || pending.length !== 1) return { text: "Choose the exact proposal first. Show its plan/review again, or include its proposal code in your reply. Nothing was approved." };
           offer = pending[0];
         }
-        if (offer.state === "complete") return { text: offer.receipt!, offerId: offer.id, state: offer.state };
+        if (offer.state === "complete") return { text: offer.receipt!, offerId: offer.id, state: offer.state, context: offer.receiptContext };
         if (offer.state !== "pending") return { text: "This action may already have run. Check its task and delivery result before retrying; it will not be sent again automatically.", offerId: offer.id, state: offer.state };
         if (offer.expiresAt <= now()) return { text: "This proposal expired. Ask for a fresh plan/review or draft PR preview; nothing was approved." };
         const consent = parseChatConsent(text, offer.kind, offer.id);
         if (!consent) return { text: offer.kind === "question" ? "Reply: answer: <your answer>. This answers the displayed blocking question only." : offer.kind === "draft-pr" ? `To authorize the displayed commit, push and draft PR, reply: open draft PR ${offer.id}` : `Reply “yes approve ${offer.id}”, “request changes: <what to change>”, or “stop: <reason>”.`, offerId: offer.id };
         offer.state = "executing"; await save(state);
         try {
-          offer.receipt = await execute(offer, consent); offer.state = "complete"; await save(state);
-          return { text: offer.receipt, offerId: offer.id, state: offer.state };
+          const receipt = await execute(offer, consent);
+          offer.receipt = typeof receipt === "string" ? receipt : receipt.text;
+          offer.receiptContext = typeof receipt === "string" ? undefined : receipt.context;
+          offer.state = "complete"; await save(state);
+          return { text: offer.receipt, offerId: offer.id, state: offer.state, context: offer.receiptContext };
         } catch (error) {
           // A timeout may occur after the remote action committed. Never retry the mutation blindly.
           offer.state = "uncertain"; offer.receipt = `Could not confirm the result: ${error instanceof Error ? error.message : String(error)}. Refresh the task before trying another action.`;

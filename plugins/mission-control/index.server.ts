@@ -101,6 +101,19 @@ export default function contribute(context: PluginServerContext) {
   server.handle(checkLaunchParent, (input, { paseo }) => probeLaunchParent(input, paseo));
   server.handle(launchTask, (input, { paseo }) => launcher.dispatch(input, paseo));
   const decisions = createDecisionStore({ sources: taskSources, kitRoot: source => profileKitRoot(defaultVaultPath, source.task.projectId) });
+  // Task-message receipts v3: preserve consent identity and recheck current code before delayed delivery.
+  let deliveringDecisions = false;
+  let deliveryStopped = false;
+  const retryDecisions = async () => {
+    const paseo = hostPaseo();
+    if (!paseo || deliveringDecisions || deliveryStopped) return;
+    deliveringDecisions = true;
+    try { await decisions.retryPending(await localServerId(), paseo); }
+    catch (error) { console.warn("[mission-control] pending decision delivery:", error instanceof Error ? error.message : String(error)); }
+    finally { deliveringDecisions = false; }
+  };
+  const decisionDeliveryTimer = setInterval(() => { void retryDecisions(); }, 15000);
+  decisionDeliveryTimer.unref?.();
   const needsYouTimeline = createNeedsYouTimeline(localServerId);
   server.handle(listDecisions, async ({ serverId }, { paseo }) => {
     const result = await decisions.list(serverId);
@@ -247,5 +260,5 @@ export default function contribute(context: PluginServerContext) {
   const updater = createPluginUpdater();
   server.handle(checkPluginUpdate, () => updater.check());
   server.handle(applyPluginUpdate, ({ target }) => updater.apply(target));
-  return () => { stopFleet(); statusLabels.stop(); };
+  return () => { deliveryStopped = true; clearInterval(decisionDeliveryTimer); stopFleet(); statusLabels.stop(); };
 }

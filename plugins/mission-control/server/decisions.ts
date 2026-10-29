@@ -212,12 +212,12 @@ export function createDecisionStore(deps: { sources: (serverId: string) => Promi
     await atomicWrite(loaded.decisionFile, markdownRecord(decision, loaded.body));
   }
 
-  async function deliver(ref: Ref, paseo: PaseoApi): Promise<DecisionEntry> {
+  async function deliver(ref: Ref, paseo: PaseoApi, automatic = false): Promise<DecisionEntry> {
     const { source, runFolder, reload } = await locate(ref);
     const sending = await withRunLock(runFolder, async () => {
       const loaded = await reload();
       const { decision } = loaded;
-      if (decision.resume?.phase !== "pending") return null;
+      if (decision.status === "open" || decision.resume?.phase !== "pending") return null;
       const fail = async (error: string) => { await writeDecision(loaded, { ...decision, resume: { phase: "pending", error, updatedAt: new Date().toISOString() } }); return null; };
       if (decision.kind === "plan" && decision.status === "approved") {
         try { await verifyPlanApproval({ taskFolder: loaded.source.folder!, runFolder, decision }, decision.plan?.revision); }
@@ -232,7 +232,21 @@ export function createDecisionStore(deps: { sources: (serverId: string) => Promi
       }
       if (!agent || agent.archivedAt || agent.status === "closed") return fail("The run's agent is unavailable or archived. Resume the task from its handoff.");
       if (agent.workspaceId !== decision.workspaceId) return fail("The run's agent moved to another workspace.");
-      if (agent.status !== "idle" || agent.activeTurn || agent.pendingPermissions.length) return fail("The agent is busy or waiting on a permission. Send the decision when it is idle.");
+      if (agent.status !== "idle" || agent.activeTurn || agent.pendingPermissions.length) return fail("The agent is busy or waiting on a permission. The saved decision will be sent when it is idle.");
+      if (automatic) {
+        const latest = await list(ref.serverId, Infinity);
+        if ([...latest.open, ...latest.recent].some(row => row.decision.taskId === decision.taskId && row.decision.requestedAt > decision.requestedAt)) return fail("A newer request supersedes this saved decision. Read the current request.");
+        if (decision.kind === "review" && decision.status === "approved") {
+          try {
+            if (!decision.candidate) return fail("The reviewed revision cannot be verified. Request a fresh review before resuming.");
+            const workspace = await paseo.workspaces.ref(decision.workspaceId).refresh();
+            if (!workspace?.workspaceDirectory || workspace.archivingAt) return fail("The reviewed workspace is unavailable.");
+            const { reviewCandidate } = await import("./merge");
+            const actual = await reviewCandidate(workspace.workspaceDirectory);
+            if (actual.head !== decision.candidate.head || actual.tree !== decision.candidate.tree) return fail("The code changed after this review. Request a fresh review before resuming.");
+          } catch (error) { return fail(error instanceof Error ? error.message : String(error)); }
+        }
+      }
       const next = { ...decision, resume: { phase: "sending" as const, error: null, updatedAt: new Date().toISOString() } };
       await writeDecision(loaded, next);
       return { decision: next, findings: loaded.findings };
@@ -294,5 +308,26 @@ export function createDecisionStore(deps: { sources: (serverId: string) => Promi
     return deliver(input, paseo);
   }
 
-  return { list, plan, resolve, resend };
+  async function retryPending(serverId: string, paseo: PaseoApi, agentId?: string) {
+    const records = await list(serverId, Infinity);
+    const all = [...records.open, ...records.recent];
+    const delivered: DecisionEntry[] = [];
+    for (const entry of records.recent) {
+      const d = entry.decision;
+      if (d.serverId !== serverId || d.resume?.phase !== "pending" || !d.agentId || agentId && d.agentId !== agentId) continue;
+      // Newer requests supersede an older worker instruction, including requests in another run.
+      if (all.some(row => row.decision.taskId === d.taskId && row.decision.requestedAt > d.requestedAt)) continue;
+      const source = (await deps.sources(serverId)).find(row => row.task.taskId === d.taskId);
+      if (!source || ["delivered", "closed"].includes(source.task.status)) continue;
+      // An offline or removed worker must not starve other saved decisions.
+      const agent = await paseo.agents.ref(d.agentId).refresh().then(result => result?.agent).catch(() => null);
+      if (!agent || agent.status !== "idle" || agent.activeTurn || agent.pendingPermissions.length || agent.archivedAt || agent.workspaceId !== d.workspaceId) continue;
+      // deliver re-reads under the run lock, checks plan version and persists intent before sending.
+      // `sending` is intentionally never eligible, even after a restart or lost acknowledgement.
+      delivered.push(await deliver(d, paseo, true));
+    }
+    return delivered;
+  }
+
+  return { list, plan, resolve, resend, retryPending };
 }
