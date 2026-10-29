@@ -87,6 +87,7 @@ export const createTask = defineRpc({
     workspaceId: z.string().min(1),
     title: z.string().trim().min(1).max(200).regex(/^[^\r\n]+$/),
     acceptanceCriteria: z.string().trim().min(1).max(4000),
+    requestId: z.string().uuid().optional(),
   }),
   output: taskSchema,
 });

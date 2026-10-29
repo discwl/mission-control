@@ -52,6 +52,35 @@ async function fixture(t) {
   return { base, vault, repo, folder, run };
 }
 
+test("pipeline checkpoints require a versioned approved plan, bind actual reports and reject self review before writing", async t => {
+  const { base, folder, run } = await fixture(t);
+  const implementer = "11111111-1111-4111-8111-111111111111"; const reviewer = "22222222-2222-4222-8222-222222222222";
+  const started = run("start", ["--agent", implementer]); assert.equal(started.status, 0, started.stderr);
+  const runId = JSON.parse(started.stdout).run.runId; const runFolder = join(folder, "runs", runId);
+  const report = join(runFolder, "implementation-proof.md"); await writeFile(report, "Inspected the saved implementation against the agreed scope.\n");
+  const file = join(base, "checkpoint-input.json");
+  const payload = { stage: "execute", verdict: "pass", scope: "approved", summary: "The agreed implementation is saved.", evidence: [report] };
+  await writeFile(file, JSON.stringify(payload));
+  const checkpoint = agent => run("checkpoint", ["--run", runId, "--agent", agent, "--input", file]);
+  assert.match(checkpoint(implementer).stderr, /plan approval is required/);
+  const proposalFile = join(base, "plan-input.json");
+  await writeFile(proposalFile, JSON.stringify({ kind: "plan", question: "Approve this plan?", summary: "A controlled test plan.", plain: { built: "Prevent new full discounts while preserving existing orders.", recommendation: { action: "accept", reason: "The change is small and testable." } }, planBrief: {
+    goal: "Prevent new full discounts.", before: "A full discount can be added.", after: "A full discount is refused with a clear explanation.", included: ["Prevention for new changes."], deferred: ["Existing orders are unchanged."], scopeChange: "None.", affected: ["People entering orders."], approach: ["Check the value before saving."], successChecks: ["A full discount is refused."], risks: ["Existing orders must remain untouched."], authorization: "Build and check the described prevention change.", changesSincePrevious: [],
+  } }));
+  const requested = run("request-decision", ["--run", runId, "--agent", implementer, "--input", proposalFile]); assert.equal(requested.status, 0, requested.stderr);
+  const d = JSON.parse(requested.stdout).decision; const approved = { ...d, status: "approved" }; delete approved.resume;
+  await writeFile(join(runFolder, "decisions", `${d.decisionId}.md`), record(approved, "Approved in this disposable fixture only."));
+  const completed = checkpoint(implementer); assert.equal(completed.status, 0, completed.stderr);
+  const saved = JSON.parse(completed.stdout).checkpoint; assert.equal(saved.planRevision, d.plan.revision); assert.equal(saved.evidence[0].path, "implementation-proof.md"); assert.equal(saved.agentId, implementer);
+  const before = await readFile(join(runFolder, "run.md"), "utf8");
+  await writeFile(file, JSON.stringify({ ...payload, stage: "review" }));
+  const refused = checkpoint(implementer); assert.notEqual(refused.status, 0); assert.match(refused.stderr, /different agent/);
+  assert.equal(await readFile(join(runFolder, "run.md"), "utf8"), before, "a refused self review does not record completed review evidence");
+  const freshReview = checkpoint(reviewer); assert.equal(freshReview.status, 0, freshReview.stderr);
+  await writeFile(join(folder, "plan.md"), "# Plan\n\nChanged scope.\n");
+  assert.match(checkpoint(reviewer).stderr, /plan changed|Plan is not ready/i);
+});
+
 // Execute the real adapter against controlled client boundaries; no daemon or label files are touched.
 const labelSource = await readFile(cli, "utf8");
 const labelStart = labelSource.indexOf("const workspaceStatusColors =");

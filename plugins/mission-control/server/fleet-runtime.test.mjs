@@ -13,6 +13,7 @@ const directory = require("./fleet-host.ts");
 const bindings = require("./orchestrator.ts");
 const names = require("./agent-names.ts");
 const { registerFleet } = require("./fleet-runtime.ts");
+const { createFleetStore } = require("./fleet-store.ts");
 const { readCompatibleFleet } = require("./fleet-compat.ts");
 const at = "2026-10-26T12:00:00Z";
 const raw = (id, workspaceId, labels = {}) => ({ id, name: id, title: id, workspaceId, labels, status: "idle", archivedAt: null, updatedAt: at });
@@ -41,9 +42,12 @@ test("fleet RPCs discover setup-created coordinators and empty host folders; enr
   await assert.rejects(handlers.get("orchestrator.queue.set")({ coordinatorId: "coordinator", remoteServerId: "remote", taskId: "unowned", enabled: true, priority: 5, expectedRevision: snapshot.state.revision }), /not linked/);
   const enabled = await configure(input); assert.equal(enabled.coordinators[0].enabled, true);
   await assert.rejects(configure(input), /changed/);
+  const withRunner = await createFleetStore().update(state => state.pipelines.push({ id: "11111111-1111-4111-8111-111111111111", coordinatorId: "coordinator", remoteServerId: "remote", taskId: "task_a", title: "Disposable runner", intake: null, mode: "running", stage: "execute", runId: null, message: "Ready", updatedAt: at, repairs: 0, repairIds: [], lastDispatch: null, lastSentAt: null, date: "", wakeups: 0, pending: null }));
+  const paused = await configure({ ...input, enabled: false, expectedRevision: withRunner.revision }); assert.equal(paused.pipelines[0].mode, "paused", "pausing a coordinator pauses its task runner too");
+  const resumed = await configure({ ...input, enabled: true, expectedRevision: paused.revision }); assert.equal(resumed.pipelines[0].mode, "running");
   await hooks.get("agent.turn_ended")({ agent: { id: "coordinator" }, outcome: { kind: "canceled", reason: "user" } });
   snapshot = await handlers.get("orchestrator.fleet.read")({ refresh: true });
-  assert.equal(snapshot.state.coordinators[0].enabled, false); assert.ok(snapshot.state.stoppedAgentIds.includes("coordinator"));
+  assert.equal(snapshot.state.coordinators[0].enabled, false); assert.ok(snapshot.state.stoppedAgentIds.includes("coordinator")); assert.equal(snapshot.state.pipelines[0].mode, "paused");
   await assert.rejects(handlers.get("orchestrator.host.snapshot")({ serverId: "another" }, { paseo: {} }), /different host/);
 });
 

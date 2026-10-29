@@ -191,14 +191,15 @@ export async function listTaskRecords(serverId: string, workspaceId: string): Pr
 }
 
 export async function createTaskRecord(
-  input: { serverId: string; workspaceId: string; title: string; acceptanceCriteria: string; ticket?: Ticket },
+  input: { serverId: string; workspaceId: string; title: string; acceptanceCriteria: string; ticket?: Ticket; requestId?: string },
   projectId: string,
 ): Promise<TaskRecord> {
   const { directory, hostId } = await taskLocation(input.serverId);
   const now = new Date().toISOString();
+  if (input.requestId && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(input.requestId)) throw new Error("Invalid task intake request ID.");
   const task = taskSchema.parse({
     schemaVersion: 1,
-    taskId: `task_${randomUUID()}`,
+    taskId: `task_${input.requestId?.toLowerCase() ?? randomUUID()}`,
     hostId,
     projectId,
     title: input.title.trim(),
@@ -211,7 +212,16 @@ export async function createTaskRecord(
     ...(input.ticket ? { ticket: input.ticket } : {}),
   });
   const folder = join(directory, task.taskId);
-  await mkdir(folder);
+  try { await mkdir(folder); }
+  catch (error) {
+    if (!input.requestId || (error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    const actual = await realpath(folder); const file = await realpath(join(actual, "task.md"));
+    const rel = relative(directory, actual); const fileRel = relative(actual, file);
+    if (rel !== task.taskId || fileRel !== "task.md") throw new Error("Task intake path does not match its request.");
+    const existing = parseTask(await readFile(file, "utf8"));
+    if (existing.taskId !== task.taskId || existing.hostId !== hostId || existing.projectId !== projectId || existing.title !== task.title || existing.acceptanceCriteria !== task.acceptanceCriteria || !existing.assignments.some(item => item.serverId === input.serverId && item.workspaceId === input.workspaceId)) throw new Error("This intake request ID already belongs to different task details. Inspect the existing task.");
+    return existing;
+  }
   await writeFile(join(folder, "status.md"), `# Status log\n\nCreated ${now}. Initial state: inbox. See task.md for the current state.\n`, { flag: "wx" });
   await writeFile(join(folder, "notes.md"), "# Notes\n\n", { flag: "wx" });
   await mkdir(join(folder, "attachments"));

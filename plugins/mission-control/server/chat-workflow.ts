@@ -25,6 +25,9 @@ import { resolveCurrentChatReview } from "./chat-review";
 
 // This RPC is a human UI/connector entry point, not an agent tool. In 0.13.2 timeline user
 // messages do not identify their transport, so we deliberately do not scrape them for consent.
+import { createFleetStore } from "./fleet-store";
+import { PIPELINE_CHAT_HELP } from "./chat-pipeline";
+
 export function registerChatWorkflow(server: PluginServerContext, deps: { decisions: ReturnType<typeof createDecisionStore>; pullRequests: ReturnType<typeof createPullRequestService>; questions: ReturnType<typeof createQuestionStore> }) {
   const offers = createChatActions(join(process.env.PASEO_HOME?.trim() || join(homedir(), ".paseo"), "plugin-data", "mission-control", "chat-actions.json"));
   const links = createOrchestratorWorkStore();
@@ -56,7 +59,7 @@ export function registerChatWorkflow(server: PluginServerContext, deps: { decisi
     };
     {
       const command = text.trim();
-      if (/^(help|\?)$/i.test(command)) return { text: `${CHAT_HELP}\nreview details <ticket or task ID> — open the full technical report` };
+      if (/^(help|\?)$/i.test(command)) return { text: `${CHAT_HELP}\nreview details <ticket or task ID> — open the full technical report\n${PIPELINE_CHAT_HELP}` };
       const management = await manageChatCommand(command, { local, target, agentId, label, orchestrator: Boolean(binding) });
       if (management) return management;
       if (/^(yes\b|approve\b|accept\b|request changes\b|changes:|change the plan:|stop:|answer:|open draft pr\b)/i.test(command)) {
@@ -150,15 +153,17 @@ export function registerChatWorkflow(server: PluginServerContext, deps: { decisi
     if (!binding) return { entries: [] };
     const target = binding.serverId;
     const owned = await links.list({ serverId: local, agentId: input.agentId, remoteServerId: target });
-    if (!owned.length) return { entries: [] };
+    const pipelines = (await createFleetStore().read()).pipelines.filter(row => row.coordinatorId === input.agentId && row.remoteServerId === target && !["done", "stopped"].includes(row.mode));
+    if (!owned.length && !pipelines.length) return { entries: [] };
     const decisions = listDecisions.output.parse(await invokeChatHost(target, listDecisions.name, { serverId: target }));
     const waiting = listWaiting.output.parse(await invokeChatHost(target, listWaiting.name, { serverId: target }));
-    const scoped = (taskId: string, worker: string | null) => owned.some(link => link.taskId === taskId || worker && link.remoteAgentId === worker);
+    const scoped = (taskId: string, worker: string | null) => pipelines.some(row => row.taskId === taskId) || owned.some(link => link.taskId === taskId || worker && link.remoteAgentId === worker);
     const requests = [
+      ...pipelines.filter(row => row.mode === "ready" && !row.pending).map(row => ({ id: `${target}:pipeline:${row.id}:draft:${row.lastDispatch}`, command: `draft PR ${row.taskId}` })),
       ...decisions.open.filter(entry => scoped(entry.decision.taskId, entry.decision.agentId)).map(entry => ({ id: `${target}:${entry.decision.decisionId}:${entry.revision}`, command: `${entry.decision.kind} ${entry.decision.decisionId}` })),
       ...waiting.questions.filter(entry => entry.question.status === "open" && scoped(entry.question.taskId, entry.question.agentId)).map(entry => ({ id: `${target}:${entry.question.questionId}:${entry.question.askedAt}`, command: `question ${entry.question.questionId}` })),
     ];
-    const entries: RpcOutput<typeof chatInbox>["entries"] = [];
+    const entries: RpcOutput<typeof chatInbox>["entries"] = pipelines.filter(row => row.mode === "blocked").map(row => ({ id: `pipeline:${row.id}:blocked:${row.updatedAt}`, text: `${binding.label} · ${row.title}\nTask runner needs you\n${row.message}\nOpen Orchestrator → Run to draft PR to inspect it.\nStatus in chat: pipeline ${row.taskId}` }));
     for (const request of requests.slice(0, 30)) {
       const reply = await handle({ ...input, text: request.command }, { paseo });
       entries.push({ id: `${request.id}:${reply.offerId ?? "unavailable"}`, text: reply.text, ...(reply.offerId ? { offerId: reply.offerId } : {}) });

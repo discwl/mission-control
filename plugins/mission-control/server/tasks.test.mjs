@@ -40,6 +40,20 @@ async function taskStore(t) {
   return { vault, tasks: require(join(runtime, "server", "tasks.js")), shared: require(join(runtime, "shared", "tasks.js")) };
 }
 
+test("task intake retries keep one exact task and refuse conflicting identities", async t => {
+  const { tasks } = await taskStore(t);
+  const requestId = "abcdefab-0000-4000-8000-000000000001";
+  const input = { serverId, workspaceId, title: "Runner intake", acceptanceCriteria: "One task survives a lost reply.", requestId };
+  const first = await tasks.createTaskRecord(input, "prj_test");
+  const retry = await tasks.createTaskRecord(input, "prj_test");
+  assert.equal(first.taskId, `task_${requestId}`); assert.deepEqual(retry, first);
+  assert.equal((await tasks.listTaskRecords(serverId, workspaceId)).tasks.length, 1);
+  await assert.rejects(tasks.createTaskRecord({ ...input, title: "Changed scope" }, "prj_test"), /different task details/);
+  await assert.rejects(tasks.createTaskRecord(input, "other_project"), /different task details/);
+  await assert.rejects(tasks.createTaskRecord({ ...input, workspaceId: "another" }, "prj_test"), /different task details/);
+  await assert.rejects(tasks.createTaskRecord({ ...input, requestId: "../outside" }, "prj_test"), /Invalid task intake/);
+});
+
 test("an invalid task file is skipped and named, and the other tasks still load", async t => {
   const { vault, tasks, shared } = await taskStore(t);
   const good = "task_11111111-0000-4000-8000-000000000000";

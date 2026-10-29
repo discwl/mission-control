@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { fleetStateSchema, type FleetState, type FleetEvent } from "../shared/fleet";
 
 export const fleetStateFile = () => join(process.env.PASEO_HOME?.trim() || join(homedir(), ".paseo"), "plugin-data", "mission-control", "fleet.json");
-export const emptyFleetState = (): FleetState => ({ schemaVersion: 1, revision: 0, paused: false, coordinators: [], queue: [], events: [], stoppedAgentIds: [], seen: {} });
+export const emptyFleetState = (): FleetState => ({ schemaVersion: 1, revision: 0, paused: false, coordinators: [], queue: [], events: [], stoppedAgentIds: [], seen: {}, pipelines: [] });
 export function fleetEvent(state: FleetState, event: Omit<FleetEvent, "id" | "at">, now = new Date().toISOString()) {
   state.events.unshift({ ...event, id: randomUUID(), at: now });
   state.events = state.events.slice(0, 500);

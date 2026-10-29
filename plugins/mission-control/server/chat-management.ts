@@ -2,7 +2,10 @@ import { configureSupervisor, readFleet, readFleetHost, setFleetQueue } from "..
 import { setOrchestratorWork } from "../shared/orchestrator-work";
 import { invokeChatHost } from "./chat-transport";
 
+import { managePipelineChat } from "./chat-pipeline";
+
 export async function manageChatCommand(command: string, context: { local: string; target: string; agentId: string; label: string; orchestrator: boolean }): Promise<{ text: string } | null> {
+  const pipeline = await managePipelineChat(command, context); if (pipeline) return pipeline;
   const adopt = /^adopt\s+(task_[a-f0-9-]+)(?:\s+worker\s+(\S+))?$/i.exec(command);
   const queue = /^(queue|unqueue)\s+(task_[a-f0-9-]+)(?:\s+priority\s+([0-9]))?$/i.exec(command);
   const heartbeat = /^(?:(pause|resume) )?heartbeat$/i.exec(command);
@@ -27,12 +30,13 @@ export async function manageChatCommand(command: string, context: { local: strin
   if (!coordinator) throw new Error("This coordinator no longer belongs to that host folder.");
   const current = fleet.state.coordinators.find(item => item.agentId === agentId);
   if (heartbeat) {
-    if (!heartbeat[1]) return { text: `${label} · Heartbeat\n${current?.enabled && !fleet.state.paused ? "Enabled" : "Paused or not enrolled"}\n${current?.message ?? "Not enrolled"}\nInterval: ${current?.intervalMinutes ?? 5} minutes\nWakeups today: ${current?.wakeups ?? 0}/${current?.maxWakeupsPerDay ?? 24}\nOnly explicitly queued tasks can advance. Plan/review decisions and external publication still wait for you.` };
+    const runner = fleet.state.pipelines.find(row => row.coordinatorId === agentId && row.remoteServerId === target && !["done", "stopped"].includes(row.mode));
+    if (!heartbeat[1]) return { text: `${label} · Heartbeat\n${!fleet.state.paused && (current?.enabled || runner && ["running", "waiting", "ready"].includes(runner.mode)) ? "Enabled" : "Paused or not enrolled"}\n${runner ? `Task runner: ${runner.title} · ${runner.stage} · ${runner.mode}\n${runner.message}\n` : ""}${current?.message ?? "General queue not enrolled"}\nInterval: ${current?.intervalMinutes ?? 5} minutes\nWakeups today: ${current?.wakeups ?? 0}/${current?.maxWakeupsPerDay ?? 24}\nOnly explicitly queued tasks can advance. Plan/review decisions and external publication still wait for you.` };
     const enabled = heartbeat[1].toLowerCase() === "resume";
     if (enabled && fleet.state.paused) return { text: "The whole fleet is paused. Resume the fleet in Orchestrator first; this command will not resume other coordinators." };
     const input = configureSupervisor.input.parse({ agentId, remoteServerId: target, enabled, intervalMinutes: current?.intervalMinutes ?? 5, maxWakeupsPerDay: current?.maxWakeupsPerDay ?? 24, expectedRevision: fleet.state.revision });
     configureSupervisor.output.parse(await invokeChatHost(local, configureSupervisor.name, input));
-    return { text: `${label} · Heartbeat ${enabled ? "resumed for this coordinator's queued work" : "paused for this coordinator"}. Running turns are not canceled. Approval requirements are unchanged.` };
+    return { text: `${label} · Heartbeat ${enabled ? "resumed for this coordinator's queued work" : "paused for this coordinator"}${runner ? "; its task runner was checked too" : ""}. Running turns are not canceled. Approval requirements are unchanged.` };
   }
   const task = fleet.hosts.find(host => host.serverId === target)?.snapshot?.tasks.find(entry => entry.task.taskId === queue![2]);
   if (!task) throw new Error("Task is unavailable on this host.");

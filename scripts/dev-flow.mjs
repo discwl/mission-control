@@ -296,6 +296,38 @@ async function loadRun(bound, folder, runId) {
   return current;
 }
 
+import { preparePipelineCheckpoint, savePipelineCheckpoint, readPipelineCheckpoints } from "../plugins/mission-control/server/pipeline-records.mjs";
+
+async function checkpoint(args) {
+  const bound = await binding(args);
+  const folder = await runFolder(bound.folder, required(args.run, "--run"));
+  const input = await readInput(args); const agentId = agentIdOf(args);
+  if (!agentId) throw new Error("A checkpoint needs --agent for its actual author.");
+  return withRunLock(folder, async () => {
+    const current = await loadRun(bound, folder, args.run);
+    const directory = join(folder, "decisions");
+    const names = await readdir(directory).catch(error => { if (error.code === "ENOENT") return []; throw error; });
+    const plans = (await Promise.all(names.filter(name => /^decision_[a-f0-9-]+\.md$/.test(name)).map(async name => parseRecord(await readFile(join(directory, name), "utf8"), "Decision"))))
+      .filter(decision => decision.kind === "plan" && decision.runId === current.runId && decision.taskId === bound.task.taskId).sort((a, b) => b.requestedAt.localeCompare(a.requestedAt));
+    const plan = plans[0];
+    if (plan?.status !== "approved" || !plan.plan || (plan.resume && plan.resume.phase !== "sent")) throw new Error("A current delivered plan approval is required for a pipeline checkpoint.");
+    const { verifyPlanApproval } = await import("../plugins/mission-control/server/plan-snapshots.mjs");
+    await verifyPlanApproval({ taskFolder: bound.folder, runFolder: folder, decision: plan }, plan.plan.revision);
+    const identity = { taskId: bound.task.taskId, runId: current.runId, serverId: bound.host.serverId, workspaceId: bound.workspaceId };
+    const previous = await readPipelineCheckpoints(folder, identity);
+    const implementationAgentId = ["execute", "fix"].includes(input.stage) ? agentId : previous.find(entry => ["execute", "fix"].includes(entry.stage))?.agentId ?? current.agentId;
+    if (!implementationAgentId) throw new Error("Record implementation evidence before validation or review.");
+    const candidate = reviewedCandidate(bound.cwd, bound.repository, bound.checkoutRoot);
+    const prepared = await preparePipelineCheckpoint(folder, { ...identity, agentId, implementationAgentId, candidate }, { ...input, planRevision: plan.plan.revision });
+    await appendEvent(bound, folder, current, { stage: input.stage, outcome: input.verdict === "pass" && input.scope === "approved" ? "completed" : "blocked", summary: input.summary,
+      nextAction: input.verdict === "pass" ? "Continue the pipeline from its saved checkpoint." : "Inspect this checkpoint before further work.", evidence: input.evidence }, agentId);
+    const after = reviewedCandidate(bound.cwd, bound.repository, bound.checkoutRoot);
+    if (candidate.head !== after.head || candidate.tree !== after.tree) throw new Error("Code changed while recording the stage; no checkpoint was saved.");
+    const saved = await savePipelineCheckpoint(folder, prepared);
+    return { checkpoint: saved };
+  });
+}
+
 async function record(args) {
   const bound = await binding(args);
   const folder = await runFolder(bound.folder, required(args.run, "--run"));
@@ -718,7 +750,7 @@ async function workspaceLabel(args) {
   } finally { await client.close(); }
 }
 
-const help = `Usage: dev-flow.mjs context|start|record|request-decision|ask|decision|finding|workspace-label --task ID --server ID --workspace ID [--run ID] [--input JSON] [--decision ID] [--finding ID --status STATUS --evidence TEXT] [--agent ID] [--cwd PATH]
+const help = `Usage: dev-flow.mjs context|start|record|checkpoint|request-decision|ask|decision|finding|workspace-label --task ID --server ID --workspace ID [--run ID] [--input JSON] [--decision ID] [--finding ID --status STATUS --evidence TEXT] [--agent ID] [--cwd PATH]
 
 workspace-label [--action get|assign|remove|status] [--label NAME] [--color COLOR] [--reason TEXT] [--url ws://host:port/ws]
   get reads the live labels, catalog and linked tasks. assign creates a missing label and assigns it;
@@ -727,6 +759,13 @@ workspace-label [--action get|assign|remove|status] [--label NAME] [--color COLO
   All changes verify the exact live host/project/checkout and read back assignments. A write timeout
   is unconfirmed: read get before retrying. Uses a capability-checked internal client API; no private
   Paseo files are written. Labels never alter task status or grant approval. See docs/agent-workflow.md.
+
+checkpoint --run ID --agent ID --input JSON records a revision-bound pipeline result:
+  { "stage": "execute" | "fix" | "validate" | "review", "verdict": "pass" | "repair" | "blocked",
+    "scope": "approved" | "needs_plan", "summary": "<concise actual outcome>", "evidence": ["<report inside this run>"] }
+A current versioned approved plan is required. Evidence files are hashed; changing them invalidates
+this checkpoint. Use unique report names. A fresh independent reviewer must use its own agent ID.
+This command records evidence you actually produced; it does not run checks or approve anything.
 
 request-decision --input is a JSON file:
   { "kind": "plan" | "review",
@@ -783,7 +822,7 @@ async function main() {
     return;
   }
   const args = options(argv);
-  const commands = { context, start, record, "request-decision": requestDecision, ask, decision: showDecision, finding: updateFinding, "workspace-label": workspaceLabel };
+  const commands = { context, start, record, checkpoint, "request-decision": requestDecision, ask, decision: showDecision, finding: updateFinding, "workspace-label": workspaceLabel };
   const result = Object.hasOwn(commands, command) ? await commands[command](args) : null;
   if (!result) throw new Error(`Unknown command: ${command}`);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

@@ -10,6 +10,8 @@ import { readOrchestratorBindings } from "./orchestrator";
 import { createOrchestratorWorkStore } from "./orchestrator-work";
 import { daemonServerId } from "./agent-names";
 
+import { registerPipelineRuntime } from "./pipeline-runtime";
+
 export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostDeps, "stoppedAgents">) {
   const store = createFleetStore(); const links = createOrchestratorWorkStore();
   let disposed = false; let cached: FleetSnapshot | null = null; let loading: Promise<FleetSnapshot> | null = null;
@@ -63,7 +65,16 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
     }).finally(() => { loading = null; });
     return loading;
   }
-  const supervisor = createFleetSupervisor({ store, snapshot: () => snapshot(true),
+  const pipeline = registerPipelineRuntime(server, store, hostDeps, () => snapshot(true), (id, prompt, requestId) => withFleetConnection(async paseo => {
+    const entry = await paseo.agents.ref(id).refresh();
+    if (!entry || entry.agent.status !== "idle" || entry.agent.pendingPermissions?.length || entry.agent.archivedAt) throw new Error("Coordinator changed before send.");
+    await paseo.agents.ref(id).send(prompt, { messageId: requestId, activeTurnBehavior: "steer" });
+  }), () => { cached = null; });
+  const supervisor = createFleetSupervisor({ store, snapshot: async () => {
+    const current = await snapshot(true);
+    const owned = new Set(current.state.pipelines.filter(row => !["stopped", "done"].includes(row.mode)).map(row => row.remoteServerId));
+    return { ...current, state: { ...current.state, queue: current.state.queue.filter(item => !owned.has(item.remoteServerId)) } };
+  },
     coordinator: id => withFleetConnection(async paseo => { const entry = await paseo.agents.ref(id).refresh(); return entry ? toFleetAgent(entry.agent) : null; }),
     revalidate: (coordinator, taskId, fingerprint) => withFleetConnection(async (paseo, client, serverId) => {
       const binding = await readOrchestratorBindings(paseo, [coordinator.workspaceId], { localServerId: async () => serverId });
@@ -81,7 +92,7 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
   });
   async function check() {
     if (disposed) return;
-    try { await supervisor.tick(); heartbeat = { checkedAt: new Date().toISOString(), error: null }; }
+    try { await pipeline.tick(); await supervisor.tick(); heartbeat = { checkedAt: new Date().toISOString(), error: null }; }
     catch (error) { heartbeat = { checkedAt: new Date().toISOString(), error: hideSecrets(error instanceof Error ? error.message : String(error)) }; console.warn(`[mission-control] orchestrator check stopped: ${heartbeat.error}`); }
   }
   server.handle(readFleet, async ({ refresh }) => ({ ...await snapshot(refresh), heartbeat }));
@@ -94,10 +105,14 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
     if (input.enabled && (!remote?.snapshot?.complete || remote.error || remote.snapshot.warnings.length)) throw new Error("A complete current fleet snapshot is required. Connect the host and update its Mission Control plugin before enabling automatic work.");
     const result = await store.update(state => {
       let entry = state.coordinators.find(item => item.agentId === input.agentId);
-      if (entry?.pending && input.enabled) throw new Error("Reconcile the uncertain dispatch before enabling this coordinator.");
+      if (entry?.pending && input.enabled || input.enabled && state.pipelines.some(row => row.coordinatorId === input.agentId && row.pending)) throw new Error("Reconcile the uncertain dispatch before enabling this coordinator.");
       if (!entry) { entry = supervisorEntrySchema.parse({ agentId: input.agentId, remoteServerId: input.remoteServerId }); state.coordinators.push(entry); }
       Object.assign(entry, { remoteServerId: input.remoteServerId, enabled: input.enabled, intervalMinutes: input.intervalMinutes, maxWakeupsPerDay: input.maxWakeupsPerDay, nextCheckAt: null,
         message: input.enabled ? "Enrolled. Only explicitly queued tasks can advance." : "Paused by you." });
+      for (const row of state.pipelines.filter(row => row.coordinatorId === input.agentId && row.remoteServerId === input.remoteServerId)) {
+        if (!input.enabled && ["running", "waiting", "ready"].includes(row.mode)) { row.mode = "paused"; row.message = "Heartbeat paused for this coordinator. Future task stages are paused too."; row.updatedAt = new Date().toISOString(); }
+        else if (input.enabled && row.mode === "paused") { row.mode = "running"; row.runId = null; row.message = "Heartbeat resumed. Rechecking saved stage evidence."; row.updatedAt = new Date().toISOString(); }
+      }
       if (input.enabled) state.stoppedAgentIds = state.stoppedAgentIds.filter(id => id !== input.agentId);
       fleetEvent(state, { coordinatorId: input.agentId, remoteServerId: input.remoteServerId, taskId: null, kind: "settings", message: entry.message });
     }, input.expectedRevision);
@@ -129,6 +144,7 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
     if (disposed) return;
     if (event.outcome.kind === "canceled") await store.update(state => {
       state.stoppedAgentIds = [...new Set([...state.stoppedAgentIds, event.agent.id])].slice(-2000);
+      for (const row of state.pipelines.filter(item => item.coordinatorId === event.agent.id && !["done", "stopped"].includes(item.mode))) { row.mode = "paused"; row.message = "You stopped this coordinator. Future runner stages are paused."; row.updatedAt = new Date().toISOString(); }
       const entry = state.coordinators.find(entry => entry.agentId === event.agent.id);
       if (entry) { entry.enabled = false; entry.message = "You stopped this coordinator. Automatic wake-ups are paused.";
         fleetEvent(state, { coordinatorId: entry.agentId, remoteServerId: entry.remoteServerId, taskId: null, kind: "blocked", message: entry.message }); }
@@ -141,5 +157,5 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
     cached = null;
   });
   const timer = setInterval(() => void check(), 30_000); timer.unref?.();
-  return () => { disposed = true; clearInterval(timer); supervisor.stop(); cached = null; };
+  return () => { disposed = true; clearInterval(timer); pipeline.stop(); supervisor.stop(); cached = null; };
 }
