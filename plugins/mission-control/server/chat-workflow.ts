@@ -1,3 +1,4 @@
+import { chatNativeCommand } from "../shared/chat-workflow";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import type { PaseoApi } from "@getpaseo/client";
@@ -132,6 +133,11 @@ export function registerChatWorkflow(server: PluginServerContext, deps: { decisi
     }
   };
   server.handle(chatCommand, handle);
+  server.handle(chatNativeCommand, async (input, context) => {
+    const reply = await handle(input, context);
+    await context.paseo.agents.ref(input.agentId).timeline.append({ type: "plugin", id: `mc-chat:${Date.now()}:${Math.random().toString(36).slice(2)}`, kind: "chat-workflow", version: 1, data: { text: reply.text, ...(reply.offerId ? { offerId: reply.offerId } : {}) } });
+    return reply;
+  });
   const inbox = async (input: RpcInput<typeof chatInbox>, { paseo }: { paseo: PaseoApi }): Promise<RpcOutput<typeof chatInbox>> => {
     const local = await daemonServerId();
     const agent = (await paseo.agents.ref(input.agentId).refresh())?.agent;

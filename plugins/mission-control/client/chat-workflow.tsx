@@ -1,7 +1,7 @@
 import type { PluginClientContext, PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import { Text, View } from "react-native";
 import { z } from "zod";
-import { chatCommand } from "../shared/chat-workflow";
+import { chatNativeCommand } from "../shared/chat-workflow";
 
 const schema = z.object({ text: z.string(), offerId: z.string().optional() });
 function ChatReceipt({ item, theme }: PluginTimelineItemProps<z.infer<typeof schema>>) {
@@ -13,13 +13,22 @@ function ChatReceipt({ item, theme }: PluginTimelineItemProps<z.infer<typeof sch
 }
 export function registerChatClient(client: PluginClientContext) {
   const removeRenderer = client.addTimelineRenderer({ kind: "chat-workflow", version: 1, schema, Component: ChatReceipt });
+  let failure = "";
+  const removeErrorScreen = client.addScreen({ id: "chat-request-error", title: "Mission Control request", Component: ({ theme }) => <View style={{ padding: 20, gap: 12 }}>
+    <Text accessibilityRole="alert" selectable style={{ color: theme.colors.foreground }}>{failure}</Text>
+    <Text style={{ color: theme.colors.foregroundMuted }}>Check the task and its receipt before repeating an action. A missing response can mean the action already completed.</Text>
+  </View> });
   const removeCommand = client.addSlashCommand({
     name: "mc", description: "Plans, reviews and draft PRs through Mission Control chat",
     argumentHint: "needs | plan <ticket> | yes approve <code> | draft PR <task ID>", context: "agent",
-    async onSubmit({ args, agent, paseo, rpc }) {
-      const result = await rpc(chatCommand, { agentId: agent.id, text: args.trim() || "help" });
-      await paseo.agents.ref(agent.id).timeline.append({ type: "plugin", id: `mc-chat:${Date.now()}:${Math.random().toString(36).slice(2)}`, kind: "chat-workflow", version: 1, data: { text: result.text, ...(result.offerId ? { offerId: result.offerId } : {}) } });
+    async onSubmit({ args, agent, rpc }) {
+      try {
+        await rpc(chatNativeCommand, { agentId: agent.id, text: args.trim() || "help" });
+      } catch (error) {
+        failure = `Mission Control could not confirm this request. ${error instanceof Error ? error.message : String(error)}`;
+        client.openScreen({ screenId: "chat-request-error" });
+      }
     },
   });
-  return () => { removeCommand(); removeRenderer(); };
+  return () => { removeCommand(); removeRenderer(); removeErrorScreen(); };
 }
