@@ -60,6 +60,20 @@ export function registerChatWorkflow(server: PluginServerContext, deps: { decisi
     {
       const command = text.trim();
       if (/^(help|\?)$/i.test(command)) return { text: `${CHAT_HELP}\nreview details <ticket or task ID> — open the full technical report\n${PIPELINE_CHAT_HELP}` };
+      const detailRequest = /^proposal details ([a-f0-9]{10})$/i.exec(command);
+      if (detailRequest) {
+        const offer = await offers.details(owner, detailRequest[1]);
+        if (!offer || offer.target !== target) return { text: "This proposal expired or was replaced. Show a fresh plan/review; nothing was approved." };
+        if (offer.state !== "pending") return { text: offer.receipt ?? "This action may already have run. Check its task before retrying.", offerId: offer.id, state: offer.state, proposalKind: offer.kind };
+        let detail = offer.text;
+        if (offer.kind === "review") {
+          const decisions = await call(listDecisions, { serverId: target });
+          const entry = decisions.open.find(row => row.decision.decisionId === offer.input.decisionId && row.revision === offer.input.expectedRevision);
+          if (!entry) return { text: "This review changed or was resolved. Show the current review; nothing was approved." };
+          detail = chatReviewDetails(entry, label);
+        }
+        return { text: detail, offerId: offer.id, state: offer.state, proposalKind: offer.kind };
+      }
       const management = await manageChatCommand(command, { local, target, agentId, label, orchestrator: Boolean(binding) });
       if (management) return management;
       if (/^(yes\b|approve\b|accept\b|request changes\b|changes:|change the plan:|stop:|answer:|open draft pr\b)/i.test(command)) {
@@ -84,7 +98,7 @@ export function registerChatWorkflow(server: PluginServerContext, deps: { decisi
         if (!status.ready || !status.plan) return { text: `${label} · Draft PR is not ready.\n${status.checks.map(check => Object.values(check).filter(value => typeof value === "string").join(": ")).join("\n")}` };
         const plan = status.plan;
         const offer = await offers.prepare({ owner, target, title: plan.taskTitle, kind: "draft-pr", text: chatPullRequest(plan, label), input: { serverId: target, taskId: draft[1], fingerprint: plan.fingerprint, title: plan.title, body: plan.body, commitMessage: plan.commitMessage } });
-        return { text: `${offer.text}\n\nTo authorize these exact actions, reply: open draft PR ${offer.id}\n${chatLinks(target, plan.worktreeWorkspaceId)}`, offerId: offer.id, state: offer.state };
+        return { text: `${offer.text}\n\nTo authorize these exact actions, reply: open draft PR ${offer.id}\n${chatLinks(target, plan.worktreeWorkspaceId)}`, offerId: offer.id, state: offer.state, proposalKind: offer.kind };
       }
       const questionCommand = /^question\s+(.+)$/i.exec(command);
       if (questionCommand) {
@@ -94,7 +108,7 @@ export function registerChatWorkflow(server: PluginServerContext, deps: { decisi
         if (matches.length !== 1) return { text: matches.length ? `Several questions match. Choose a question ID:\n${matches.map(entry => `${entry.taskTitle}: ${entry.question.questionId}`).join("\n")}` : "No current question matches. Use ‘needs’ to see what is waiting." };
         const entry = matches[0], q = entry.question;
         const offer = await offers.prepare({ owner, target, title: entry.taskTitle, kind: "question", text: `${label} · ${entry.taskTitle}\n\n${q.question}`, input: { serverId: target, workspaceId: q.workspaceId, taskId: q.taskId, runId: q.runId, questionId: q.questionId } });
-        return { text: `${offer.text}\n\nReply: answer: <your answer>\nQuestion proposal ${offer.id}\n${chatLinks(target, q.workspaceId, q.agentId)}`, offerId: offer.id, state: offer.state };
+        return { text: `${offer.text}\n\nReply: answer: <your answer>\nQuestion proposal ${offer.id}\n${chatLinks(target, q.workspaceId, q.agentId)}`, offerId: offer.id, state: offer.state, proposalKind: offer.kind };
       }
       const refreshPlan = /^refresh plan\s+(.+)$/i.exec(command);
       const details = /^review details\s+(.+)$/i.exec(command);
@@ -135,7 +149,7 @@ export function registerChatWorkflow(server: PluginServerContext, deps: { decisi
         presentation = chatReview(entry, label);
       }
       const offer = await offers.prepare({ owner, target, title: entry.taskTitle, kind: d.kind, text: presentation, input: { ...ref, ...(d.candidate ? { expectedCandidate: d.candidate } : {}), changeFindingIds: entry.findings.filter(finding => finding.status === "open").map(finding => finding.findingId), ...(expectedPlanRevision ? { expectedPlanRevision } : {}) } });
-      return { text: `${offer.text}\n\nProposal ${offer.id}\nReply: yes approve ${offer.id}\nOr: request changes: <what to change>\nOr: stop: <reason>\n${chatLinks(target, d.workspaceId, d.agentId)}`, offerId: offer.id, state: offer.state };
+      return { text: `${offer.text}\n\nProposal ${offer.id}\nReply: yes approve ${offer.id}\nOr: request changes: <what to change>\nOr: stop: <reason>\n${chatLinks(target, d.workspaceId, d.agentId)}`, offerId: offer.id, state: offer.state, proposalKind: offer.kind };
     }
   };
   server.handle(chatCommand, handle);
@@ -166,7 +180,7 @@ export function registerChatWorkflow(server: PluginServerContext, deps: { decisi
     const entries: RpcOutput<typeof chatInbox>["entries"] = pipelines.filter(row => row.mode === "blocked").map(row => ({ id: `pipeline:${row.id}:blocked:${row.updatedAt}`, text: `${binding.label} · ${row.title}\nTask runner needs you\n${row.message}\nOpen Orchestrator → Run to draft PR to inspect it.\nStatus in chat: pipeline ${row.taskId}` }));
     for (const request of requests.slice(0, 30)) {
       const reply = await handle({ ...input, text: request.command }, { paseo });
-      entries.push({ id: `${request.id}:${reply.offerId ?? "unavailable"}`, text: reply.text, ...(reply.offerId ? { offerId: reply.offerId } : {}) });
+      entries.push({ id: `${request.id}:${reply.offerId ?? "unavailable"}`, text: reply.text, ...(reply.offerId ? { offerId: reply.offerId } : {}), ...(reply.proposalKind ? { proposalKind: reply.proposalKind } : {}) });
     }
     return { entries };
   };

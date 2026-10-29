@@ -4,13 +4,13 @@ import { z } from "zod";
 export const chatCommand = defineRpc({
   name: "chat.command",
   input: z.object({ agentId: z.string().min(1), conversationId: z.string().min(1).max(300).optional(), text: z.string().trim().min(1).max(4000), offerId: z.string().regex(/^[a-f0-9]{10}$/).optional() }),
-  output: z.object({ text: z.string(), offerId: z.string().optional(), state: z.enum(["pending", "executing", "complete", "uncertain"]).optional() }),
+  output: z.object({ text: z.string(), offerId: z.string().optional(), proposalKind: z.enum(["plan", "review", "question", "draft-pr"]).optional(), state: z.enum(["pending", "executing", "complete", "uncertain"]).optional() }),
 });
 
 export const chatInbox = defineRpc({
   name: "chat.inbox",
   input: z.object({ agentId: z.string().min(1), conversationId: z.string().min(1).max(300).optional() }),
-  output: z.object({ entries: z.array(z.object({ id: z.string(), text: z.string(), offerId: z.string().optional() })) }),
+  output: z.object({ entries: z.array(z.object({ id: z.string(), text: z.string(), offerId: z.string().optional(), proposalKind: z.enum(["plan", "review", "question", "draft-pr"]).optional() })) }),
 });
 
 // Native chat receipts must be appended by the plugin server session.

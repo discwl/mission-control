@@ -16,6 +16,11 @@ export function parseChatConsent(text: string, kind: ChatOffer["kind"], id: stri
   const value = text.trim();
   if (value.length > 2100) return null;
   if (kind === "question") { const answer = /^answer:\s*(\S[\s\S]*)$/i.exec(value.endsWith(` ${id}`) ? value.slice(0, -(id.length + 1)) : value); return answer ? { outcome: "answered" as const, note: answer[1] } : null; }
+  // Notes may span paragraphs; only standalone approval and publication phrases are consent.
+  const noteChanges = /^(?:change(?:s)? requested|request changes|change the plan|changes):\s*(\S[\s\S]*)$/i.exec(value);
+  if (noteChanges && kind !== "draft-pr") return { outcome: "changes_requested" as const, note: noteChanges[1] };
+  const noteStop = /^stop:\s*(\S[\s\S]*)$/i.exec(value);
+  if (noteStop && kind !== "draft-pr") return { outcome: "blocked" as const, note: noteStop[1] };
   if (value.includes("\n")) return null;
   const suffix = ` ${id}`;
   const normalized = (value.endsWith(suffix) ? value.slice(0, -suffix.length) : value).toLowerCase();
@@ -23,10 +28,6 @@ export function parseChatConsent(text: string, kind: ChatOffer["kind"], id: stri
   if (kind === "draft-pr" && value.toLowerCase() === `open draft pr ${id}`) return { outcome: "publish" as const, note: "" };
   const approval = /^approve:\s*(\S.*)$/i.exec(value);
   if (approval && kind !== "draft-pr") return { outcome: "approved" as const, note: approval[1] };
-  const changes = /^(?:change(?:s)? requested|request changes|change the plan|changes):\s*(\S.*)$/i.exec(value);
-  if (changes && kind !== "draft-pr") return { outcome: "changes_requested" as const, note: changes[1] };
-  const stop = /^stop:\s*(\S.*)$/i.exec(value);
-  if (stop && kind !== "draft-pr") return { outcome: "blocked" as const, note: stop[1] };
   return null;
 }
 
@@ -60,6 +61,7 @@ export function createChatActions(file: string, now = Date.now) {
         state.offers.push(offer); await save(state); return offer;
       });
     },
+    async details(owner: string, id: string): Promise<ChatOffer | undefined> { await chain; return (await load()).offers.find(x => x.owner === owner && x.id === id && x.expiresAt > now()); },
     async pending(owner: string): Promise<ChatOffer[]> { await chain; return (await load()).offers.filter(x => x.owner === owner && x.state === "pending" && x.expiresAt > now()); },
     answer(owner: string, text: string, execute: (offer: ChatOffer, consent: NonNullable<ReturnType<typeof parseChatConsent>>) => Promise<string>, offerId?: string): Promise<ChatAnswer> {
       return serialized(async () => {
