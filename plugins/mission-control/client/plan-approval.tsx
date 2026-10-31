@@ -31,29 +31,38 @@ export function PlanApprovalView({ entry, query, colors, fullDocument = false }:
   const [raw, setRaw] = useState(false);
   const plan = query.data, brief = plan?.brief, previous = plan?.previous;
   const changed = brief && previous?.brief ? planBriefFields.filter(field => field.key !== "changesSincePrevious" && JSON.stringify(brief[field.key as keyof PlanBrief]) !== JSON.stringify(previous.brief![field.key as keyof PlanBrief])) : [];
-  const body = { color: colors.foreground, fontSize: 13, lineHeight: 20 };
+  const body = { color: colors.foreground, fontSize: 14, lineHeight: 22 };
+  const groups = [
+    { title: "What will change", keys: ["goal", "before", "after"] },
+    { title: "Scope and boundaries", keys: ["included", "deferred", "scopeChange", "affected"] },
+    { title: "How it will be done", keys: ["approach"] },
+    { title: "Checks and risks", keys: ["successChecks", "risks"] },
+    { title: "What you are authorizing", keys: ["authorization"] },
+  ];
   return <View style={{ gap: 12, paddingVertical: 8 }}>
     <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 16, fontWeight: "700" }}>{entry.decision.status === "open" ? "Plan for your approval" : "Saved plan"}</Text>
     {query.isPending ? <Text style={{ color: colors.foregroundMuted }}>Loading the saved proposal…</Text> : null}
     {query.isError ? <View style={{ gap: 6 }}><Text accessibilityRole="alert" style={{ color: colors.statusWarning }}>The saved plan cannot be verified. Approval is unavailable; you can still request changes or stop.</Text><Text selectable style={{ color: colors.foregroundMuted, fontSize: 12 }}>{/unknown.*(rpc|method)|not.*registered|no.*handler|handler_not_found|doesn.t offer decisions\.plan/i.test(String(query.error)) ? "This host needs the Mission Control plan approval update. Older requests also need a fresh versioned proposal." : String(query.error)}</Text></View> : null}
     {plan?.warning ? <Text accessibilityRole="alert" style={{ color: colors.statusWarning }}>{plan.warning}</Text> : null}
     {brief ? <View style={{ gap: 12 }}>
-      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 14 }}>
-        {planBriefFields.filter(field => field.key !== "changesSincePrevious").map(field => {
+      {groups.map(group => <View key={group.title} style={{ gap: 14, paddingTop: 16, paddingBottom: 8, borderTopWidth: 1, borderTopColor: colors.border }}>
+        <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 16, fontWeight: "600" }}>{group.title}</Text>
+        {group.keys.map(key => {
+          const field = planBriefFields.find(field => field.key === key)!;
           const value = brief[field.key as keyof PlanBrief];
-          return <View key={field.key} style={{ flexBasis: 280, flexGrow: 1, flexShrink: 1, maxWidth: "100%", gap: 5, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 7, backgroundColor: colors.surface0 }}>
-            <Text accessibilityRole="header" style={{ color: colors.foregroundMuted, fontSize: 12, fontWeight: "700" }}>{field.label}</Text>
-            {Array.isArray(value) ? value.map((item, index) => <Text key={index} selectable style={body}>{field.key === "approach" ? `${index + 1}.` : "•"} {item}</Text>) : <Text selectable style={body}>{value}</Text>}
+          return <View key={field.key} style={{ gap: 5 }}>
+            <Text style={{ color: colors.foregroundMuted, fontSize: 13, fontWeight: "600" }}>{field.label}</Text>
+            {Array.isArray(value) ? value.length ? value.map((item, index) => <Text key={index} selectable style={body}>{field.key === "approach" ? `${index + 1}.` : "•"} {item}</Text>) : <Text style={{ ...body, color: colors.foregroundMuted }}>Not specified in this proposal.</Text> : <Text selectable style={body}>{value || "Not specified in this proposal."}</Text>}
           </View>;
         })}
-      </View>
+      </View>)}
       <Text style={{ color: colors.foreground, fontWeight: "600" }}>What changed since the previous proposal</Text>
       {previous ? <>
         <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Compared with the saved proposal from {formatDateTime(previous.requestedAt)}.</Text>
         <Text style={body}>{previous.brief ? changed.length ? `Changed sections: ${changed.map(field => field.label).join(", ")}.` : "The approval brief is unchanged." : "The earlier proposal has no readable brief to compare."}{previous.documentRevision !== plan.documentRevision ? " The full plan document also changed." : " The full plan document is unchanged."}</Text>
         {brief.changesSincePrevious.map((item, index) => <Text key={index} selectable style={body}>• Author's explanation: {item}</Text>)}
         {changed.length ? <CompactLink label={compare ? "Hide previous wording" : "Compare previous wording"} expanded={compare} colors={colors} onPress={() => setCompare(!compare)} /> : null}
-        {compare ? changed.map(field => <View key={field.key} style={{ gap: 5, padding: 12, borderLeftWidth: 2, borderLeftColor: colors.accent }}><Text style={{ ...body, fontWeight: "600" }}>{field.label}</Text><Text selectable style={{ ...body, color: colors.foregroundMuted }}>Previously: {display(previous.brief![field.key as keyof PlanBrief])}</Text><Text selectable style={body}>Proposed: {display(brief[field.key as keyof PlanBrief])}</Text></View>) : null}
+        {compare ? changed.map(field => <View key={field.key} style={{ gap: 5, paddingVertical: 12, borderTopWidth: 1, borderTopColor: colors.border }}><Text style={{ ...body, fontWeight: "600" }}>{field.label}</Text><Text selectable style={{ ...body, color: colors.foregroundMuted }}>Previously: {display(previous.brief![field.key as keyof PlanBrief])}</Text><Text selectable style={body}>Proposed: {display(brief[field.key as keyof PlanBrief])}</Text></View>) : null}
       </> : <Text style={{ color: colors.foregroundMuted }}>No earlier saved plan version is available for comparison. This does not establish whether older proposals existed.</Text>}
     </View> : !query.isPending ? <View style={{ gap: 5 }}><Text style={{ color: colors.statusWarning }}>A structured approval brief was not provided. Missing scope, behavior, checks and risks are not inferred from technical notes.</Text>{entry.decision.plain?.built ? <Text selectable style={body}>Agent's existing summary: {entry.decision.plain.built}</Text> : null}</View> : null}
     <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Plan approval permits work within the described scope. Publishing, PRs, merges, deployments and Jira/ADO updates still need separate authorization.</Text>

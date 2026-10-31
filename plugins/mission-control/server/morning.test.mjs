@@ -23,7 +23,7 @@ const record = fields => `---\n${Object.entries(fields).map(([key, value]) => `$
 // The real task store, pointed at a temporary vault.
 async function taskStore(t, vault) {
   const runtime = await mkdtemp(join(pluginRoot, ".test-runtime-"));
-  t.after(() => rm(runtime, { recursive: true, force: true }));
+  t.after(() => rm(runtime, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   await mkdir(join(runtime, "server")); await mkdir(join(runtime, "shared"));
   await writeFile(join(runtime, "package.json"), '{"type":"commonjs"}');
   for (const name of ["shared/tasks", "shared/task-summary", "server/retrying-rename", "server/tasks"]) {
@@ -42,7 +42,7 @@ async function fixture(t) {
   await writeFile(join(vault, "host.json"), JSON.stringify({ schemaVersion: 1, hostId: "personal", serverId }));
   const kit = join(vault, "kit");
   await mkdir(join(kit, "skills", "morning-check"), { recursive: true }); await mkdir(join(kit, "scripts"));
-  await writeFile(join(kit, "skills", "morning-check", "SKILL.md"), "# Morning check\n");
+  await writeFile(join(kit, "skills", "morning-check", "SKILL.md"), "# Discovery\n");
   await writeFile(join(kit, "scripts", "morning-check.mjs"), "");
   const tasks = await taskStore(t, vault);
   const store = createMorningStore({ vaultRoot: vault, sources: tasks.scanTaskSources, createTask: tasks.createTaskRecord, kitRoot: async projectId => projectId === "prj_test" ? kit : null });
@@ -179,7 +179,7 @@ test("the newest report wins, including a same-second repeat, and a broken one i
   assert.match(status.reportError, /morning-2026-09-27-070000\.md: .*different report ID/);
 });
 
-test("Morning check uses effective Intake guidance while preserving read-only behavior", async t => {
+test("Discovery uses effective Intake guidance while preserving read-only behavior", async t => {
   const f = await fixture(t);
   const instructions = createWorkflowInstructionsStore(f.vault);
   let snapshot = await instructions.read({ serverId, projectId: null });
@@ -194,7 +194,7 @@ test("Morning check uses effective Intake guidance while preserving read-only be
   assert.match(prompt, /Read only: never create, edit, transition/);
 });
 
-test("malformed workflow notes prevent Morning check dispatch before creating an agent", async t => {
+test("malformed workflow notes prevent Discovery dispatch before creating an agent", async t => {
   const f = await fixture(t);
   await mkdir(join(f.vault, "Workflow"));
   await writeFile(join(f.vault, "Workflow", "host.md"), "broken");
@@ -202,7 +202,7 @@ test("malformed workflow notes prevent Morning check dispatch before creating an
   assert.equal(f.state.creates.length, 0);
 });
 
-test("Run Morning check starts one agent with the skill and refuses while it works", async t => {
+test("Run Discovery starts one agent with the skill and refuses while it works", async t => {
   const f = await fixture(t);
   await assert.rejects(f.store.start({ serverId: "srv_other", workspaceId: "wks_test", provider: "claude/opus", fixture: true }, f.paseo), /Open Mission Control on that host/);
   await assert.rejects(f.store.start({ serverId, workspaceId: "wks_bare", provider: "claude/opus", fixture: true }, f.paseo), /no Development Flow profile/);
@@ -211,7 +211,7 @@ test("Run Morning check starts one agent with the skill and refuses while it wor
   assert.equal(f.state.creates.length, 1);
   const [create] = f.state.creates;
   assert.equal(create.workspaceId, "wks_test");
-  assert.equal(create.title, "Morning check");
+  assert.equal(create.title, "Discovery");
   assert.deepEqual(create.labels, { "mission-control.role": "morning-check" });
   assert.deepEqual(create.config, { provider: "claude/opus", thinkingOptionId: "high" });
   assert.equal(create.idempotencyKey, status.launch.launchId);
@@ -235,12 +235,14 @@ test("Run Morning check starts one agent with the skill and refuses while it wor
 
   await rm(join(f.kit, "skills"), { recursive: true });
   f.state.failCreate = false;
-  await assert.rejects(f.store.start({ serverId, workspaceId: "wks_test", provider: "codex/gpt", fixture: false }, f.paseo), /has no Morning check yet/);
+  // A later read confirms that the uncertain agent exists and is no longer working.
+  f.state.agents.set(failed.agentId, { id: failed.agentId, status: "idle", activeTurn: null, pendingPermissions: [], archivedAt: null });
+  await assert.rejects(f.store.start({ serverId, workspaceId: "wks_test", provider: "codex/gpt", fixture: false }, f.paseo), /has no Discovery yet/);
   assert.equal(f.state.creates.length, 2);
   assert.deepEqual((await readdir(join(f.vault, "Daily"))).filter(name => name.endsWith(".tmp") || name.endsWith(".lock")), []);
 });
 
-test("a first prompt Paseo rejects is saved as why the Morning check couldn't start", async t => {
+test("a first prompt Paseo rejects is saved as why the Discovery couldn't start", async t => {
   const f = await fixture(t);
   const start = () => f.store.start({ serverId, workspaceId: "wks_test", provider: "claude/opus", fixture: true }, f.paseo);
   f.state.rejectPrompt = "Model claude/opus isn't available";
@@ -252,7 +254,7 @@ test("a first prompt Paseo rejects is saved as why the Morning check couldn't st
   assert.deepEqual([next.launch.phase, next.launch.error, next.agent.busy], ["sent", null, true]);
 });
 
-test("a Morning check agent that errored or closed doesn't block the next one; a working one does", async t => {
+test("a Discovery agent that errored or closed doesn't block the next one; a working one does", async t => {
   const f = await fixture(t);
   const start = () => f.store.start({ serverId, workspaceId: "wks_test", provider: "claude/opus", fixture: true }, f.paseo);
   const latest = () => f.state.agents.get(f.state.creates.at(-1).agentId);
@@ -272,7 +274,17 @@ test("a Morning check agent that errored or closed doesn't block the next one; a
   assert.equal(f.state.creates.length, 3);
 });
 
-test("overlapping Morning check starts create one agent", async t => {
+test("unconfirmed Discovery launch cannot start a duplicate until its agent is found", async t => {
+  const f = await fixture(t);
+  const input = { serverId, workspaceId: "wks_test", provider: "codex/gpt", fixture: false };
+  f.state.failCreate = true;
+  await assert.rejects(f.store.start(input, f.paseo), /provider offline/);
+  f.state.failCreate = false;
+  await assert.rejects(f.store.start(input, f.paseo), /previous Discovery launch is unconfirmed/);
+  assert.equal(f.state.creates.length, 0);
+});
+
+test("overlapping Discovery starts create one agent", async t => {
   const f = await fixture(t);
   f.state.createDelay = 100;
   const start = () => f.store.start({ serverId, workspaceId: "wks_test", provider: "claude/opus", fixture: true }, f.paseo);

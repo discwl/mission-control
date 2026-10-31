@@ -7,6 +7,7 @@ import { inspectPipelineTask } from "./pipeline-inspect";
 import { invokeChatHost } from "./chat-transport";
 import { createPipelineEngine } from "./pipeline-engine";
 import { registerPipelineIntake } from "./pipeline-intake";
+import { registerIntake } from "./intake";
 import { collectFleetHost, type FleetHostDeps } from "./fleet-host";
 import { managedTasks } from "../shared/fleet-model";
 import { daemonServerId } from "./agent-names";
@@ -21,6 +22,7 @@ import { readPipelineEvidence } from "../shared/pipeline";
 export function registerPipelineRuntime(server: PluginServerContext, store: FleetStore, hostDeps: FleetHostDeps,
   snapshot: () => Promise<FleetSnapshot>, send: (id: string, prompt: string, requestId: string) => Promise<void>, invalidate: () => void) {
   const finishIntake = registerPipelineIntake(server, store, snapshot, invalidate);
+  registerIntake(server, snapshot, invalidate);
   registerAgentPolicies(server, store);
   async function inspectLocal(input: { serverId: string; workspaceId: string; taskId: string }, paseo: PaseoApi) {
     if (input.serverId !== await daemonServerId()) throw new Error("This vault belongs to a different host.");

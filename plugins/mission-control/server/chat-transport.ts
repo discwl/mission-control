@@ -5,8 +5,12 @@ import { withFleetConnection } from "./fleet-transport";
 
 /** Call only an already registered host. link=false keeps Personal off remote host lists. */
 export function invokeChatHost(serverId: string, method: string, input: unknown): Promise<unknown> {
+  return withChatHost(serverId, client => client.invokePluginRpc("mission-control", method, input));
+}
+
+export function withChatHost<T>(serverId: string, action: (client: DaemonClient) => Promise<T>): Promise<T> {
   return withFleetConnection(async (_paseo, origin, local) => {
-    if (serverId === local) return origin.invokePluginRpc("mission-control", method, input);
+    if (serverId === local) return action(origin);
     origin.requireConnectedHosts();
     const scopeId = `mc-chat-${randomUUID()}`;
     const client = new DaemonClient({ url: "ws://routed-host/ws", clientId: scopeId, clientType: "cli", connectTimeoutMs: 8000,
@@ -14,7 +18,7 @@ export function invokeChatHost(serverId: string, method: string, input: unknown)
     try {
       await client.connect();
       if (client.getLastServerInfoMessage()?.serverId !== serverId) throw new Error("Remote host identity mismatch.");
-      return await client.invokePluginRpc("mission-control", method, input);
+      return await action(client);
     } finally { await client.close(); }
   });
 }

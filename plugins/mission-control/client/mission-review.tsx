@@ -200,12 +200,14 @@ function scopeLabel(snapshot: ReviewSnapshot | null) {
   return snapshot.base === "head" ? `uncommitted changes vs ${snapshot.head!.slice(0, 7)}` : "all files; the repository has no commits yet";
 }
 
-export function MissionReview({ serverId, localServerId = serverId, online, workspace, colors, compact, onChangeWorkspace, onNavigate, agentId: preferredAgentId, tab, sessionId = "workspace", openWorkspace, readiness, brief }: {
+export function MissionReview({ serverId, localServerId = serverId, online, workspace, colors, compact, onChangeWorkspace, onNavigate, agentId: preferredAgentId, tab, sessionId = "workspace", openWorkspace, readiness, brief, embedded = false }: {
   serverId: string; online: boolean; workspace: { id: string; name: string; projectName: string; hostLabel: string };
   colors: Colors; compact: boolean; onChangeWorkspace?: () => void; onNavigate?: () => void; agentId?: string;
   // The host this Mission Control runs on, whose vault names the tasks in sub-agents' context lines.
   localServerId?: string;
   tab?: PluginTab; sessionId?: string;
+  /** The containing task page scrolls the summary; reserve a separate tall diff viewport. */
+  embedded?: boolean;
   openWorkspace?: () => void;
   readiness?: (snapshot: ReviewSnapshot | null, stale: boolean) => React.ReactNode;
   brief?: (snapshot: ReviewSnapshot | null, stale: boolean, selectFile: (path: string) => void) => React.ReactNode;
@@ -319,7 +321,11 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
   });
 
   function refresh() { void query.refetch().then(result => { if (result.data) setPinned(result.data); }); }
-  function select(path: string) { setWorkingFile(null); setSelectedPath(path); setBlockIndex(0); setShowDetail(true); setPane("files"); }
+  function select(path: string) {
+    // A report finding can point outside the comparison filter. Never display a different file.
+    if (comparisonPaths && !comparisonPaths.includes(path)) setComparisonPaths(null);
+    setFilter("all"); setWorkingFile(null); setSelectedPath(path); setBlockIndex(0); setShowDetail(true); setPane("files");
+  }
   const toReview = files.filter(file => !fileDone(file));
   const reviewedFiles = files.filter(fileDone);
   const nextToReview = toReview.find(file => file.path !== selected?.path) ?? null;
@@ -456,7 +462,7 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
       onAction={action => void review.update(comment.commentId, action)} />) : null}
   </View>;
 
-  const list = <PageScrollView memoryKey={pageKey("review-files", identity)} style={{ flexGrow: 0 }} contentContainerStyle={{ gap: 4 }} scrollEnabled={!compact}>
+  const list = <PageScrollView memoryKey={pageKey("review-files", identity)} style={{ flex: compact ? undefined : 1, minHeight: 0 }} contentContainerStyle={{ gap: 4, paddingBottom: 16 }} nestedScrollEnabled scrollEnabled={!compact}>
     {readiness?.(snapshot, stale || !online || (query.isError && !scanning))}
     <Toggle label="Review list" options={[["files", `Files ${snapshot?.files.length ?? 0}`], ["comments", `Comments ${activeComments.length}`]]} value={pane} onChange={setPane} colors={colors} />
     {pane === "comments" ? commentsPane : <>
@@ -555,11 +561,14 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
     }} />
   </View>;
 
-  if (!snapshot) return <View style={{ gap: 12 }}>{header}{fileMenu}</View>;
-  if (compact) return <View style={{ gap: 12 }}>{header}{fileMenu}{showDetail && readiness ? readiness(snapshot, stale || !online || query.isError) : null}{showDetail && selected && pane === "files" ? detail : list}</View>;
-  return <View style={{ flex: 1, minHeight: 0, gap: 12 }}>
-    {header}{fileMenu}
-    <View style={{ flex: 1, minHeight: 0, flexDirection: "row", gap: 14 }}>
+  if (!snapshot || compact) {
+    const content = <>{header}{fileMenu}{snapshot && showDetail && readiness ? readiness(snapshot, stale || !online || query.isError) : null}{snapshot ? showDetail && selected && pane === "files" ? detail : list : null}</>;
+    return embedded ? <View style={{ gap: 12 }}>{content}</View>
+      : <PageScrollView memoryKey={pageKey("review-overview", identity)} style={{ flex: 1, minHeight: 0 }} contentContainerStyle={{ gap: 12, paddingBottom: 16 }} nestedScrollEnabled>{content}</PageScrollView>;
+  }
+  return <View style={{ flex: embedded ? undefined : 1, minHeight: 0, gap: 12 }}>
+    {embedded ? header : <PageScrollView memoryKey={pageKey("review-overview", identity)} style={{ flexGrow: 0, flexShrink: 1, maxHeight: "40%" }} nestedScrollEnabled>{header}</PageScrollView>}{fileMenu}
+    <View style={{ flex: embedded ? undefined : 1, height: embedded ? 720 : undefined, minHeight: 0, flexDirection: "row", gap: 14 }}>
       <View style={{ width: 300, minHeight: 0 }}>{list}</View>
       <View style={{ flex: 1, minHeight: 0, borderLeftColor: colors.border, borderLeftWidth: 1, paddingLeft: 14 }}>{detail}</View>
     </View>

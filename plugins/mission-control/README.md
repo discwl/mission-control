@@ -90,6 +90,14 @@ node plugins/mission-control/scripts/remote.mjs --offer-file <file> status --wor
 - **What it can't do:** there are no commands for decisions, merges or pull requests. Those stay with you.
 - **How it connects:** like the agent rename, it uses Paseo's internal `DaemonClient`, over the relay with end-to-end encryption, from the plugin's own dependencies.
 
+## Kanban code review
+
+Open **Kanban → task → Code review**. Tasks waiting for code review open this section directly. The page shows the latest review request for the exact task, run, host and workspace: its saved summary, reviewer/model evidence when recorded, unresolved findings first, validation results and referenced documents. Older records explicitly identify missing reviewer verification or unavailable documents. A completed validation record is historical evidence, not a new check performed by the screen.
+
+**Your decision** reuses the existing guarded decision form alongside the report. Stale data, a changed commit, later implementation, or an already resolved request suppresses that form. The server still verifies the exact code candidate when accepting a decision. Code acceptance does not authorize publication or merging; **Receipt** shows what was saved and whether it reached the worker.
+
+Reports use the task page's full scroll area. The code diff below has a taller, independently scrollable viewport. Finding links select only exact files in that snapshot and clear filters that would hide the selected file. They do not mark files reviewed or send comments. Linked document contents are read from the owning host now and can differ from their contents when the original review was requested.
+
 ## Phase agents and independent reviews
 
 In **Orchestrator → Run to draft PR → Agent profiles**, choose native Paseo profiles for Planning, Implementation and fixes, Validation, and Independent review. Validation can inherit the implementation profile. Select **Two different models** to require a second independent reviewer. Profiles own provider, model, reasoning, permissions and feature settings; Mission Control maps those profiles to workflow phases. Each remote host uses its own native profiles and installed providers. Models must be explicit and available on that host.
@@ -102,13 +110,42 @@ Reviewer checkpoints include a `coverage` entry for every selected `(path, statu
 
 Existing implementation and validation evidence can be reused when the saved plan and code still match. Enabling managed reviews requires fresh matching review evidence before a new human review request. Plan approval, code acceptance and the exact draft PR publication approval remain separate. Prompts require the approved scope, existing patterns and the smallest useful change; scope changes return to planning. Unconfirmed dispatches stay paused and provide the matching remote worker for inspection before acknowledgment.
 
-## Morning check
+## Intake and Discovery
 
-The workspace page's **Morning check** section starts an agent with the kit's `morning-check` skill, shows the latest report from `C:\dev-vault\Daily`, and imports the current-sprint Jira or Azure DevOps items you pick as tasks with their ticket. The agent reads the tracker through its own MCP tools; this plugin never calls Jira or Azure DevOps. See [Morning check](../../docs/agent-workflow.md#morning-check).
+Open **Kanban → Intake**. Choose a managed host and its project/workspace; if the host has several coordinators, choose one explicitly. **Discover work** is the default. **Describe a task** accepts a title and requirements without requiring a ticket link.
+
+- **Save to backlog** creates the task without launching a worker or enabling automatic work.
+- **Queue for planning** explicitly enrolls that task in the existing coordinator queue. It leaves a paused fleet/heartbeat paused and reports that state.
+- **Plan now** requests the existing managed runner at planning. Implementation waits for plan approval; code acceptance and external delivery still require their own decisions. An existing runner is shown instead of starting a second one.
+
+Discovery reads the host’s current-sprint Jira/ADO items and saved task context. The selected workspace supplies its project guidance and is the import destination; it is not a promise that the tracker report is filtered to only that project. Review the found items before selecting them. Import saves them to backlog first; each receipt then offers queueing or planning. Already tracked items open their existing task.
+
+In a bound coordinator chat, or its linked Telegram topic, use:
+
+```text
+/mc discovery workspaces
+/mc discover <workspace ID or exact project / workspace> using <provider>
+/mc discovery
+/mc discovery import KEY1,KEY2 into <workspace>
+/mc save task in <workspace> | <title> | <requirements>
+/mc queue task in <workspace> | <title> | <requirements>
+/mc plan task in <workspace> | <title> | <requirements>
+/mc plan task <task ID>
+```
+
+`/mc discover` reuses the last Discovery destination/provider when available; otherwise it asks for an unambiguous choice. An explicit provider can include a model (`provider/model-id`). Keep `/mc` for reliable command handling in both interfaces. Plain conversation remains agent conversation. Repeating the same described task in the same coordinator/workspace reuses its task ID; use distinct details for intentionally separate work.
+
+Receipts distinguish a task saved successfully from scheduling that was not confirmed. UI retries retain the original request ID while navigating the app; do not create a replacement task after a lost response. Discovery refuses another scan while its prior agent is working or a launch has not been confirmed. Open that agent and refresh. No heartbeat settings, approvals, tracker comments or publication permissions are changed by capture.
+
+The central intake APIs route to existing remote `morning.*` and `tasks.create` APIs. Remote task creation must advertise idempotent intake support; incompatible hosts show an update error. The historical `morning-check` skill, report filenames and RPC names stay compatible with installed host kits.
+
+### Workspace Discovery
+
+The workspace page's **Discovery** section starts an agent with the kit's `morning-check` skill, shows the latest report from `C:\dev-vault\Daily`, and imports the current-sprint Jira or Azure DevOps items you pick as tasks with their ticket. The agent reads the tracker through its own MCP tools; this plugin never calls Jira or Azure DevOps. See [Morning check](../../docs/agent-workflow.md#morning-check).
 
 ## Workflow instructions
 
-**Settings → Plugins → Mission Control → Workflow instructions** saves separate Intake and Planning guidance in this host's vault. Projects can inherit, add to, or replace the host defaults independently for each stage; the effective preview shows the combined text and source note paths. Use this for clarification preferences, Confluence references and read-only database checks. Morning check receives Intake guidance; task Start / Resume, `/mission-task` and `dev-flow context` load both stages. Save affects the next prompt/context read, without interrupting running agents. Notes do not add tool access or delivery permission. See [Workflow instructions](../../docs/workflow-instructions.md).
+**Settings → Plugins → Mission Control → Workflow instructions** saves separate Intake and Planning guidance in this host's vault. Projects can inherit, add to, or replace the host defaults independently for each stage; the effective preview shows the combined text and source note paths. Use this for clarification preferences, Confluence references and read-only database checks. Discovery receives Intake guidance; task Start / Resume, `/mission-task` and `dev-flow context` load both stages. Save affects the next prompt/context read, without interrupting running agents. Notes do not add tool access or delivery permission. See [Workflow instructions](../../docs/workflow-instructions.md).
 
 ## Branch names
 

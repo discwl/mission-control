@@ -62,11 +62,22 @@ test("plan approval sends the exact displayed plan and decision versions to the 
   assert.equal(h.calls[0].expectedRevision, "request-v1");
 });
 
+test("plan controls occur once beside evidence and disclose scope and delivery consequences", () => {
+  const h = cardHarness(), tree = h.render();
+  const controls = nodes(tree).find(node => node.props?.accessibilityLabel === "Plan decision controls");
+  assert.ok(controls);
+  assert.equal(nodes(tree).filter(node => node.props?.label === "Approve this plan").length, 1);
+  assert.ok(button(controls, "Request changes"));
+  assert.match(text(controls), /does not approve the resulting code or authorize publishing/);
+  assert.match(text(controls), /saved decision does not mean work has resumed/);
+  assert.equal(h.calls.length, 0);
+});
+
 test("background refresh does not silently replace a plan version in an open confirmation", async () => {
   const h = cardHarness();
-  button(h.render(), "More").props.onPress();
+  button(h.render(), "Notes and details").props.onPress();
   nodes(h.render()).find(node => node.type === "TextInput").props.onChangeText("Prevention only; keep cleanup deferred.");
-  button(h.render(), "Less").props.onPress();
+  button(h.render(), "Hide notes and details").props.onPress();
   button(h.render(), "Approve this plan").props.onPress();
   assert.equal(h.calls.length, 0, "a hidden user note is confirmed before sending");
   h.entry.revision = "request-v2";
@@ -92,7 +103,7 @@ test("legacy or unavailable proposals cannot approve, and requesting a readable 
 
 test("a request-changes draft survives a background refresh without being sent", () => {
   const h = cardHarness();
-  button(h.render(), "Change the plan").props.onPress();
+  button(h.render(), "Request changes").props.onPress();
   nodes(h.render()).find(node => node.type === "TextInput").props.onChangeText("Keep cleanup deferred and add an example.");
   h.entry.revision = "refreshed-request";
   h.query.data = proposal();
@@ -113,6 +124,11 @@ test("the plan view shows scope reduction, behavior, success checks, and full sa
   });
   const render = () => h.render("PlanApprovalView", { entry: e, query, colors: {} });
   let tree = render();
+  for (const field of planBriefFields.filter(field => field.key !== "changesSincePrevious")) {
+    const value = query.data.brief[field.key];
+    for (const part of Array.isArray(value) ? value : [value]) assert.ok(text(tree).includes(part), `${field.key} must remain visible`);
+  }
+  for (const heading of ["What will change", "Scope and boundaries", "How it will be done", "Checks and risks", "What you are authorizing"]) assert.ok(text(tree).includes(heading));
   assert.match(text(tree), /The original request included cleanup/);
   assert.match(text(tree), /Lower discounts still work/);
   assert.match(text(tree), /Existing free subscriptions remain/);

@@ -1,5 +1,5 @@
 import { CompactLink } from "./compact-link";
-import { getPaseoClient, openExternalUrl, useRpc, type PluginHostSummary, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { getPaseoClient, openExternalUrl, type PluginHostSummary, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
@@ -9,6 +9,9 @@ import { taskSummaryKey } from "../shared/task-summary";
 import { ticketIdentity, ticketSystemLabels } from "../shared/tickets";
 import { formatDateTime } from "./date-time";
 import { MarkdownPreview } from "./markdown-preview";
+import { useRpc } from "./host-rpc";
+import { useRpc as useInstallationRpc } from "@getpaseo/plugin/client";
+import { intakeDiscoveryStatus, intakeDiscoveryStart, intakeDiscoveryImport } from "../shared/intake";
 
 type Colors = PluginSurfaceProps["theme"]["colors"];
 type Item = MorningStatus["missing"][number];
@@ -19,6 +22,9 @@ type Props = {
   workspace: { id: string; name: string };
   colors: Colors;
   navigation?: PluginSurfaceProps["navigation"];
+  coordinatorId?: string;
+  onImported?(tasks: { taskId: string; title: string }[]): void;
+  openTask?(taskId: string): void;
 };
 
 const trackerText = (report: NonNullable<MorningStatus["report"]>) =>
@@ -26,13 +32,14 @@ const trackerText = (report: NonNullable<MorningStatus["report"]>) =>
     : report.tracker.mode === "fixture" ? `Test fixture · ${report.items.length} items`
       : `${report.tracker.systems.map(system => ticketSystemLabels[system]).join(" and ")} · ${report.items.length} current-sprint items`;
 
-export function MorningCheck({ ownServerId, host, workspace, colors, navigation }: Props) {
+export function MorningCheck({ ownServerId, host, workspace, colors, navigation, onImported, openTask, coordinatorId }: Props) {
   const own = host.serverId === ownServerId;
   const online = host.status === "online";
   const queryClient = useQueryClient();
   const readStatus = useRpc(getMorningStatus);
   const start = useRpc(startMorningCheck);
   const importItems = useRpc(importMorningItems);
+  const routedStatus = useInstallationRpc(intakeDiscoveryStatus), routedStart = useInstallationRpc(intakeDiscoveryStart), routedImport = useInstallationRpc(intakeDiscoveryImport);
   const [provider, setProvider] = useState<string | null>(null);
   const [fixture, setFixture] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
@@ -42,7 +49,7 @@ export function MorningCheck({ ownServerId, host, workspace, colors, navigation 
   const [showReport, setShowReport] = useState(false);
   const query = useQuery({
     queryKey: ["mission-control", "morning", ownServerId],
-    queryFn: () => readStatus({ serverId: ownServerId }),
+    queryFn: () => coordinatorId ? routedStatus({ serverId: ownServerId, coordinatorId }) : readStatus({ serverId: ownServerId }),
     enabled: own && online,
     refetchInterval: current => (current.state.data?.agent?.busy ? 5_000 : 30_000),
     retry: false,
@@ -55,6 +62,7 @@ export function MorningCheck({ ownServerId, host, workspace, colors, navigation 
   const choices = models.data?.models ?? [];
   const model = choices.find(entry => entry.isDefault) ?? choices[0];
   const status = query.data;
+  const launchUnconfirmed = status?.launch?.phase === "sending" && !status.agent;
   const report = status?.report;
   const missing = status?.missing ?? [];
   const picked = selected.filter(identity => missing.some(item => ticketIdentity(item) === identity));
@@ -62,11 +70,13 @@ export function MorningCheck({ ownServerId, host, workspace, colors, navigation 
   const failure = error ?? (query.error ? String(query.error instanceof Error ? query.error.message : query.error) : null);
 
   async function run() {
-    if (!chosenProvider || !model || busy) return;
+    if (!chosenProvider || !model || busy || launchUnconfirmed || !status || query.isError) return;
     setBusy("start"); setError(null); setNotice(null);
     try {
-      await start({ serverId: ownServerId, workspaceId: workspace.id, provider: `${chosenProvider}/${model.id}`, fixture });
-      setNotice("Morning check started. The report appears here when the agent writes it.");
+      const input = { serverId: ownServerId, workspaceId: workspace.id, provider: `${chosenProvider}/${model.id}`, fixture };
+      const result = await (coordinatorId ? routedStart({ ...input, coordinatorId }) : start(input));
+      if (result.launch?.error) throw new Error(result.launch.error);
+      setNotice("Discovery started. The report appears here when the agent writes it.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
     finally { setBusy(null); await query.refetch(); }
   }
@@ -74,8 +84,10 @@ export function MorningCheck({ ownServerId, host, workspace, colors, navigation 
     if (!report || !picked.length || busy) return;
     setBusy("import"); setError(null); setNotice(null);
     try {
-      const result = await importItems({ serverId: ownServerId, workspaceId: workspace.id, reportId: report.reportId, items: picked });
+      const input = { serverId: ownServerId, workspaceId: workspace.id, reportId: report.reportId, items: picked };
+      const result = await (coordinatorId ? routedImport({ ...input, coordinatorId }) : importItems(input));
       setSelected([]);
+      onImported?.(result.created);
       setNotice(`Imported ${result.created.length} ${result.created.length === 1 ? "task" : "tasks"} into ${workspace.name}${result.skipped.length ? `; ${result.skipped.length} already had a task` : ""}.`);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["mission-control", "tasks", ownServerId] }),
@@ -102,11 +114,11 @@ export function MorningCheck({ ownServerId, host, workspace, colors, navigation 
   return <View style={{ borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10, gap: 8 }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
       <Icon name="ListTodo" size={15} color={colors.foregroundMuted} />
-      <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "600", flex: 1 }}>Morning check · {host.label}</Text>
-      {own && online ? <Pressable accessibilityRole="button" accessibilityLabel="Refresh Morning check" disabled={query.isFetching} onPress={() => { setError(null); void query.refetch(); }} style={{ minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }}><Icon name="RefreshCw" size={14} color={colors.foregroundMuted} /></Pressable> : null}
+      <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "600", flex: 1 }}>Discovery · {host.label}</Text>
+      {own && online ? <Pressable accessibilityRole="button" accessibilityLabel="Refresh Discovery" disabled={query.isFetching} onPress={() => { setError(null); void query.refetch(); }} style={{ minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }}><Icon name="RefreshCw" size={14} color={colors.foregroundMuted} /></Pressable> : null}
     </View>
-    {!own ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Open Mission Control on {host.label} to run its Morning check. Each host reads its own vault and tracker tools.</Text> : !online ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Reconnect this host to run its Morning check.</Text> : <>
-      <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>Starts an agent in this workspace that reads your current-sprint Jira or Azure DevOps items (read only), lists the ones not in Mission Control yet, and reviews yesterday's handoffs, open decisions, and blocked or idle tasks. Imported tasks are added to this workspace.</Text>
+    {!own ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Open Mission Control on {host.label} to run its Discovery. Each host reads its own vault and tracker tools.</Text> : !online ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Reconnect this host to run its Discovery.</Text> : <>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>Starts an agent in this workspace that reads your current-sprint Jira or Azure DevOps items (read only), lists the ones not in Mission Control yet, and reviews yesterday's handoffs, open decisions, and blocked or idle tasks. Destination: this host and workspace. Selected tickets are saved to the backlog; importing does not start planning or implementation.</Text>
       <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
         {available.map(entry => <Pressable key={entry.provider} accessibilityRole="button" accessibilityState={{ selected: chosenProvider === entry.provider }} disabled={busy !== null} onPress={() => setProvider(entry.provider)} style={{ ...button, borderColor: chosenProvider === entry.provider ? colors.accent : colors.border }}><Text style={{ color: colors.foreground, fontSize: 12 }}>{entry.provider}</Text></Pressable>)}
         {model ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Model: {model.label} (default)</Text> : null}
@@ -118,10 +130,11 @@ export function MorningCheck({ ownServerId, host, workspace, colors, navigation 
         <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: fixture }} disabled={busy !== null} onPress={() => setFixture(!fixture)} style={{ minHeight: 44, justifyContent: "center", paddingHorizontal: 4 }}>
           <Text style={{ color: fixture ? colors.accent : colors.foregroundMuted, fontSize: 12 }}>{fixture ? "☑" : "☐"} Use test fixture instead of Jira/Azure DevOps</Text>
         </Pressable>
-        <Pressable accessibilityRole="button" disabled={busy !== null || !model || status?.agent?.busy} onPress={() => void run()} style={{ ...button, backgroundColor: colors.accent, borderColor: colors.accent, opacity: busy !== null || !model || status?.agent?.busy ? 0.5 : 1 }}>
-          <Text style={{ color: colors.accentForeground, fontWeight: "600", fontSize: 13 }}>{busy === "start" ? "Starting…" : "Run Morning check"}</Text>
+        <Pressable accessibilityRole="button" disabled={busy !== null || !model || !status || query.isError || launchUnconfirmed || status?.agent?.busy} onPress={() => void run()} style={{ ...button, backgroundColor: colors.accent, borderColor: colors.accent, opacity: busy !== null || !model || !status || query.isError || launchUnconfirmed || status?.agent?.busy ? 0.5 : 1 }}>
+          <Text style={{ color: colors.accentForeground, fontWeight: "600", fontSize: 13 }}>{busy === "start" ? "Starting…" : "Run Discovery"}</Text>
         </Pressable>
       </View>
+      {launchUnconfirmed ? <Text style={{ color: colors.statusWarning }}>The last launch is unconfirmed. Open its agent and refresh before starting another scan.</Text> : null}
       {status?.launch ? <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
         <Text style={{ color: status.launch.error ? colors.statusWarning : colors.foregroundMuted, fontSize: 12 }}>
           Last started {formatDateTime(status.launch.createdAt)}{status.launch.fixture ? " with the test fixture" : ""} · {status.launch.error ? `${status.launch.phase === "sent" ? "couldn't start" : "not confirmed"}: ${status.launch.error}` : status.agent ? `agent ${status.agent.busy ? "working" : status.agent.status}` : "agent closed or archived"}
@@ -132,7 +145,7 @@ export function MorningCheck({ ownServerId, host, workspace, colors, navigation 
       {notice ? <Text style={{ color: colors.statusSuccess, fontSize: 12 }}>{notice}</Text> : null}
       {query.isPending ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Reading the latest report…</Text> : null}
       {status?.reportError ? <Text style={{ color: colors.statusWarning, fontSize: 12 }}>The latest report can't be read: {status.reportError}</Text> : null}
-      {status && !report && !status.reportError ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>No Morning check report yet.</Text> : null}
+      {status && !report && !status.reportError ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>No Discovery report yet.</Text> : null}
       {report ? <View style={{ gap: 8 }}>
         <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}>Latest report · {formatDateTime(report.createdAt)}</Text>
         <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{trackerText(report)} · {report.review.handoffs} handoffs · {report.review.openDecisions} open decisions · {report.review.blocked} blocked · {report.review.idle} idle</Text>
@@ -148,13 +161,14 @@ export function MorningCheck({ ownServerId, host, workspace, colors, navigation 
           })}
           {missing.length ? <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
             <Pressable accessibilityRole="button" disabled={!picked.length || busy !== null} onPress={() => void importPicked()} style={{ ...button, borderColor: colors.accent, opacity: !picked.length || busy !== null ? 0.5 : 1 }}>
-              <Text style={{ color: colors.accent, fontWeight: "600", fontSize: 13 }}>{busy === "import" ? "Importing…" : `Import ${picked.length ? `${picked.length} ` : ""}selected into ${workspace.name}`}</Text>
+              <Text style={{ color: colors.accent, fontWeight: "600", fontSize: 13 }}>{busy === "import" ? "Importing…" : `Save ${picked.length ? `${picked.length} ` : ""}selected to backlog`}</Text>
             </Pressable>
             <CompactLink colors={colors} label={(picked.length === missing.length ? "Clear selection" : "Select all")} accessibilityRole="button" disabled={busy !== null} onPress={() => setSelected(picked.length === missing.length ? [] : missing.map(ticketIdentity))} />
           </View> : null}
           {status!.imported.length ? <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}>Already in Mission Control ({status!.imported.length})</Text> : null}
           {status!.imported.map(({ item, tasks }) => <View key={ticketIdentity(item)}>{ticketRow(item, <Text style={{ color: colors.statusSuccess, fontSize: 12, minWidth: 32 }}>✓</Text>)}
             <Text style={{ color: colors.foregroundMuted, fontSize: 11, marginLeft: 40 }}>{tasks.map(task => `${task.title} (${task.status.replaceAll("_", " ")})`).join(" · ")}</Text>
+            {openTask ? tasks.map(task => <CompactLink key={task.taskId} colors={colors} label={`Open existing task: ${task.title}`} onPress={() => openTask(task.taskId)} />) : null}
           </View>)}
         </> : null}
         <CompactLink colors={colors} label={(showReport ? "Hide full report ▴" : "Show full report ▾")} accessibilityRole="button" onPress={() => setShowReport(!showReport)} expanded={showReport} />

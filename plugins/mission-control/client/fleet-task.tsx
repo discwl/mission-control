@@ -37,7 +37,7 @@ export function FleetWorkerTree({ workers, serverId, colors, openAgent }: { work
   </View>;
 }
 
-function TaskAttention({ entry, workers, host, colors, openAgent, nextDecisionTask }: { entry: FleetTask; workers: FleetAgent[]; host: FleetHost; colors: Colors; openAgent: OpenAgent; nextDecisionTask?: () => void }) {
+export function TaskAttention({ entry, workers, host, colors, openAgent, nextDecisionTask }: { entry: FleetTask; workers: FleetAgent[]; host: FleetHost; colors: Colors; openAgent: OpenAgent; nextDecisionTask?: () => void }) {
   const remote = useHosts().find(item => item.serverId === host.serverId);
   const online = remote?.status === "online";
   useLiveRoster(host.serverId, online);
@@ -65,7 +65,7 @@ function TaskAttention({ entry, workers, host, colors, openAgent, nextDecisionTa
   </View>;
 }
 
-function TaskPlan({ entry, host, colors, openAgent }: { entry: FleetTask; host: FleetHost; colors: Colors; openAgent: OpenAgent }) {
+export function TaskPlan({ entry, host, colors, openAgent }: { entry: FleetTask; host: FleetHost; colors: Colors; openAgent: OpenAgent }) {
   const [selected, setSelected] = useState<string | null>(null);
   const hostLabel = useHosts().find(item => item.serverId === host.serverId)?.label ?? "Remote host";
   const describe = (workspaceId: string) => {
@@ -82,7 +82,7 @@ function TaskPlan({ entry, host, colors, openAgent }: { entry: FleetTask; host: 
   </View>;
 }
 
-function TaskDelivery({ entry, serverId, colors }: { entry: FleetTask; serverId: string; colors: Colors }) {
+export function TaskDelivery({ entry, serverId, colors }: { entry: FleetTask; serverId: string; colors: Colors }) {
   const ready = useMergeReady(serverId, true);
   const [merge, setMerge] = useState<MergeTarget | null>(null);
   const [pr, setPr] = useState<PullRequestTarget | null>(null);

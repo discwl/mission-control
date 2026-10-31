@@ -3,8 +3,10 @@ import { setOrchestratorWork } from "../shared/orchestrator-work";
 import { invokeChatHost } from "./chat-transport";
 
 import { managePipelineChat } from "./chat-pipeline";
+import { manageIntakeChat } from "./chat-intake";
 
 export async function manageChatCommand(command: string, context: { local: string; target: string; agentId: string; label: string; orchestrator: boolean }): Promise<{ text: string } | null> {
+  const intake = await manageIntakeChat(command, context); if (intake) return intake;
   const pipeline = await managePipelineChat(command, context); if (pipeline) return pipeline;
   const adopt = /^adopt\s+(task_[a-f0-9-]+)(?:\s+worker\s+(\S+))?$/i.exec(command);
   const queue = /^(queue|unqueue)\s+(task_[a-f0-9-]+)(?:\s+priority\s+([0-9]))?$/i.exec(command);

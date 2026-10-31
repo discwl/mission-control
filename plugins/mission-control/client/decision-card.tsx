@@ -132,7 +132,39 @@ export function DecisionCard({ entry, serverId, hostLabel, colors, actions, brie
   const muted = { color: colors.foregroundMuted, fontSize: 12 } as const;
   const body = { color: colors.foreground, fontSize: 13, lineHeight: 19 } as const;
 
-  return <View accessibilityLabel={`${review ? "Review" : "Plan"} decision for ${entry.taskTitle}`} style={{ borderColor: colors.accent, borderWidth: 1, borderLeftWidth: brief ? 3 : 4, borderRadius: 8, padding: brief ? 9 : 11, gap: brief ? 5 : 7, backgroundColor: colors.surface1 }}>
+  const decisionControls = <View style={{ gap: 12 }}>
+    {!review ? <>
+      <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 17, fontWeight: "600" }}>Your decision</Text>
+      <Text style={{ color: colors.foreground, lineHeight: 22 }}>{planQuery.isPending ? "Checking the saved proposal before approval…" : planQuery.isError || !planQuery.data?.canApprove ? "Approval is unavailable. Request a fresh, readable proposal or open the worker conversation to resolve it." : "Review the behavior, scope, checks and risks. Approve this version or describe what needs to change."}</Text>
+      <Text style={{ color: colors.foregroundMuted, lineHeight: 21 }}>Approval permits implementation of this plan. It does not approve the resulting code or authorize publishing.</Text>
+    </> : null}
+    {error ? <Text accessibilityRole="alert" style={{ color: colors.statusDanger, fontSize: 13 }}>{error}</Text> : null}
+    {confirm ? <View style={{ gap: 8, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10 }}>
+      <Text style={body}>{confirm.prompt}</Text>
+      <TextInput accessibilityLabel={`Note sent with ${confirm.sendLabel}`} value={confirm.note} autoFocus editable={!busy} multiline
+        onChangeText={text => setConfirm({ ...confirm, note: text })} placeholder={confirm.id === "change" ? "Describe the changes you want" : "Note for the agent"} placeholderTextColor={colors.foregroundMuted}
+        style={{ color: colors.foreground, backgroundColor: colors.surface0, borderColor: colors.border, borderWidth: 1, borderRadius: 7, padding: 9, minHeight: 100, fontSize: 14, textAlignVertical: "top" }} />
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+        <ActionButton label={confirm.sendLabel} tone={confirm.id === "stop" ? "danger" : "primary"} disabled={busy || draftState.stale || (confirm.noteRequired && !confirm.note.trim())}
+          onPress={() => void submit(confirm.outcome, confirm.note, confirm.planRevision, confirm.requestRevision)} colors={colors} />
+        <ActionButton label="Cancel" tone="plain" disabled={busy} onPress={() => { if (confirm.id === "change" && confirm.note.trim()) { setNote({ text: confirm.note, edited: true }); setMore(true); } setConfirm(null); setError(null); }} colors={colors} />
+      </View>
+    </View> : <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+      {model.buttons.map(button => {
+        const approvesPlan = !review && answerFor(entry, choices, button.id, note, more).outcome === "approved";
+        return <ActionButton key={button.id} label={approvesPlan ? "Approve this plan" : !review && button.id === "change" ? "Request changes" : button.label} disabled={busy || draftState.stale || (approvesPlan && (!planQuery.data?.canApprove || planQuery.isError))} onPress={() => press(button.id)} colors={colors}
+          tone={button.id === "stop" ? "danger" : button.primary ? "primary" : "plain"} />;
+      })}
+      <Link label={more ? "Hide notes and details" : "Notes and details"} expanded={more} onPress={() => setMore(!more)} colors={colors} />
+    </View>}
+    {!review && !confirm && !draftState.stale && !planQuery.isPending && (!planQuery.data?.canApprove || planQuery.isError) ? <Link label="Request readable plan" colors={colors} onPress={() => {
+      const answer = answerFor(entry, choices, "change", { text: readablePlanRequest, edited: true }, true);
+      setConfirm({ ...answer, note: readablePlanRequest, id: "change", requestRevision: entry.revision });
+    }} /> : null}
+    {!review ? <Text style={{ color: colors.foregroundMuted, lineHeight: 21 }}>After saving, check the receipt to confirm whether your decision reached the worker. A saved decision does not mean work has resumed.</Text> : null}
+  </View>;
+
+  return <View accessibilityLabel={`${review ? "Review" : "Plan"} decision for ${entry.taskTitle}`} style={{ borderColor: colors.accent, borderWidth: 1, borderRadius: 8, padding: brief ? 9 : 16, gap: brief ? 5 : 12, backgroundColor: colors.surface1, maxWidth: review ? undefined : 1360 }}>
     <TaskHeader badge={model.kind} badgeColor={colors.accent} task={{ title: model.title, place: where }} expanded={more} colors={colors} />
 
     {draftState.saved ? <View style={{ gap: 6, paddingVertical: 5 }}>
@@ -140,22 +172,16 @@ export function DecisionCard({ entry, serverId, hostLabel, colors, actions, brie
       {draftState.stale ? <><Text style={{ color: colors.statusWarning, fontSize: 12 }}>The request changed after this draft was written. Read the current request before using this note.</Text><Link label="I reviewed the current request; use this draft" colors={colors} onPress={() => { draftState.useForCurrentRequest(); setMore(true); setError(null); }} /></> : null}
       {!busy ? <Link label="Discard draft" colors={colors} onPress={() => { draftState.clear(); setError(null); }} /> : null}
     </View> : null}
-    {more ? null : <>
-      {review ? <Text style={body}>{reviewSummary(entry)}</Text> : <WhereLine where={summary} colors={colors} />}
-      {!review && summary.source === "generic" ? <Text style={muted}>Open More for the details.</Text> : null}
-    </>}
-    <NeedLine need={decisionNeed(entry)} recommendation={recommended} colors={colors} />
+    {!more && review ? <Text style={body}>{reviewSummary(entry)}</Text> : null}
+    {review ? <NeedLine need={decisionNeed(entry)} recommendation={recommended} colors={colors} /> : null}
     {review && decision.reviewVerification ? <View style={{ gap: 4 }}>
       <Text style={{ color: colors.foreground, fontWeight: "600" }}>Independent review evidence</Text>
       {decision.reviewVerification.reviewers.map(reviewer => <Text key={reviewer.checkpointId} style={{ color: colors.foregroundMuted }}>{reviewer.profile} · {reviewer.model} · {reviewer.reviewed}/{reviewer.selected} selected files reviewed · {reviewer.excluded} excluded</Text>)}
     </View> : null}
-    {!review ? <>
-      <PlanApprovalView entry={entry} query={planQuery} colors={colors} />
-      {!confirm && !draftState.stale && !planQuery.isPending && (!planQuery.data?.canApprove || planQuery.isError) ? <Link label="Request readable plan" colors={colors} onPress={() => {
-        const answer = answerFor(entry, choices, "change", { text: readablePlanRequest, edited: true }, true);
-        setConfirm({ ...answer, note: readablePlanRequest, id: "change", requestRevision: entry.revision });
-      }} /> : null}
-    </> : null}
+    {!review ? <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "flex-start", gap: 28 }}>
+      <View style={{ flexBasis: 540, flexGrow: 2, flexShrink: 1, minWidth: 0, maxWidth: "100%" }}><PlanApprovalView entry={entry} query={planQuery} colors={colors} /></View>
+      <View accessibilityLabel="Plan decision controls" style={{ flexBasis: 300, flexGrow: 1, flexShrink: 1, minWidth: 0, maxWidth: "100%", paddingVertical: 12 }}>{decisionControls}</View>
+    </View> : null}
     {model.unverified ? <Text style={{ color: colors.statusWarning, fontSize: 12 }}>{model.unverified}</Text> : null}
 
     {more ? <View style={{ gap: 6 }}>
@@ -179,25 +205,7 @@ export function DecisionCard({ entry, serverId, hostLabel, colors, actions, brie
         style={{ color: colors.foreground, backgroundColor: colors.surface0, borderColor: colors.border, borderWidth: 1, borderRadius: 7, padding: 9, minHeight: 52, fontSize: 13, textAlignVertical: "top" }} />
     </View> : null}
 
-    {error ? <Text accessibilityRole="alert" style={{ color: colors.statusDanger, fontSize: 12 }}>{error}</Text> : null}
-    {confirm ? <View style={{ gap: 6, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 6 }}>
-      <Text style={body}>{confirm.prompt}</Text>
-      <TextInput accessibilityLabel={`Note sent with ${confirm.sendLabel}`} value={confirm.note} autoFocus editable={!busy} multiline
-        onChangeText={text => setConfirm({ ...confirm, note: text })} placeholder={confirm.id === "change" ? "Describe the changes you want" : "Note for the agent"} placeholderTextColor={colors.foregroundMuted}
-        style={{ color: colors.foreground, backgroundColor: colors.surface0, borderColor: colors.border, borderWidth: 1, borderRadius: 7, padding: 9, minHeight: 52, fontSize: 13, textAlignVertical: "top" }} />
-      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-        <ActionButton label={confirm.sendLabel} tone={confirm.id === "stop" ? "danger" : "primary"} disabled={busy || draftState.stale || (confirm.noteRequired && !confirm.note.trim())}
-          onPress={() => void submit(confirm.outcome, confirm.note, confirm.planRevision, confirm.requestRevision)} colors={colors} />
-        <ActionButton label="Cancel" tone="plain" disabled={busy} onPress={() => { if (confirm.id === "change" && confirm.note.trim()) { setNote({ text: confirm.note, edited: true }); setMore(true); } setConfirm(null); setError(null); }} colors={colors} />
-      </View>
-    </View> : <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-      {model.buttons.map(button => {
-        const approvesPlan = !review && answerFor(entry, choices, button.id, note, more).outcome === "approved";
-        return <ActionButton key={button.id} label={approvesPlan ? "Approve this plan" : button.label} disabled={busy || draftState.stale || (approvesPlan && (!planQuery.data?.canApprove || planQuery.isError))} onPress={() => press(button.id)} colors={colors}
-          tone={button.id === "stop" ? "danger" : button.primary ? "primary" : "plain"} />;
-      })}
-      <Link label={more ? "Less" : "More"} expanded={more} onPress={() => setMore(!more)} colors={colors} />
-    </View>}
+    {review ? decisionControls : null}
 
     {more ? <View style={{ gap: 4 }}>
       <Link label={technical ? "Hide technical details" : "Technical details"} expanded={technical} onPress={() => setTechnical(!technical)} colors={colors} />

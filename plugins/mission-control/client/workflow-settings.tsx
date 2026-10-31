@@ -27,7 +27,7 @@ function WorkflowSettingsBody(props: PluginSurfaceProps) {
   const projects = useQuery({ queryKey: ["mission-control", "workflow-projects", props.host.id],
     queryFn: async () => (await paseo.projects.list()).projects.map(project => ({ id: project.projectId, name: project.projectCustomName || project.projectDisplayName })), retry: false });
   return <>
-    <SettingsSection title="Workflow instructions" info="Host defaults and project overrides for Intake and Planning. Guidance lives in this host's vault and is loaded by Morning check, task Start / Resume, /mission-task and dev-flow context.">
+    <SettingsSection title="Workflow instructions" info="Host defaults and project overrides for Intake and Planning. Guidance lives in this host's vault and is loaded by Discovery, task Start / Resume, /mission-task and dev-flow context.">
       <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Save or discard edits before switching scope. Tool connections and credentials are configured separately.</Text>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
         <CompactLink label="Host defaults" colors={colors} selected={projectId === null} disabled={editing} onPress={() => setProjectId(null)} />

@@ -29,6 +29,7 @@ import { resolveCurrentChatReview } from "./chat-review";
 // messages do not identify their transport, so we deliberately do not scrape them for consent.
 import { createFleetStore } from "./fleet-store";
 import { PIPELINE_CHAT_HELP } from "./chat-pipeline";
+import { INTAKE_CHAT_HELP } from "./chat-intake";
 
 export function registerChatWorkflow(server: PluginServerContext, deps: { decisions: ReturnType<typeof createDecisionStore>; pullRequests: ReturnType<typeof createPullRequestService>; questions: ReturnType<typeof createQuestionStore> }) {
   const offers = createChatActions(join(process.env.PASEO_HOME?.trim() || join(homedir(), ".paseo"), "plugin-data", "mission-control", "chat-actions.json"));
@@ -69,7 +70,7 @@ export function registerChatWorkflow(server: PluginServerContext, deps: { decisi
     };
     {
       const command = text.trim();
-      if (/^(help|\?)$/i.test(command)) return { text: `${CHAT_HELP}\nreview details <ticket or task ID> — open the full technical report\n${PIPELINE_CHAT_HELP}` };
+      if (/^(help|\?)$/i.test(command)) return { text: `${CHAT_HELP}\nreview details <ticket or task ID> — open the full technical report\n${PIPELINE_CHAT_HELP}\n${INTAKE_CHAT_HELP}` };
       const detailRequest = /^proposal details ([a-f0-9]{10})$/i.exec(command);
       if (detailRequest) {
         const offer = await offers.details(owner, detailRequest[1]);

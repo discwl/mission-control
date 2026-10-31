@@ -3,6 +3,7 @@ import { MissionControl } from "./client/mission-control";
 import { registerWorkerHistory } from "./client/worker-history";
 import { registerCoordinatorReturn } from "./client/coordinator-return";
 import { registerFleetClient } from "./client/fleet";
+import { registerMissionControlV2 } from "./client/mission-control-v2";
 import { WorkspaceTasks } from "./client/workspace-tasks";
 import { resolveTaskPrompt } from "./shared/runs";
 import { WorkspaceReview } from "./client/review-panel";
@@ -38,11 +39,14 @@ import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { setUnifiedExplorer } from "./client/layout";
 
 import { registerChatClient } from "./client/chat-workflow";
+import { registerKanban } from "./client/kanban";
 
 export default function contribute(client: PluginClientContext) {
   const stopChat = registerChatClient(client);
   setPluginClient(client);
   const stopFleet = registerFleetClient(client);
+  const stopMissionControlV2 = registerMissionControlV2(client);
+  const stopKanban = registerKanban(client);
   const stopWorkerHistory = registerWorkerHistory(client);
   const stopCoordinatorReturn = registerCoordinatorReturn(client);
   // addFilePanel and the unified compact Explorer shipped together in Paseo 0.13.
@@ -188,6 +192,8 @@ export default function contribute(client: PluginClientContext) {
     stopChat();
     stopCoordinatorReturn();
     stopWorkerHistory();
+    stopKanban();
+    stopMissionControlV2();
     stopFleet();
     removeNeedsYouTimeline();
     removeAgentsSettings();

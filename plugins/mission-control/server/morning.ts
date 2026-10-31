@@ -45,11 +45,11 @@ function inside(root: string, candidate: string) {
 
 function parseReport(markdown: string): { fields: MorningReport; body: string } {
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(markdown);
-  if (!match) throw new Error("The Morning check report has no frontmatter.");
+  if (!match) throw new Error("The Discovery report has no frontmatter.");
   const fields: Record<string, unknown> = {};
   for (const line of match[1].split(/\r?\n/)) {
     const at = line.indexOf(":");
-    if (at < 1 || Object.hasOwn(fields, line.slice(0, at))) throw new Error("The Morning check report has invalid frontmatter.");
+    if (at < 1 || Object.hasOwn(fields, line.slice(0, at))) throw new Error("The Discovery report has invalid frontmatter.");
     fields[line.slice(0, at)] = JSON.parse(line.slice(at + 1).trim());
   }
   return { fields: morningReportSchema.parse(fields), body: markdown.slice(match[0].length).trim() };
@@ -84,7 +84,7 @@ async function withLock<T>(folder: string, name: string, busyMessage: string, ac
 
 export function morningPrompt(input: { hostId: string; serverId: string; agentId: string; kitRoot: string; fixture: boolean; workflowInstructions?: string }) {
   return [
-    `Run the Mission Control Morning check for host ${input.hostId} (server ${input.serverId}).`,
+    `Run the Mission Control Discovery for host ${input.hostId} (server ${input.serverId}).`,
     `Read ${join(input.kitRoot, "skills", "morning-check", "SKILL.md")} and follow it. The report script is ${join(input.kitRoot, "scripts", "morning-check.mjs")}.`,
     input.fixture
       ? "Tracker: use the test fixture. Run the report with --tracker fixture and do not read Jira or Azure DevOps or consult external systems, even when custom guidance names them."
@@ -112,7 +112,7 @@ export function createMorningStore(overrides: Partial<Deps> = {}) {
   // The vault's host.json names the host this installation serves; other hosts run their own.
   async function localHost(serverId: string) {
     const host = JSON.parse(await readFile(join(await realpath(deps.vaultRoot), "host.json"), "utf8"));
-    if (host?.schemaVersion !== 1 || typeof host.hostId !== "string" || host.serverId !== serverId) throw new Error("Open Mission Control on that host to use its Morning check.");
+    if (host?.schemaVersion !== 1 || typeof host.hostId !== "string" || host.serverId !== serverId) throw new Error("Open Mission Control on that host to use its Discovery.");
     return { hostId: host.hostId as string, serverId };
   }
   async function readReport(folder: string, name: string) {
@@ -160,7 +160,7 @@ export function createMorningStore(overrides: Partial<Deps> = {}) {
       report, reportError, missing: comparison.missing,
       imported: comparison.imported.map(({ item, taskIds }) => ({ item, tasks: taskIds.map(id => briefs.get(id)!) })),
       launch,
-      agent: snapshot && !snapshot.archivedAt ? { id: snapshot.id, title: snapshot.title || "Morning check", status: snapshot.status, busy: busy(snapshot) } : null,
+      agent: snapshot && !snapshot.archivedAt ? { id: snapshot.id, title: snapshot.title || "Discovery", status: snapshot.status, busy: busy(snapshot) } : null,
     };
   }
 
@@ -168,17 +168,18 @@ export function createMorningStore(overrides: Partial<Deps> = {}) {
     const { hostId } = await localHost(input.serverId);
     const folder = await daily();
     // Check, journal and agent creation happen under one lock, so two near-simultaneous starts can't both pass the check.
-    await withLock(folder, ".morning-start.lock", "A Morning check is starting. Refresh and retry.", async () => {
+    await withLock(folder, ".morning-start.lock", "A Discovery is starting. Refresh and retry.", async () => {
       const previous = await readLaunch(folder);
       const running = previous ? await refreshAgent(paseo, previous.agentId) : null;
-      if (running && !running.archivedAt && busy(running)) throw new Error("A Morning check is still running. Open its agent.");
+      if (previous?.phase === "sending" && !running) throw new Error(`The previous Discovery launch is unconfirmed. Inspect agent ${previous.agentId} before starting another scan.`);
+      if (running && !running.archivedAt && busy(running)) throw new Error("A Discovery is still running. Open its agent.");
       const workspace = await paseo.workspaces.ref(input.workspaceId).refresh();
       if (!workspace || workspace.archivingAt) throw new Error("This workspace is unavailable on this host.");
       const kitRoot = await deps.kitRoot(workspace.projectId);
-      if (!kitRoot) throw new Error("This workspace's project has no Development Flow profile with a kitRoot. Run the Morning check from a workspace whose project has one.");
+      if (!kitRoot) throw new Error("This workspace's project has no Development Flow profile with a kitRoot. Run the Discovery from a workspace whose project has one.");
       for (const file of [join(kitRoot, "skills", "morning-check", "SKILL.md"), join(kitRoot, "scripts", "morning-check.mjs")]) {
         try { if (!(await lstat(file)).isFile()) throw new Error(); }
-        catch { throw new Error(`The Development Flow kit at ${kitRoot} has no Morning check yet (${file} is missing).`); }
+        catch { throw new Error(`The Development Flow kit at ${kitRoot} has no Discovery yet (${file} is missing).`); }
       }
       const instructions = await createWorkflowInstructionsStore(deps.vaultRoot).read({ serverId: input.serverId, hostId, projectId: workspace.projectId });
       const guidance = workflowInstructionsPrompt(instructions, ["intake"]);
@@ -191,7 +192,7 @@ export function createMorningStore(overrides: Partial<Deps> = {}) {
       try {
         const config = { provider: input.provider, ...(input.modeId ? { modeId: input.modeId } : {}), ...(input.thinkingOptionId ? { thinkingOptionId: input.thinkingOptionId } : {}) };
         const agent = await paseo.workspaces.ref(input.workspaceId).agents.create({
-          agentId: launch.agentId, idempotencyKey: launch.launchId, config, title: "Morning check",
+          agentId: launch.agentId, idempotencyKey: launch.launchId, config, title: "Discovery",
           labels: { "mission-control.role": "morning-check" },
           prompt: morningPrompt({ hostId, serverId: input.serverId, agentId: launch.agentId, kitRoot, fixture: input.fixture, workflowInstructions: guidance }),
         });
