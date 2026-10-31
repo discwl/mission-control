@@ -2,6 +2,7 @@ import type { PluginRpcContract } from "@getpaseo/plugin";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import * as agentNames from "../shared/agent-names";
 import * as decisions from "../shared/decisions";
+import { readDecisionPlan } from "../shared/plan-approval";
 import * as launch from "../shared/launch";
 import * as merge from "../shared/merge";
 import { getHostIdentity } from "../shared/orchestrator";
@@ -82,7 +83,7 @@ const isContract = (value: unknown): value is PluginRpcContract => {
 // What another host's view may ask this copy for: the Tasks, Docs, Review and Attention views' calls.
 // Setup, tools, settings, updates and cleanup stay with each host's own Mission Control.
 export const bridgeContracts: ReadonlyMap<string, PluginRpcContract> = new Map(
-  [tasks, taskSummary, runs, launch, decisions, questions, merge, pullRequest, paseoMetadata, review, vault, subagents, agentNames]
+  [tasks, taskSummary, runs, launch, decisions, { readDecisionPlan }, questions, merge, pullRequest, paseoMetadata, review, vault, subagents, agentNames]
     .flatMap(module => Object.values(module).filter(isContract).map(contract => [contract.name, contract] as const)),
 );
 

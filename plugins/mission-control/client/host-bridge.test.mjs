@@ -37,7 +37,7 @@ test("a copy on another protocol is reported as older or newer", () => {
 });
 
 test("other hosts may call the shared views' contracts, not setup, tools, updates or cleanup", () => {
-  for (const name of ["tasks.list", "read-vault-file", "save-vault-file", "review.snapshot", "decisions.list", "attention.waiting"]) assert.ok(bridgeContracts.has(name), name);
+  for (const name of ["tasks.list", "read-vault-file", "save-vault-file", "review.snapshot", "decisions.list", "decisions.plan", "attention.waiting"]) assert.ok(bridgeContracts.has(name), name);
   for (const name of ["setup.apply", "plugin-updates.apply", "tools-inventory.apply-toggle", "agents.cleanup.archive", "orchestrator.bindings", "host.identity"]) assert.ok(!bridgeContracts.has(name), name);
 });
 
@@ -61,6 +61,27 @@ test("this installation registers under its server ID and answers only allowed c
   await assert.rejects(found.rpc("setup.apply", {}), /doesn't offer setup.apply/);
   stop();
   assert.deepEqual(findCopy("srv_here"), { missing: "none" });
+});
+
+test("the remote plan reader is exposed with exact task and version input", async t => {
+  const { readDecisionPlan } = require("../shared/plan-approval.ts");
+  assert.equal(bridgeContracts.get("decisions.plan"), readDecisionPlan);
+  const input = { serverId: "srv_plan_owner", workspaceId: "wks_owner", taskId: "task_aaaa", runId: "run_bbbb", decisionId: "decision_cccc", expectedRevision: "saved-request-revision" };
+  const calls = [];
+  const stop = startCopyRegistration({ rpc: async (contract, value) => {
+    if (contract.name === "host.identity") return { serverId: "srv_plan_owner" };
+    calls.push({ contract, value });
+    return { source: "snapshot", revision: "saved-plan-revision" };
+  } });
+  t.after(stop);
+  await turn();
+  const remote = findCopy("srv_plan_owner").copy;
+  assert.equal(remote.supports("decisions.plan"), true);
+  assert.deepEqual(await remote.rpc("decisions.plan", input), { source: "snapshot", revision: "saved-plan-revision" });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].contract, readDecisionPlan);
+  assert.deepEqual(calls[0].value, input);
+  assert.equal(remote.supports("plugin-updates.apply"), false);
 });
 
 test("registration retries until the server says which host it is", async t => {
