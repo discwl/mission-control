@@ -44,15 +44,23 @@ function TaskCard({ item, colors, open }: { item: KanbanTask; colors: Colors; op
   </Pressable>;
 }
 
+function LaneHeading({ lane, count, colors, loading }: { lane: typeof kanbanLanes[number]; count: number; colors: Colors; loading: boolean }) {
+  return <View style={{ padding: 13, gap: 6 }}>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}><Icon name={lane.icon} size={16} color={laneColor(lane.id, colors)} /><Text accessibilityRole="header" style={{ color: colors.foreground, fontWeight: "600", flex: 1 }}>{lane.title}</Text><Text style={{ color: colors.foregroundMuted, fontVariant: ["tabular-nums"] }}>{loading ? "…" : count}</Text></View>
+    <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>{lane.description}</Text>
+  </View>;
+}
+
+function LaneEmpty({ colors, loading }: { colors: Colors; loading: boolean }) {
+  return <View style={{ padding: 24, alignItems: "center", gap: 12 }}><Icon name={loading ? "RefreshCw" : "CircleCheck"} size={24} color={colors.foregroundMuted} /><Text style={{ color: colors.foregroundMuted, textAlign: "center", lineHeight: 21 }}>{loading ? "Reading managed hosts…" : "No matching tasks in this lane."}</Text></View>;
+}
+
 function Lane({ lane, tasks, colors, width, open, loading }: { lane: typeof kanbanLanes[number]; tasks: KanbanTask[]; colors: Colors; width: number; open(key: string): void; loading: boolean }) {
   return <View style={{ width, flex: 1, minHeight: 0, backgroundColor: colors.surface1, borderRadius: 8 }}>
-    <View style={{ padding: 13, gap: 6 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}><Icon name={lane.icon} size={16} color={laneColor(lane.id, colors)} /><Text accessibilityRole="header" style={{ color: colors.foreground, fontWeight: "600", flex: 1 }}>{lane.title}</Text><Text style={{ color: colors.foregroundMuted, fontVariant: ["tabular-nums"] }}>{loading ? "…" : tasks.length}</Text></View>
-      <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 18 }}>{lane.description}</Text>
-    </View>
+    <LaneHeading lane={lane} count={tasks.length} colors={colors} loading={loading} />
     <FlatList data={tasks} keyExtractor={item => item.row.key} style={{ flex: 1 }} contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: 16 }}
       initialNumToRender={12} maxToRenderPerBatch={12} renderItem={({ item }) => <TaskCard item={item} colors={colors} open={() => open(item.row.key)} />}
-      ListEmptyComponent={<View style={{ padding: 24, alignItems: "center", gap: 12 }}><Icon name={loading ? "RefreshCw" : "CircleCheck"} size={24} color={colors.foregroundMuted} /><Text style={{ color: colors.foregroundMuted, textAlign: "center", lineHeight: 21 }}>{loading ? "Reading managed hosts…" : "No matching tasks in this lane."}</Text></View>} />
+      ListEmptyComponent={<LaneEmpty colors={colors} loading={loading} />} />
   </View>;
 }
 
@@ -93,10 +101,7 @@ export function Kanban({ theme, host, layout, navigation, params }: PluginScreen
   const selected = query.tasks.find(item => item.row.key === selection);
   const reset = () => { setScope(emptyKanbanScope()); setFilterMenu(null); setSearch(""); setFocus("All work"); setLaneFilter("all"); };
   const refresh = () => { void query.refetch(); };
-  return <View onLayout={event => { setWidth(event.nativeEvent.layout.width); setHeight(event.nativeEvent.layout.height); }} style={{ flex: 1, minHeight: 0, backgroundColor: colors.surface0 }}>
-    {intake && query.data ? <KanbanIntake snapshot={query.data} colors={colors} navigation={navigation} close={() => setIntake(false)} refresh={refresh} openTask={(serverId, taskId) => { setIntake(false); setSelection(`${serverId}:${taskId}`); refresh(); }} /> : selection && selected && query.data ? <KanbanDetail key={selected.row.key} item={selected} snapshot={query.data} colors={colors} compact={sizing.singleLane} height={height} navigation={navigation} close={() => setSelection(null)} refresh={refresh} /> : <>
-      {filterMenu && !sizing.singleLane ? <Pressable accessibilityRole="button" accessibilityLabel="Close filter menu" onPress={() => setFilterMenu(null)} style={{ position: "absolute", top: 0, bottom: 0, left: 0, right: 0, zIndex: 2 }} /> : null}
-      <View style={{ zIndex: 3, padding: sizing.singleLane ? 12 : 18, gap: 12, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+  const header = <View style={{ zIndex: 3, padding: sizing.singleLane ? 12 : 18, gap: 12, borderBottomWidth: 1, borderBottomColor: colors.border }}>
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
           <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}><Icon name="SquareKanban" size={22} color={colors.foregroundMuted} /><Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 22, fontWeight: "600" }}>Kanban</Text></View>
           <TextInput accessibilityLabel="Search Kanban tasks" placeholder="Search tickets, tasks, workers or blockers" placeholderTextColor={colors.foregroundMuted} value={search} onChangeText={setSearch} style={{ flex: 1, minWidth: sizing.singleLane ? 180 : 260, color: colors.foreground, backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.border, borderRadius: 7, padding: 10, minHeight: 42 }} />
@@ -128,13 +133,26 @@ export function Kanban({ theme, host, layout, navigation, params }: PluginScreen
           {!sizing.singleLane ? <CompactLink label="All lanes" selected={laneFilter === "all"} colors={colors} onPress={() => setLaneFilter("all")} /> : null}
           {kanbanLanes.map(lane => <CompactLink key={lane.id} label={`${lane.title} · ${visible.filter(item => item.lane === lane.id).length}`} selected={sizing.singleLane ? chosenLane.id === lane.id : laneFilter === lane.id} colors={colors} onPress={() => { setLaneFilter(lane.id); setShowEmpty(true); boardScroll.current?.scrollTo({ x: 0, animated: false }); }} />)}
         </ScrollView>
-      </View>
-      {query.isError && !query.data ? <View style={{ padding: 24, gap: 10 }}><Text style={{ color: colors.foreground }}>The board could not load. Check the selected installation's connection and refresh.</Text></View>
-        : sizing.singleLane ? <View style={{ flex: 1, minHeight: 0, padding: 12 }}><Lane lane={chosenLane} tasks={visible.filter(item => item.lane === chosenLane.id)} colors={colors} width={sizing.laneWidth} open={setSelection} loading={query.isPending} /></View>
-        : <ScrollView ref={boardScroll} horizontal style={{ flex: 1 }} contentContainerStyle={{ padding: 12, gap: 12, flexDirection: "row" }}>
+      </View>;
+  const loadError = query.isError && !query.data;
+  const errorMessage = <View style={{ padding: 24, gap: 10 }}><Text style={{ color: colors.foreground }}>The board could not load. Check the selected installation's connection and refresh.</Text></View>;
+  const laneTasks = visible.filter(item => item.lane === chosenLane.id);
+  return <View onLayout={event => { setWidth(event.nativeEvent.layout.width); setHeight(event.nativeEvent.layout.height); }} style={{ flex: 1, minHeight: 0, backgroundColor: colors.surface0 }}>
+    {intake && query.data ? <KanbanIntake snapshot={query.data} colors={colors} navigation={navigation} close={() => setIntake(false)} refresh={refresh} openTask={(serverId, taskId) => { setIntake(false); setSelection(`${serverId}:${taskId}`); refresh(); }} /> : selection && selected && query.data ? <KanbanDetail key={selected.row.key} item={selected} snapshot={query.data} colors={colors} compact={sizing.singleLane} height={height} navigation={navigation} close={() => setSelection(null)} refresh={refresh} /> : sizing.singleLane ?
+      // One vertical scroll owner: controls and cards must move together even when the header fills the viewport.
+      <FlatList testID="kanban-mobile-list" data={loadError ? [] : laneTasks} keyExtractor={item => item.row.key}
+        style={{ flex: 1, minHeight: 0 }} contentContainerStyle={{ paddingBottom: 32 }} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag"
+        ListHeaderComponent={<>{header}{loadError ? null : <LaneHeading lane={chosenLane} count={laneTasks.length} colors={colors} loading={query.isPending} />}</>}
+        initialNumToRender={12} maxToRenderPerBatch={12}
+        renderItem={({ item }) => <View style={{ paddingHorizontal: 12 }}><TaskCard item={item} colors={colors} open={() => setSelection(item.row.key)} /></View>}
+        ListEmptyComponent={loadError ? errorMessage : <LaneEmpty colors={colors} loading={query.isPending} />} />
+      : <>
+        {filterMenu ? <Pressable accessibilityRole="button" accessibilityLabel="Close filter menu" onPress={() => setFilterMenu(null)} style={{ position: "absolute", top: 0, bottom: 0, left: 0, right: 0, zIndex: 2 }} /> : null}
+        {header}
+        {loadError ? errorMessage : <ScrollView ref={boardScroll} horizontal style={{ flex: 1 }} contentContainerStyle={{ padding: 12, gap: 12, flexDirection: "row" }}>
           {displayedLanes.map(lane => <Lane key={lane.id} lane={lane} tasks={visible.filter(item => item.lane === lane.id)} colors={colors} width={sizing.laneWidth} open={setSelection} loading={query.isPending} />)}
         </ScrollView>}
-    </>}
+      </>}
   </View>;
 }
 
