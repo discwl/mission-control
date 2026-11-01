@@ -10,7 +10,7 @@ import { KanbanIntake } from "./kanban-intake";
 import { filterKanban, kanbanCounts, kanbanSidebarCounts, kanbanLanes, kanbanLayout, kanbanScreenId, type KanbanFocus, type KanbanLane, type KanbanTask } from "./kanban-model";
 
 import { KanbanFilterMenu } from "./kanban-filter-menu";
-import { changeKanbanScope, emptyKanbanScope, kanbanFilterOptions, matchesKanbanScope, type ScopeKind } from "./kanban-filters-model";
+import { changeKanbanScope, emptyKanbanScope, kanbanFilterOptions, kanbanProjectLabel, matchesKanbanScope, type ScopeKind } from "./kanban-filters-model";
 
 type Colors = PluginSurfaceProps["theme"]["colors"];
 const focuses: KanbanFocus[] = ["All work", "Needs you", "Running"];
@@ -26,7 +26,7 @@ function TaskCard({ item, colors, open }: { item: KanbanTask; colors: Colors; op
     style={({ pressed }) => ({ padding: 14, gap: 10, marginBottom: 10, backgroundColor: hovered || pressed ? colors.surface1 : colors.surface2, borderRadius: 9, borderWidth: 1, borderColor: hovered ? colors.foregroundMuted : colors.border, minHeight: 148 })}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
       <Icon name="Server" size={13} color={colors.foregroundMuted} />
-      <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 12, flex: 1 }}>{row.hostLabel} · {row.entry.task.ticket?.key ?? row.entry.task.projectId}</Text>
+      <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 12, flex: 1 }}>{row.hostLabel} · {row.entry.task.ticket?.key ?? kanbanProjectLabel(item)}</Text>
       {row.state === "Unconfirmed" ? <Icon name="WifiOff" size={14} color={colors.statusWarning} /> : null}
     </View>
     <Text numberOfLines={3} style={{ color: colors.foreground, fontWeight: "600", fontSize: 14, lineHeight: 20 }}>{row.entry.task.title}</Text>
@@ -63,6 +63,8 @@ function Lane({ lane, tasks, colors, width, open, loading }: { lane: typeof kanb
       ListEmptyComponent={<LaneEmpty colors={colors} loading={loading} />} />
   </View>;
 }
+
+import { KanbanOrigin } from "./kanban-origin";
 
 export function Kanban({ theme, host, layout, navigation, params }: PluginScreenProps) {
   const colors = theme.colors;
@@ -109,6 +111,8 @@ export function Kanban({ theme, host, layout, navigation, params }: PluginScreen
           <CompactLink label="Intake" colors={colors} disabled={!query.data} onPress={() => { setFilterMenu(null); setIntake(true); }} />
           <CompactLink label={query.isFetching ? "Refreshing…" : "Refresh"} colors={colors} disabled={query.isFetching} onPress={refresh} />
         </View>
+        <KanbanOrigin serverId={query.data?.serverId ?? host.id} colors={colors} />
+        <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{query.isFetching ? "Refreshing host observations…" : query.dataUpdatedAt ? `Last board refresh ${formatDateTime(new Date(query.dataUpdatedAt).toISOString())}. Host observations may be older.` : "Waiting for host observations."}</Text>
         <View style={{ zIndex: 10, flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
           {([{ kind: "hosts", title: "Host", icon: "Server", hint: "Select one or more hosts. Changing hosts clears project and workspace selections." },
             { kind: "projects", title: "Project", icon: "FolderKanban", hint: "Projects on the selected hosts. Changing projects clears workspace selections." },
@@ -166,7 +170,7 @@ export function KanbanSidebar(props: PluginSidebarItemProps) {
     { key: "review", icon: "ClipboardCheck" as const, count: counts.ready, label: `${counts.plans} plans and ${counts.reviews} code reviews waiting for your decision; not completed tasks`, color: colors.statusSuccess },
     { key: "hosts", icon: "CloudOff" as const, count: counts.unavailableHosts, label: `${counts.unavailableHosts} hosts unavailable, stale or incomplete; their activity and decisions are excluded`, color: colors.foregroundMuted },
   ];
-  const summary = query.isPending ? "Loading Kanban status" : query.isError ? "Could not refresh Kanban. Open the board and refresh the host connections." : indicators.map(item => item.label).join(". ");
+  const summary = "Selected host's managed fleet, before board filters. " + (query.isPending ? "Loading Kanban status" : query.isError ? "Could not refresh Kanban. Open the board and refresh the host connections." : indicators.map(item => item.label).join(". "));
   const trailing = <View accessibilityLabel={summary} style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
     {query.isPending ? <Text accessibilityLabel="Loading Kanban status" style={{ color: colors.foregroundMuted }}>…</Text> : indicators.filter(item => item.count > 0).map(item => <View key={item.key} accessible accessibilityLabel={item.label} {...(Platform.OS === "web" ? { title: item.label } : {})} style={{ flexDirection: "row", alignItems: "center", gap: 3 }}>
       {item.key === "running" ? <ActivityIndicator size={12} color={item.color} accessibilityLabel="Agents running" /> : <Icon name={item.icon} size={12} color={item.color} />}

@@ -212,6 +212,33 @@ test("an older decision without plain fields, or with a malformed block, still l
   assert.deepEqual(entry.resolvedFindings, []);
 });
 
+test("saved review diff requires exact host, workspace, request revision and candidate", async t => {
+  const f = await fixture(t, { findings: [] });
+  const [legacy] = (await f.store.list(ids.serverId)).open;
+  await assert.rejects(f.store.reviewSnapshot({ ...ids, expectedRevision: legacy.revision }, f.paseo, ids.serverId), /no recorded comparison base/);
+  const file = join(f.runFolder, "decisions", `${ids.decisionId}.md`);
+  const saved = parseRecord(await readFile(file, "utf8"));
+  const candidate = { head: "a".repeat(40), tree: "b".repeat(40) };
+  const reviewContext = { baseCommit: "c".repeat(40), candidate, reviewers: [{ agentId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa", model: "Reported reviewer", report: "review.md" }] };
+  await writeFile(file, markdownRecord({ ...saved.fields, candidate, reviewContext }, saved.body));
+  const [entry] = (await f.store.list(ids.serverId)).open;
+  assert.deepEqual(entry.decision.reviewContext, reviewContext);
+  const input = { ...ids, expectedRevision: entry.revision };
+  f.paseo.workspaces = { ref: id => { assert.equal(id, ids.workspaceId); return { refresh: async () => ({ workspaceDirectory: f.folder }) }; } };
+  const review = require("./review.ts"), calls = [];
+  t.mock.method(review, "collectFrozenReview", async (...args) => { calls.push(args); return { baseCommit: args[1], candidateTree: args[2], files: [] }; });
+  await assert.rejects(f.store.reviewSnapshot({ ...input, expectedRevision: legacy.revision }, f.paseo, ids.serverId), /request changed/);
+  await assert.rejects(f.store.reviewSnapshot({ ...input, workspaceId: "wks_other" }, f.paseo, ids.serverId));
+  await assert.rejects(f.store.reviewSnapshot(input, f.paseo, "srv_other"), /this Mission Control host only/);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(await f.store.reviewSnapshot(input, f.paseo, ids.serverId), { baseCommit: reviewContext.baseCommit, candidateTree: candidate.tree, files: [] });
+  assert.deepEqual(calls, [[f.folder, reviewContext.baseCommit, candidate.tree]]);
+  await writeFile(file, markdownRecord({ ...saved.fields, candidate, reviewContext: { ...reviewContext, candidate: { ...candidate, tree: "d".repeat(40) } } }, saved.body));
+  const [mismatch] = (await f.store.list(ids.serverId)).open;
+  await assert.rejects(f.store.reviewSnapshot({ ...input, expectedRevision: mismatch.revision }, f.paseo, ids.serverId), /different candidate/);
+  assert.equal(f.sent.length, 0);
+});
+
 async function versionedPlan(t) {
   const f = await fixture(t, { kind: "plan", findings: [] });
   await writeFile(join(f.folder, "plan.md"), "# Plan\n\nPrevent new full discounts. Leave existing orders untouched.\n");

@@ -16,7 +16,7 @@ export function resolveEvidence(value: string, documents: readonly FlowDocument[
     const matches = documents.filter(document => windows ? document.name.toLowerCase() === name.toLowerCase() : document.name === name);
     if (matches.length === 1) return { kind: "document", document: matches[0] };
   }
-  const fileReference = /\.(?:md|txt|json|yaml|yml|pdf|log)$/i.test(path) && (absolute || !/[\s:]/.test(path));
+  const fileReference = /\.(?:md|txt|csv|json|yaml|yml|pdf|log)$/i.test(path) && (absolute || !/[\s:]/.test(path));
   return { kind: fileReference ? "unavailable" : "statement", text };
 }
 

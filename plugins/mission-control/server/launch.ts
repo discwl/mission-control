@@ -197,7 +197,8 @@ export function createTaskLauncher(overrides: Partial<LauncherDeps> = {}) {
     } else if (context.run || launch) {
       if (!usable) { action = "blocked"; message = "The linked agent is unavailable or archived. Its run is preserved; continue from the handoff in a workspace agent."; }
       else if (!isQuiet(snapshot!) || snapshot!.activeTurn || snapshot!.pendingPermissions.length) { action = "open"; message = "This agent is active or needs a response. Open it to continue."; }
-      else if (launch && context.run?.updatedAt === launch.runUpdatedAt && !(snapshot!.lastUserMessageAt !== launch.lastUserMessageAt && ["finished", "error"].includes(snapshot!.attentionReason ?? ""))) {
+      else if (snapshot!.attentionReason === "error") { action = "resume"; message = "The last agent turn failed. Inspect its error, then resume this same run when the cause is resolved."; }
+      else if (launch && context.run?.updatedAt === launch.runUpdatedAt && !(snapshot!.lastUserMessageAt !== launch.lastUserMessageAt && snapshot!.attentionReason === "finished")) {
         action = "open"; message = "Prompt accepted. Waiting for the agent to record progress.";
       } else { action = "resume"; message = "Resume the linked agent using the latest task context and handoff."; }
     }
@@ -208,7 +209,7 @@ export function createTaskLauncher(overrides: Partial<LauncherDeps> = {}) {
       catch (error) { branch = { source: "template", note: null, options: [], problem: error instanceof Error ? error.message : String(error) }; }
     }
     // The branch preview is part of the revision, so a start never creates a name the user didn't see.
-    const revision = createHash("sha256").update(JSON.stringify([context.task.updatedAt, context.run, launch, snapshot?.updatedAt, snapshot?.status, snapshot?.activeTurn, snapshot?.pendingPermissions, branch])).digest("hex");
+    const revision = createHash("sha256").update(JSON.stringify([context.task.updatedAt, context.run, launch, snapshot?.updatedAt, snapshot?.status, snapshot?.attentionReason, snapshot?.activeTurn, snapshot?.pendingPermissions, branch])).digest("hex");
     const worktree = context.task.worktree ? { workspaceId: context.task.worktree.workspaceId, branch: context.task.worktree.branch, baseCommit: context.task.worktree.baseCommit } : null;
     const status: LaunchStatus = {
       revision, action, message, launch, run: context.run,
@@ -256,6 +257,7 @@ export function createTaskLauncher(overrides: Partial<LauncherDeps> = {}) {
     let { context, snapshot, status: current, bound } = await inspect(input, paseo);
     if (current.revision !== input.expectedRevision) throw new Error("Task or agent changed. Refresh before starting it.");
     if (!["start", "resume", "recover"].includes(current.action)) throw new Error(current.message);
+    if (current.action !== "start" && (input.provider || input.modeId || input.thinkingOptionId)) throw new Error("Resume and recovery preserve the saved worker configuration. Requested model, reasoning or permission settings were not applied. Resume or recover without configuration overrides; update an existing worker in Paseo if needed.");
     if (input.parent && current.action === "start") await requireLaunchParent(input.parent, paseo);
     if (input.isolate && current.action === "start") {
       if (!context.canIsolate) throw new Error("This task can't start in its own worktree. Start it in this workspace instead.");

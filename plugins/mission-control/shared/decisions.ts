@@ -1,6 +1,8 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
 import { planReferenceSchema } from "./plan-approval";
+import { reviewContextSchema } from "./review-context.mjs";
+import { reviewFileSchema } from "./review";
 
 const taskId = z.string().regex(/^task_[a-f0-9-]+$/);
 const runId = z.string().regex(/^run_[a-f0-9-]+$/);
@@ -80,6 +82,8 @@ export const decisionSchema = z.object({
   plain: decisionPlainSchema.nullable().catch(null),
   // Immutable full plan and brief captured when approval was requested. Legacy records have none.
   plan: planReferenceSchema.nullable().optional(),
+  // Explicit reported provenance; never upgrades a legacy review to managed verification.
+  reviewContext: reviewContextSchema.nullable().optional(),
   reviewVerification: z.object({ reviewers: z.array(z.object({ agentId: z.string(), model: z.string(), profile: z.string(), checkpointId: z.string(), reviewed: z.number().int(), selected: z.number().int(), excluded: z.number().int() })), findings: z.number().int() }).nullable().optional(),
 });
 export type Decision = z.infer<typeof decisionSchema>;
@@ -99,6 +103,12 @@ export const decisionEntrySchema = z.object({
 export type DecisionEntry = z.infer<typeof decisionEntrySchema>;
 
 export const decisionRefSchema = z.object({ serverId: z.string().min(1), workspaceId: z.string().min(1), taskId, runId, decisionId });
+
+export const readDecisionReview = defineRpc({
+  name: "decisions.review-snapshot",
+  input: decisionRefSchema.extend({ expectedRevision: z.string().min(1) }),
+  output: z.object({ baseCommit: z.string(), candidateTree: z.string(), files: z.array(reviewFileSchema) }),
+});
 
 export const listDecisions = defineRpc({
   name: "decisions.list",

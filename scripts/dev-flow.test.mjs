@@ -449,6 +449,23 @@ test("a review decision records the reviewed candidate without touching the chec
   assert.equal(git(worktree, "diff", "--cached", "--name-only"), stagedBefore);
   // The tree is what committing everything would record: untracked files in, ignored files out.
   assert.deepEqual(git(worktree, "ls-tree", "-r", "--name-only", decision.candidate.tree).split("\n"), [".gitignore", "README.md", "new.txt"]);
+  const contextRun = JSON.parse(run("start", ["--cwd", worktree]).stdout).run.runId;
+  const reviewContext = { baseCommit: decision.candidate.head, candidate: decision.candidate,
+    reviewers: [{ agentId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa", model: "Independent reported reviewer", report: `runs/${contextRun}/review/report.md` }] };
+  const payload = { kind: "review", question: "Accept the reviewed candidate?", summary: "Reported independent review.", evidence: [reviewContext.reviewers[0].report], reviewContext };
+  await writeFile(input, JSON.stringify({ ...payload, reviewContext: { ...reviewContext, candidate: { ...decision.candidate, tree: "a".repeat(40) } } }));
+  const mismatch = run("request-decision", ["--run", contextRun, "--input", input, "--cwd", worktree]);
+  assert.notEqual(mismatch.status, 0); assert.match(mismatch.stderr, /candidate/);
+  await writeFile(input, JSON.stringify({ ...payload, reviewContext: { ...reviewContext, baseCommit: "f".repeat(40) } }));
+  assert.notEqual(run("request-decision", ["--run", contextRun, "--input", input, "--cwd", worktree]).status, 0);
+  await writeFile(input, JSON.stringify(payload));
+  const contextual = run("request-decision", ["--run", contextRun, "--input", input, "--cwd", worktree]);
+  assert.equal(contextual.status, 0, contextual.stderr);
+  const reported = JSON.parse(contextual.stdout).decision;
+  assert.deepEqual(reported.reviewContext, reviewContext);
+  assert.equal(reported.reviewVerification, null, "reported provenance must not become managed verification");
+  assert.equal(git(worktree, "status", "--porcelain"), statusBefore);
+  assert.equal(git(worktree, "diff", "--cached", "--name-only"), stagedBefore);
   git(worktree, "add", "-A");
   assert.equal(decision.candidate.tree, git(worktree, "write-tree"));
 

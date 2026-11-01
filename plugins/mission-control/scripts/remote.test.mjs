@@ -21,7 +21,10 @@ test("a first start works in its own worktree on the previewed branch, like the 
 
 test("a branch problem stops the start; resume and non-Git projects send only the revision", () => {
   assert.throws(() => launchInput(binding, status({ branch: preview([{ type: null, name: "feature/abc-1", problem: "That branch exists." }]) }), {}), /That branch exists\. Pass --branch/);
-  assert.deepEqual(launchInput(binding, status({ action: "resume" }), { provider: "codex/x" }), { ...binding, expectedRevision: "r1" });
+  assert.deepEqual(launchInput(binding, status({ action: "resume" }), {}), { ...binding, expectedRevision: "r1" });
+  for (const action of ["resume", "recover"]) for (const values of [{ provider: "codex/x" }, { thinking: "high" }, { mode: "full-access" }]) {
+    assert.throws(() => launchInput(binding, status({ action }), values), /requested settings were not applied/);
+  }
   assert.deepEqual(launchInput(binding, status({ canIsolate: false, branch: null }), {}), { ...binding, expectedRevision: "r1" });
 });
 
@@ -42,6 +45,9 @@ test("start leaves a running or blocked task alone and reports why", async () =>
   const result = await runCommand("start", { workspace: "wks_a", task: "task_1" }, host.rpc);
   assert.equal(result.started, false);
   assert.equal(result.action, "open");
+  const configured = await runCommand("start", { workspace: "wks_a", task: "task_1", provider: "codex/x" }, host.rpc);
+  assert.equal(configured.configurationApplied, false);
+  assert.match(configured.configurationMessage, /not applied/);
   assert.ok(!host.calls.some(([method]) => method === "tasks.launch.dispatch"));
 });
 

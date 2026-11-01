@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile, symlink } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
@@ -39,6 +39,35 @@ async function taskStore(t) {
   await writeFile(join(vault, "host.json"), JSON.stringify({ schemaVersion: 1, hostId: "personal", serverId }));
   return { vault, tasks: require(join(runtime, "server", "tasks.js")), shared: require(join(runtime, "shared", "tasks.js")) };
 }
+
+test("nested review and paired evidence is read-only, scoped, and refuses linked escapes", async t => {
+  const { vault, tasks, shared } = await taskStore(t);
+  const id = "task_aaaaaaaa-0000-4000-8000-000000000001";
+  const run = "run_bbbbbbbb-0000-4000-8000-000000000001";
+  const folder = join(vault, "Tasks", id);
+  const runFolder = join(folder, "runs", run);
+  await mkdir(join(runFolder, "review"), { recursive: true });
+  await mkdir(join(runFolder, "paired-2026-10-31"));
+  await writeFile(join(folder, "task.md"), markdown(task(id)));
+  await writeFile(join(runFolder, "run.md"), "Run");
+  await writeFile(join(runFolder, "review", "coverage-ledger.csv"), "file,reviewed\napp.ts,true\n");
+  await writeFile(join(runFolder, "paired-2026-10-31", "results.md"), "6 checks passed; live services not tested.");
+  const result = await tasks.listTaskDocumentRecords(serverId, workspaceId, id);
+  const name = `runs/${run}/paired-2026-10-31/results.md`;
+  const report = result.documents.find(document => document.name === name);
+  assert.match(report.content, /live services not tested/);
+  assert.equal(report.editable, false);
+  for (const document of result.documents) assert.equal(shared.taskDocumentSchema.safeParse(document).success, true);
+  for (const invalid of [`runs/${run}/review/../task.md`, `runs/${run}/review/../../other.md`, `C:/dev-vault/secret.md`, `runs/${run}/review/file:stream.md`]) {
+    assert.equal(shared.taskDocumentSchema.safeParse({ ...report, name: invalid }).success, false);
+  }
+  await assert.rejects(tasks.listTaskDocumentRecords(serverId, "wrong-workspace", id), /assign/i);
+  await assert.rejects(tasks.saveTaskDocumentRecord({ serverId, workspaceId, taskId: id, name, content: "overwrite", expectedRevision: report.revision }));
+  const outside = join(vault, "outside"); await mkdir(outside);
+  await writeFile(join(outside, "secret.md"), "secret");
+  await symlink(outside, join(runFolder, "paired-escape"), "junction");
+  await assert.rejects(tasks.listTaskDocumentRecords(serverId, workspaceId, id), /escapes|link/);
+});
 
 test("task intake retries keep one exact task and refuse conflicting identities", async t => {
   const { tasks } = await taskStore(t);

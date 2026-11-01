@@ -473,6 +473,23 @@ async function recentRunDocuments(taskFolder: string) {
     documents.push(await readDocument(join(run.folder, "run.md"), `runs/${run.name}/run.md`, false));
     try { documents.push(await readDocument(join(run.folder, "handoff.md"), `runs/${run.name}/handoff.md`, false)); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    // Review and paired-validation reports are read-only evidence, scoped to this exact run.
+    // Never follow links, recurse arbitrarily, or expose arbitrary vault files.
+    const artifactFolders = (await readdir(run.folder)).filter(name => /^(?:review|paired-[a-z0-9_-]+)$/.test(name));
+    let artifactCount = 0;
+    for (const name of artifactFolders.sort()) {
+      const directory = join(run.folder, name);
+      const kind = await lstat(directory);
+      if (!kind.isDirectory() || kind.isSymbolicLink() || !inside(run.folder, await realpath(directory))) throw new Error("Evidence folder escapes the run or is a link.");
+      const names = (await readdir(directory)).filter(file => /^[a-zA-Z0-9][a-zA-Z0-9_.-]*\.(?:md|txt|csv|json|log)$/.test(file)).sort();
+      artifactCount += names.length;
+      if (artifactCount > 50) throw new Error("This run has more than 50 review artifacts; narrow the saved evidence before loading it.");
+      for (const file of names) {
+        const path = join(directory, file);
+        if (!inside(directory, await realpath(path))) throw new Error("Evidence file escapes its run folder.");
+        documents.push(await readDocument(path, `runs/${run.name}/${name}/${file}`, false));
+      }
+    }
     const eventsPath = join(run.folder, "events");
     let eventNames: string[];
     try { eventNames = (await readdir(eventsPath)).filter(name => eventFilePattern.test(name)); }

@@ -83,7 +83,10 @@ export function describeLaunch(status) {
 /** The dispatch input for a launch status, the way Mission Control's Start button builds it. */
 export function launchInput(binding, status, values) {
   const input = { ...binding, expectedRevision: status.revision };
-  if (status.action !== "start") return input;
+  if (status.action !== "start") {
+    if (values.provider || values.thinking || values.mode) throw new Error("This task already has a worker. Resume/recover preserves its model, reasoning and permission settings; requested settings were not applied. Update the existing worker through Paseo, then retry without --provider, --thinking or --mode.");
+    return input;
+  }
   if (values.provider) input.provider = values.provider;
   if (values.thinking) input.thinkingOptionId = values.thinking;
   if (values.mode) input.modeId = values.mode;
@@ -137,7 +140,7 @@ export async function runCommand(command, values, rpc) {
     case "start": {
       const target = binding();
       const status = await rpc("tasks.launch.status", target);
-      if (!["start", "resume", "recover"].includes(status.action)) return { started: false, ...describeLaunch(status) };
+      if (!["start", "resume", "recover"].includes(status.action)) return { started: false, ...describeLaunch(status), ...((values.provider || values.thinking || values.mode) ? { configurationApplied: false, configurationMessage: "No launch occurred. Requested model, reasoning and permission settings were not applied to the existing worker." } : {}) };
       const input = launchInput(target, status, values);
       let nativeParent = { linked: false, reason: status.action === "start" ? "Originating chat or native host connection is unavailable." : "Existing workers keep their original parent." };
       if (status.action === "start" && values.parent) {

@@ -28,7 +28,7 @@ import { registerToolsInventory } from "./server/tools-inventory";
 import { ensureStableKit, localSetupHost, registerSetup } from "./server/setup";
 import { createTaskWorktree } from "./server/worktree";
 import { createDecisionStore, profileKitRoot } from "./server/decisions";
-import { listDecisions, resendDecision, resolveDecision } from "./shared/decisions";
+import { listDecisions, readDecisionReview, resendDecision, resolveDecision } from "./shared/decisions";
 import { readDecisionPlan } from "./shared/plan-approval";
 import { createQuestionStore } from "./server/questions";
 import { createNeedsYouTimeline } from "./server/needs-you-timeline";
@@ -121,6 +121,7 @@ export default function contribute(context: PluginServerContext) {
     return result;
   });
   server.handle(readDecisionPlan, input => decisions.plan(input));
+  server.handle(readDecisionReview, async (input, { paseo }) => decisions.reviewSnapshot(input, paseo, await localServerId()));
   server.handle(resolveDecision, (input, { paseo }) => decisions.resolve(input, paseo));
   server.handle(resendDecision, (input, { paseo }) => decisions.resend(input, paseo));
   // Questions agents recorded with dev-flow ask, shown in Attention as Waiting for you, and the user's replies.

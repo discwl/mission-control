@@ -14,6 +14,7 @@ import { recentActivity } from "./task-flow-model";
 import { resolveEvidence } from "./task-flow-presentation";
 import { findingDiffPath, reviewReportModel } from "./review-report-model";
 import { formatDateTime } from "./date-time";
+import { FrozenReview } from "./frozen-review";
 
 type Colors = PluginSurfaceProps["theme"]["colors"];
 export function ReviewReport({ entry, serverId, workspace, snapshot, stale, colors, selectFile, openAgent, onEvidence }: {
@@ -46,6 +47,12 @@ export function ReviewReport({ entry, serverId, workspace, snapshot, stale, colo
           <Text style={text}>{reviewer.profile} · {reviewer.model} · {reviewer.reviewed}/{reviewer.selected} selected files reviewed · {reviewer.excluded} excluded</Text>
           <CompactLink label="Open reviewer conversation" colors={colors} icon="MessageSquare" onPress={() => openAgent(reviewer.agentId)} />
         </View>) : <Text style={muted}>Reviewer identity and model verification were not recorded for this request.</Text>}
+        {!review.decision.reviewVerification?.reviewers.length && review.decision.reviewContext ? review.decision.reviewContext.reviewers.map(reviewer => <View key={reviewer.agentId} style={{ gap: 6 }}>
+          <Text style={muted}>Reported reviewer · {reviewer.model}. Identity and execution are not independently verified by Mission Control.</Text>
+          <Text selectable style={muted}>Report: {reviewer.report}</Text>
+          <CompactLink label="Open reported reviewer conversation" colors={colors} icon="MessageSquare" onPress={() => openAgent(reviewer.agentId)} />
+        </View>) : null}
+        <FrozenReview entry={review} colors={colors} />
         {review.decision.agentId ? <CompactLink label="Open requesting worker conversation" icon="MessageSquare" colors={colors} onPress={() => openAgent(review.decision.agentId!)} /> : null}
       </> : null}
     </View>
@@ -99,6 +106,7 @@ export function ReviewReport({ entry, serverId, workspace, snapshot, stale, colo
         <Text style={muted}>After saving, check Receipt. Decision saved, delivered to the worker, and work resumed are separate states.</Text>
       </View>
     </View> : null}
-    <Text accessibilityRole="header" style={heading}>Code changes</Text>
+    <Text accessibilityRole="header" style={heading}>Live workspace changes</Text>
+    <Text style={muted}>This browser uses the workspace's selected comparison base and current files. It can differ from the saved review above; changing its base does not change what was reviewed.</Text>
   </View>;
 }

@@ -29,6 +29,8 @@ export type MissionControlCopy = {
   supports(name: string): boolean;
   /** Calls one of this copy's RPCs on its own host. */
   rpc(name: string, input: unknown): Promise<unknown>;
+  /** Optional UI-only capability; older copies remain RPC-compatible. */
+  openKanban?(): void;
 };
 
 type Registry = { copies: Map<string, MissionControlCopy>; listeners: Set<() => void>; revision: number };
@@ -91,7 +93,7 @@ export const bridgeContracts: ReadonlyMap<string, PluginRpcContract> = new Map(
  * Registers this installation's copy under its host's server ID once the server says what that is.
  * Retries every 30 seconds until it does; disposal removes the registration.
  */
-export function startCopyRegistration(client: Pick<PluginClientContext, "rpc">, { contracts = bridgeContracts, retryMs = 30_000 } = {}): () => void {
+export function startCopyRegistration(client: Pick<PluginClientContext, "rpc"> & Partial<Pick<PluginClientContext, "openScreen">>, { contracts = bridgeContracts, retryMs = 30_000 } = {}): () => void {
   let stopped = false;
   let unregister: (() => void) | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -102,6 +104,7 @@ export function startCopyRegistration(client: Pick<PluginClientContext, "rpc">, 
       unregister = registerCopy({
         protocol: BRIDGE_PROTOCOL, version: missionControlVersion, serverId,
         supports: name => contracts.has(name),
+        openKanban: client.openScreen ? () => client.openScreen!({ screenId: "kanban" }) : undefined,
         rpc: async (name, input) => {
           const contract = contracts.get(name);
           if (!contract) throw new Error(`This host's Mission Control (${missionControlVersion}) doesn't offer ${name}. Update it.`);

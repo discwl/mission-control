@@ -128,7 +128,7 @@ export async function readPlanSnapshot({ taskFolder, runFolder, decision }) {
   if (!decision.plan) return {
     source: current ? "current" : "missing", revision: null, documentRevision: current?.documentRevision ?? null,
     requestedAt: decision.requestedAt, markdown: current?.markdown ?? "", brief: null, previous: null, currentMatch: false, canApprove: false,
-    warning: "This older request has no saved plan version or approval brief. The current document may differ from the proposal. Request a fresh proposal before approving.",
+    warning: "This older request has no saved plan version or approval brief. The current document may differ from the approved scope. Recover the original approval binding if available; otherwise request explicit approval of a newly saved plan for this task. Current text, filenames and freshly computed hashes cannot establish historical approval.",
   };
   const expectedName = `${decision.decisionId}.${decision.plan.revision}.json`;
   if (decision.plan.path !== `plans/${expectedName}`) throw new Error("Saved plan reference does not match this decision.");

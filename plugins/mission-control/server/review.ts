@@ -196,6 +196,17 @@ export async function collectSnapshot(directory: string, from: string | null = n
   };
 }
 
+/** Frozen review evidence: never consult current checkout files or change the workspace review base. */
+export async function collectFrozenReview(directory: string, baseCommit: string, candidateTree: string) {
+  if (![baseCommit, candidateTree].every(value => /^[a-f0-9]{40}$/.test(value))) throw new Error("Frozen review requires full object IDs.");
+  const cwd = await realpath(directory);
+  const base = (await runGit(cwd, ["rev-parse", "--verify", "--end-of-options", `${baseCommit}^{commit}`])).trim();
+  const tree = (await runGit(cwd, ["rev-parse", "--verify", "--end-of-options", `${candidateTree}^{tree}`])).trim();
+  if (base !== baseCommit || tree !== candidateTree) throw new Error("The saved review objects are unavailable; no live diff was substituted.");
+  const raw = await runGit(cwd, ["diff", ...diffFlags, base, tree, "--"]);
+  return { baseCommit: base, candidateTree: tree, files: parseDiff(raw) };
+}
+
 export async function workspaceDirectory(paseo: PaseoApi, localServer: string, input: { serverId: string; workspaceId: string }) {
   if (input.serverId !== localServer) throw new Error("Review reads files on this Mission Control host only. Install Mission Control on that host to review it.");
   const workspace = await paseo.workspaces.ref(input.workspaceId).refresh();

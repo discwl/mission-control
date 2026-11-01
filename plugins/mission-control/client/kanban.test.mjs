@@ -83,6 +83,26 @@ test('sidebar excludes unavailable, expired and partial host activity and approv
   }
 });
 
+test('sidebar tolerates bounded remote clock skew without extending freshness beyond local receipt', () => {
+  const e = entry(); e.run = run(); e.decisions = [decision('review')];
+  const s = snapshot([e]); s.hosts[0].snapshot.agents = [worker()];
+  for (const skew of [417, 828, 1308, 2757, 4305, 30_000]) {
+    s.hosts[0].snapshot.observedAt = new Date(now + skew).toISOString();
+    assert.equal(kanbanSidebarCounts(s, cards(s), now).runningAgents, 1, String(skew));
+    assert.equal(kanbanSidebarCounts(s, cards(s), now).reviews, 1);
+    assert.equal(kanbanSidebarCounts(s, cards(s), now + 90_001).unavailableHosts, 1, 'expiry uses local receipt');
+  }
+  s.hosts[0].snapshot.observedAt = new Date(now + 30_001).toISOString();
+  assert.equal(kanbanSidebarCounts(s, cards(s), now).unavailableHosts, 1, 'large clock drift remains unconfirmed');
+  s.hosts[0].snapshot.observedAt = at;
+  s.observedAt = 'invalid';
+  assert.equal(kanbanSidebarCounts(s, cards(s), now).unavailableHosts, 1);
+  s.observedAt = at;
+  assert.equal(kanbanSidebarCounts(s, cards(s), now - 1).unavailableHosts, 1, 'a future local receipt is not accepted');
+  s.hosts[0].snapshot.observedAt = new Date(now - 1000).toISOString();
+  assert.equal(kanbanSidebarCounts(s, cards(s), now - 1).unavailableHosts, 1, 'an older remote clock cannot hide a future local receipt');
+});
+
 test('sidebar finished turns are not completed tasks or ready reviews; saved requests are', () => {
   const e = entry(); e.run = run('execute'); e.decisions = [decision('plan', { status: 'approved' })];
   const s = snapshot([e]); s.hosts[0].snapshot.agents = [worker('idle')];
@@ -119,6 +139,38 @@ test('a completed run or idle agent cannot mark a task done', () => {
   const s = snapshot([e]); s.hosts[0].snapshot.agents = [worker('idle')];
   assert.equal(cards(s)[0].lane, 'progress');
   e.task.status = 'delivered'; assert.equal(cards(s)[0].lane, 'done');
+});
+
+test('a later blocked handoff and a worker error cannot look ready for delivery', () => {
+  const e = entry(); e.run = { ...run('handoff'), outcome: 'blocked', updatedAt: '2026-10-30T16:02:00.000Z', nextAction: 'Repair the failed checkpoint' };
+  e.decisions = [decision('review', { status: 'approved', resolvedAt: at })];
+  const s = snapshot([e]);
+  assert.equal(cards(s)[0].lane, 'attention');
+  assert.match(cards(s)[0].row.next, /Repair the failed checkpoint/);
+  e.decisions[0] = decision('review');
+  assert.equal(cards(s)[0].lane, 'review', 'an actual open request remains actionable');
+  e.decisions = [decision('review', { status: 'approved', resolvedAt: '2026-10-30T16:03:00.000Z' })];
+  assert.equal(cards(s)[0].lane, 'delivery');
+  s.hosts[0].snapshot.agents = [{ ...worker('idle'), attentionReason: 'error', updatedAt: '2026-10-30T16:04:00.000Z' }];
+  assert.equal(cards(s)[0].lane, 'attention');
+});
+
+test('historical worker errors do not hide a later accepted review', () => {
+  const e = entry(); e.run = run('review');
+  e.decisions = [decision('review', { status: 'approved', resolvedAt: at })];
+  const s = snapshot([e]);
+  const historical = { ...worker('closed'), id: 'old-worker', attentionReason: 'error', error: 'Old failed turn', updatedAt: '2026-10-01T00:00:00Z', activityAt: '2026-10-01T00:00:00Z' };
+  s.hosts[0].snapshot.agents = [historical, worker('idle')];
+  assert.equal(cards(s)[0].lane, 'delivery');
+  historical.id = 'worker';
+  s.hosts[0].snapshot.agents = [historical];
+  assert.equal(cards(s)[0].lane, 'delivery', 'later acceptance supersedes an older owner error');
+  historical.updatedAt = '2026-10-30T16:01:00.000Z';
+  assert.equal(cards(s)[0].lane, 'attention', 'a new current-run failure needs action');
+  historical.id = 'stage-reviewer';
+  assert.equal(cards(s)[0].lane, 'attention', 'task-labelled stage workers need not be run.agentId');
+  historical.labels['mission-control.run-id'] = 'run_other';
+  assert.equal(cards(s)[0].lane, 'delivery', 'an explicit different run is historical');
 });
 
 test('accepted code waits for separate delivery, requested changes return to implementation', () => {
@@ -248,6 +300,7 @@ function renderDetail(item, tab, online = true) {
     'react': { useState: initial => [hook++ === 0 ? tab : initial, () => {}] },
     'react-native': { ScrollView: 'ScrollView', Text: 'Text', View: 'View' },
     'react/jsx-runtime': { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) },
+    './kanban-origin': { navigateFromKanban: (serverId, navigate) => { assert.equal(serverId, snapshot().serverId); navigate(); } },
     './host-rpc': { ...components, useMissionControlCopy: id => { copies.push(id); return { copy: { serverId: id } }; } },
     './mission-control-v2-model': load('./mission-control-v2-model.ts'), './kanban-model': load('./kanban-model.ts'),
     '../shared/decision-receipt': load('../shared/decision-receipt.ts'),

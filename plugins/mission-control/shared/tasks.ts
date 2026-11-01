@@ -93,7 +93,7 @@ export const createTask = defineRpc({
 });
 
 export const taskDocumentNameSchema = z.string().regex(/^[a-z0-9][a-z0-9_-]*\.md$/);
-const runEvidenceNameSchema = z.string().regex(/^runs\/run_[a-f0-9-]+\/(?:run\.md|handoff\.md|events\/event_[a-f0-9-]+\.md)$/);
+const runEvidenceNameSchema = z.string().regex(/^runs\/run_[a-f0-9-]+\/(?:run\.md|handoff\.md|events\/event_[a-f0-9-]+\.md|(?:review|paired-[a-z0-9_-]+)\/[a-zA-Z0-9][a-zA-Z0-9_.-]*\.(?:md|txt|csv|json|log))$/);
 
 export const taskDocumentSchema = z.object({
   name: z.union([taskDocumentNameSchema, runEvidenceNameSchema]),

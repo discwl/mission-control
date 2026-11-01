@@ -22,6 +22,12 @@ export function changeKanbanScope(scope: KanbanScope, kind: ScopeKind, ids: stri
   return kind === "hosts" ? { hosts: ids, projects: [], workspaces: [] }
     : kind === "projects" ? { ...scope, projects: ids, workspaces: [] } : { ...scope, workspaces: ids };
 }
+export function kanbanProjectLabel(item: KanbanTask): string {
+  const row = item.row;
+  const names = new Set(row.entry.task.assignments.filter(a => a.serverId === row.serverId)
+    .map(a => row.host.workspaces.find(w => w.id === a.workspaceId)?.projectName?.trim()).filter(Boolean));
+  return names.size === 1 ? [...names][0]! : names.size > 1 ? "Multiple projects" : "Project name unavailable";
+}
 export function kanbanFilterOptions(tasks: KanbanTask[], hosts: FleetSnapshot["hosts"], scope: KanbanScope): Record<ScopeKind, FilterOption[]> {
   const hostOptions = hosts.map(host => ({ id: host.serverId, label: host.label,
     detail: host.error || !host.snapshot ? "Unavailable · counts may be incomplete" : !host.snapshot.complete ? "Partial snapshot" : tasks.some(item => item.row.serverId === host.serverId) ? "Managed tasks" : "No managed tasks returned · other work may exist",
@@ -33,7 +39,7 @@ export function kanbanFilterOptions(tasks: KanbanTask[], hosts: FleetSnapshot["h
     const row = item.row;
     if (scope.hosts.length && !scope.hosts.includes(row.serverId)) continue;
     const project = scopeKey(row.serverId, row.entry.task.projectId);
-    const option = projects.get(project) ?? { id: project, label: row.entry.task.projectId, detail: row.hostLabel, count: 0 };
+    const option = projects.get(project) ?? { id: project, label: "Project name unavailable", detail: `${row.hostLabel} · ${row.entry.task.projectId}`, count: 0 };
     option.count++; projects.set(project, option);
     const names = projectNames.get(project) ?? new Set<string>();
     for (const assignment of row.entry.task.assignments.filter(a => a.serverId === row.serverId)) {
@@ -46,7 +52,7 @@ export function kanbanFilterOptions(tasks: KanbanTask[], hosts: FleetSnapshot["h
       const [, workspaceId] = JSON.parse(id) as [string, string | null];
       const workspace = row.host.workspaces.find(w => w.id === workspaceId);
       const entry = workspaces.get(id) ?? { id, label: workspace?.name ?? workspaceId ?? "No workspace assigned",
-        detail: [row.hostLabel, workspace?.projectName ?? row.entry.task.projectId, workspace?.branch].filter(Boolean).join(" · "), count: 0 };
+        detail: [row.hostLabel, workspace?.projectName ?? "Project name unavailable", workspace?.branch].filter(Boolean).join(" · "), count: 0 };
       entry.count++; workspaces.set(id, entry);
     }
   }

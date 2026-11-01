@@ -91,6 +91,7 @@ function renderReport(entry, stale = false) {
     "./host-rpc": { useRpc: () => input => calls.push(input) },
     "./compact-link": { CompactLink: "Link" },
     "./decision-card": { DecisionCard: "DecisionCard" },
+    "./frozen-review": { FrozenReview: "FrozenReview" },
     "./markdown-preview": { MarkdownPreview: "MarkdownPreview" },
     "./task-flow-content": { ArtifactCard: "ArtifactCard" },
     "./task-flow-model": { recentActivity: () => ({ events: [], issues: [] }) },
@@ -124,6 +125,18 @@ test("rendered report keeps full authored text and exact referenced documents be
   await rendered.queries[0].queryFn();
   assert.deepEqual(rendered.calls, [{ serverId: "host-a", workspaceId: "workspace-a", taskId: "task-a" }]);
 });
+test("reported reviewer and request runner navigate separately without claiming verification", () => {
+  const entry = fixture();
+  entry.decisions[0].decision.agentId = 'runner';
+  entry.decisions[0].decision.reviewContext = { baseCommit: 'c'.repeat(40), candidate: { head: snapshot.head, tree: 'b'.repeat(40) }, reviewers: [{ agentId: 'actual-reviewer', model: 'Review model', report: 'review/final.md' }] };
+  const { nodes, calls } = renderReport(entry);
+  nodes.find(node => node.props.label === 'Open reported reviewer conversation').props.onPress();
+  nodes.find(node => node.props.label === 'Open requesting worker conversation').props.onPress();
+  assert.deepEqual(calls, [{ agentId: 'actual-reviewer' }, { agentId: 'runner' }]);
+  assert.ok(JSON.stringify(nodes).includes('not independently verified'));
+  assert.equal(nodes.find(node => node.type === 'FrozenReview').props.entry, entry.decisions[0]);
+});
+
 test("stale rendered review retains its report but never mounts decision controls", () => {
   const entry = fixture(); entry.decisions[0].decision.evidence = [];
   const rendered = renderReport(entry, true);

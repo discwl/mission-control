@@ -7,6 +7,17 @@ const require = createRequire(import.meta.url);
 const ts = require("typescript");
 require.extensions[".ts"] = (module, file) => module._compile(ts.transpileModule(readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, file);
 const { BRIDGE_PROTOCOL, bridgeContracts, copiesRevision, findCopy, registerCopy, startCopyRegistration, subscribeCopies } = require("./host-bridge.ts");
+test("return navigation uses the original installation's client and disappears on disposal", async t => {
+  const opened = [];
+  const stop = startCopyRegistration({ rpc: async () => ({ serverId: "srv_return" }), openScreen: input => opened.push(input) });
+  t.after(stop);
+  await new Promise(resolve => setImmediate(resolve));
+  findCopy("srv_return").copy.openKanban();
+  assert.deepEqual(opened, [{ screenId: "kanban" }]);
+  stop();
+  assert.deepEqual(findCopy("srv_return"), { missing: "none" });
+});
+
 const turn = () => new Promise(resolve => setImmediate(resolve));
 const copy = (serverId, protocol = BRIDGE_PROTOCOL) => ({ protocol, version: "test", serverId, supports: () => true, rpc: async () => null });
 

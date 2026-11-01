@@ -14,9 +14,10 @@ function fixture(compact, failure = false) {
     '@getpaseo/plugin/client/ui': { Icon: 'Icon', SidebarRow: 'SidebarRow' },
     './compact-link': { CompactLink: 'CompactLink' }, './date-time': { formatDateTime: () => 'Today' },
     './kanban-data': { useKanbanData: () => ({ tasks: failure ? [] : tasks, data: failure ? null : { hosts: [], warnings: [] }, isError: failure, isPending: false, refetch() {} }) },
+    './kanban-origin': { KanbanOrigin: 'KanbanOrigin' },
     './kanban-detail': { KanbanDetail: 'KanbanDetail' }, './kanban-intake': { KanbanIntake: 'KanbanIntake' }, './kanban-filter-menu': { KanbanFilterMenu: 'KanbanFilterMenu' },
     './kanban-model': { kanbanLanes: lanes, kanbanLayout: (_, small) => ({ singleLane: small, laneWidth: small ? 366 : 340 }), filterKanban: rows => rows, kanbanCounts: () => ({ plans: 0, reviews: 0, needsYou: 30, running: 0 }), kanbanSidebarCounts: () => ({}), kanbanScreenId: 'kanban' },
-    './kanban-filters-model': { emptyKanbanScope: () => ({ hosts: [], projects: [], workspaces: [] }), matchesKanbanScope: () => true, kanbanFilterOptions: () => ({ hosts: [], projects: [], workspaces: [] }), changeKanbanScope: (scope, kind, ids) => ({ ...scope, [kind]: ids }) },
+    './kanban-filters-model': { emptyKanbanScope: () => ({ hosts: [], projects: [], workspaces: [] }), matchesKanbanScope: () => true, kanbanProjectLabel: () => 'Project', kanbanFilterOptions: () => ({ hosts: [], projects: [], workspaces: [] }), changeKanbanScope: (scope, kind, ids) => ({ ...scope, [kind]: ids }) },
   };
   const code = ts.transpileModule(readFileSync(new URL('./kanban.tsx', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText;
   const module = { exports: {} };

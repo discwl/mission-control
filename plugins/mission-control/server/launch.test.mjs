@@ -31,7 +31,7 @@ async function fixture(t) {
   }
   const deps = {
     loadContext: async binding => {
-      assert.deepEqual({ ...binding, expectedRevision: undefined, provider: undefined }, { ...input, expectedRevision: undefined, provider: undefined });
+      assert.deepEqual({ ...binding, expectedRevision: undefined, provider: undefined, modeId: undefined, thinkingOptionId: undefined }, { ...input, expectedRevision: undefined, provider: undefined, modeId: undefined, thinkingOptionId: undefined });
       if (state.denyContext) throw Error("Project profile mismatch");
       return { folder, task, cwd: folder, kitRoot: folder, git: { head: null, dirty: false, changes: [], omittedChanges: 0 }, run: await run() };
     },
@@ -187,6 +187,24 @@ test("a leftover lock file cannot block a fresh runtime and module reloads share
   await pending;
   assert.equal(f.state.creates, 1);
   assert.equal(f.state.sends, 1);
+});
+
+test("a failed inactive turn can resume without fabricating progress or changing its configuration", async t => {
+  const f = await fixture(t);
+  await f.start();
+  const worker = f.agents.get((await f.run()).agentId);
+  Object.assign(worker, { status: "idle", activeTurn: null, attentionReason: "error" });
+  // Even an unchanged message timestamp must not hide a terminal error.
+  const launch = (await f.launcher.status(f.input, f.paseo)).launch;
+  worker.lastUserMessageAt = launch.lastUserMessageAt;
+  const failed = await f.launcher.status(f.input, f.paseo);
+  assert.equal(failed.action, "resume");
+  assert.match(failed.message, /failed/);
+  await assert.rejects(f.launcher.dispatch({ ...f.input, expectedRevision: failed.revision, provider: "codex/new-model" }, f.paseo), /not applied/);
+  assert.equal(f.state.sends, 1);
+  await f.launcher.dispatch({ ...f.input, expectedRevision: failed.revision }, f.paseo);
+  assert.equal(f.state.sends, 2);
+  assert.equal(f.state.creates, 1);
 });
 
 test("start persists an exact run before sending, and busy agents only offer Open", async t => {
@@ -435,6 +453,9 @@ test("a quick launch still replies with its final status, and a quick failure is
   f.state.rejectCreate = false;
   const status = await f.launcher.status(f.input, f.paseo);
   assert.equal(status.action, "recover");
+  for (const override of [{ provider: "codex/other" }, { modeId: "other-mode" }, { thinkingOptionId: "other-effort" }]) {
+    await assert.rejects(f.launcher.dispatch({ ...f.input, expectedRevision: status.revision, ...override }, f.paseo), /not applied/);
+  }
   const done = await f.launcher.dispatch({ ...f.input, expectedRevision: status.revision }, f.paseo);
   assert.equal(done.action, "open");
 });

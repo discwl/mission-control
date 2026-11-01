@@ -126,9 +126,13 @@ export function kanbanCounts(tasks: KanbanTask[]) {
 export function kanbanSidebarCounts(snapshot: FleetSnapshot | undefined, tasks: KanbanTask[], now: number, failed = false) {
   const unavailable = new Set<string>();
   const running = new Set<string>();
+  const receivedAt = snapshot ? Date.parse(snapshot.observedAt) : NaN;
   for (const remote of snapshot?.hosts ?? []) {
     const host = remote.snapshot;
-    const age = host ? now - Date.parse(host.observedAt) : NaN;
+    const observedAt = host ? Date.parse(host.observedAt) : NaN;
+    // Remote clocks can lead the installation clock. Bound that tolerance and
+    // expire from the local receipt, never extend freshness into the future.
+    const age = !Number.isFinite(receivedAt) || receivedAt > now || observedAt - receivedAt > 30_000 ? NaN : now - Math.min(observedAt, receivedAt);
     if (failed || remote.error || !host || !host.complete || !Number.isFinite(age) || age > 90_000 || age < 0) {
       unavailable.add(remote.serverId);
       continue;

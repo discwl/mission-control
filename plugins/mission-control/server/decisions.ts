@@ -209,6 +209,18 @@ export function createDecisionStore(deps: { sources: (serverId: string) => Promi
     return decisionPlanSchema.parse(await readPlanSnapshot({ taskFolder: loaded.source.folder!, runFolder: loaded.runFolder, decision: loaded.decision }));
   }
 
+  async function reviewSnapshot(input: Ref & { expectedRevision: string }, paseo: PaseoApi, localServer: string) {
+    const loaded = await (await locate(input)).reload();
+    if (loaded.revision !== input.expectedRevision) throw new Error("The request changed. Refresh before reading its saved diff.");
+    const { decision } = loaded;
+    const context = decision.reviewContext;
+    if (decision.kind !== "review" || !context || !decision.candidate) throw new Error("This older review has no recorded comparison base. Read its report; do not assume the workspace base is the review base.");
+    if (context.candidate.head !== decision.candidate.head || context.candidate.tree !== decision.candidate.tree) throw new Error("Review provenance belongs to a different candidate.");
+    const { workspaceDirectory, collectFrozenReview } = await import("./review");
+    const directory = await workspaceDirectory(paseo, localServer, input);
+    return collectFrozenReview(directory, context.baseCommit, decision.candidate.tree);
+  }
+
   async function writeDecision(loaded: Loaded, decision: Decision) {
     await atomicWrite(loaded.decisionFile, markdownRecord(decision, loaded.body));
   }
@@ -331,5 +343,5 @@ export function createDecisionStore(deps: { sources: (serverId: string) => Promi
     return delivered;
   }
 
-  return { list, plan, resolve, resend, retryPending };
+  return { list, plan, reviewSnapshot, resolve, resend, retryPending };
 }

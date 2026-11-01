@@ -16,8 +16,11 @@ export function useKanbanData(installationId: string) {
     staleTime: 15_000, refetchInterval: 20_000, retry: false,
   });
   // An observation can expire even if the next network request hangs.
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 15_000); return () => clearInterval(timer); }, []);
+  const [clockTick, setClockTick] = useState(() => Date.now());
+  useEffect(() => { const timer = setInterval(() => setClockTick(Date.now()), 15_000); return () => clearInterval(timer); }, []);
+  // A response may arrive after the last timer tick. Compare against render time,
+  // otherwise its newer observedAt looks like a future clock and hides every counter.
+  const now = Math.max(clockTick, Date.now());
   const tasks = useMemo(() => query.data ? buildV2Tasks(query.data, { unconfirmed: query.isError, now }).map(kanbanTask) : [], [query.data, query.isError, now]);
   return { ...query, tasks, now };
 }

@@ -66,9 +66,21 @@ export function taskWorkflow(entry: FleetTask, agents: readonly FleetAgent[]): W
   const plan = current.find(entry => entry.decision.kind === "plan");
   if (plan?.decision.status === "approved" && plan.decision.resume && plan.decision.resume.phase !== "sent") return result("Blocked", "you", plan.decision.resume.error || "Plan approval is saved but delivery to the worker is not confirmed. Check the decision in Attention before continuing.");
   if (current.some(entry => entry.decision.status === "blocked")) return result("Blocked", "you", "Resolve the blocked decision");
+  const blockingError = agents.some(agent => {
+    if (!(agent.status === "error" || agent.attentionReason === "error" || agent.error)) return false;
+    // Managed stage workers may have only a task label; do not assume run.agentId owns every stage.
+    const labelledRun = agent.labels["mission-control.run-id"];
+    if (run && labelledRun && labelledRun !== run.runId) return false;
+    const observed = Math.max(Date.parse(agent.updatedAt ?? ""), Date.parse(agent.activityAt ?? agent.updatedAt ?? ""));
+    if (run && Number.isFinite(observed) && observed < Date.parse(run.createdAt)) return false;
+    const accepted = review?.decision.status === "approved" ? Date.parse(review.decision.resolvedAt ?? "") : NaN;
+    return !Number.isFinite(observed) || !Number.isFinite(accepted) || observed > accepted;
+  });
+  if (blockingError) return result("Blocked", "you", "Inspect the worker error before retrying");
+  // A later blocked handoff supersedes an older acceptance; a newer real decision stays authoritative.
+  const acceptedAfterRun = review?.decision.status === "approved" && Boolean(review.decision.resolvedAt && run && review.decision.resolvedAt >= run.updatedAt);
+  if (task.status === "blocked" || (!acceptedAfterRun && (run?.outcome === "blocked" || run?.outcome === "waiting"))) return result("Blocked", "you", run?.nextAction || "Resolve the recorded blocker");
   if (review?.decision.status === "approved") return result("Delivery approval", "you", task.pullRequest ? "Review PR follow-up · external changes need approval" : "Approve the exact PR or delivery action");
-  if (agents.some(agent => agent.status === "error" || agent.error)) return result("Blocked", "you", "Inspect the worker error before retrying");
-  if (task.status === "blocked" || run?.outcome === "blocked" || run?.outcome === "waiting") return result("Blocked", "you", run?.nextAction || "Resolve the recorded blocker");
   if (review?.decision.status === "changes_requested") return result("Implementing", "agent", "Address requested changes, validate, and request fresh review");
   if (task.status === "in_review") return result("Your review", "you", "Inspect review evidence before accepting work");
   if (!run) return result("Intake", "agent", "Prepare task context and a plan");

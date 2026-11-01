@@ -299,6 +299,7 @@ async function loadRun(bound, folder, runId) {
 import { preparePipelineCheckpoint, savePipelineCheckpoint, readPipelineCheckpoints } from "../plugins/mission-control/server/pipeline-records.mjs";
 import { checkpointStageEvidence } from "../plugins/mission-control/server/stage-records.mjs";
 import { verifyManagedReviewDecision } from "../plugins/mission-control/server/review-decision-evidence.mjs";
+import { normalizeReviewContext } from "../plugins/mission-control/shared/review-context.mjs";
 
 async function checkpoint(args) {
   const bound = await binding(args);
@@ -312,7 +313,9 @@ async function checkpoint(args) {
     const plans = (await Promise.all(names.filter(name => /^decision_[a-f0-9-]+\.md$/.test(name)).map(async name => parseRecord(await readFile(join(directory, name), "utf8"), "Decision"))))
       .filter(decision => decision.kind === "plan" && decision.runId === current.runId && decision.taskId === bound.task.taskId).sort((a, b) => b.requestedAt.localeCompare(a.requestedAt));
     const plan = plans[0];
-    if (plan?.status !== "approved" || !plan.plan || (plan.resume && plan.resume.phase !== "sent")) throw new Error("A current delivered plan approval is required for a pipeline checkpoint.");
+    if (plan?.status !== "approved") throw new Error("A current delivered plan approval is required for a pipeline checkpoint. Inspect the latest plan decision for this exact task and run; a task note or another task's approval is not sufficient.");
+    if (!plan.plan) throw new Error("The approved legacy decision has no immutable plan version binding. Checkpoint not saved. Recover the original decision and its approved snapshot through supported read-only records; current plan text, filenames and newly computed hashes do not establish historical scope. If that binding cannot be recovered, request explicit approval of a newly saved, task-scoped plan. Preserve the historical decision; never backfill its provenance.");
+    if (plan.resume && plan.resume.phase !== "sent") throw new Error("Plan approval is saved, but delivery is not confirmed. Inspect its receipt and worker before retrying; do not ask for the same approval again.");
     const { verifyPlanApproval } = await import("../plugins/mission-control/server/plan-snapshots.mjs");
     await verifyPlanApproval({ taskFolder: bound.folder, runFolder: folder, decision: plan }, plan.plan.revision);
     const identity = { taskId: bound.task.taskId, runId: current.runId, serverId: bound.host.serverId, workspaceId: bound.workspaceId };
@@ -499,6 +502,12 @@ async function requestDecision(args) {
   }
   // A review records exactly what it covered, so a later change can be told apart from the reviewed work.
   const candidate = input.kind === "review" ? reviewedCandidate(bound.cwd, bound.repository, bound.checkoutRoot) : null;
+  if (input.kind !== "review" && input.reviewContext != null) throw new Error("reviewContext is only valid for review requests.");
+  const reviewContext = normalizeReviewContext(input.reviewContext, candidate, evidence);
+  if (reviewContext) {
+    const git = gitRunner(bound.cwd, [bound.repository, bound.checkoutRoot]);
+    if (git("rev-parse", "--verify", "--end-of-options", `${reviewContext.baseCommit}^{commit}`) !== reviewContext.baseCommit) throw new Error("The reported review base must be an existing full commit ID in this repository.");
+  }
   return withRunLock(folder, async () => {
     const current = await loadRun(bound, folder, args.run);
     const open = (await readDecisions(folder)).find(item => item.decision.status === "open");
@@ -524,7 +533,7 @@ async function requestDecision(args) {
       schemaVersion: 1, decisionId, taskId: current.taskId, runId: current.runId, serverId: current.serverId, workspaceId: current.workspaceId,
       agentId: agentId || current.agentId || null, kind: input.kind, status: "open", question, requestedAt: now,
       gitHead: bound.git.head, gitDirty: bound.git.dirty, evidence, findingIds: findings.map(item => item.findingId),
-      resolvedAt: null, note: null, resume: null, candidate, plain, plan, reviewVerification,
+      resolvedAt: null, note: null, resume: null, candidate, plain, plan, reviewVerification, reviewContext,
     };
     await mkdir(join(folder, "decisions"), { recursive: true });
     await writeFile(join(folder, "decisions", `${decisionId}.md`), markdownRecord(decision, summary), { flag: "wx" });
@@ -801,6 +810,15 @@ fields first and keeps question, summary, evidence and finding details under Tec
 For reviews, supply checks and limitations in plain language. They must reflect recorded evidence;
 if there are no known limitations, say so explicitly. Legacy requests may omit them, but the owner
 will see that information is missing. Chat users can request the full report with review details <task ID>.
+For an independently reported review, optional reviewContext records the exact compared objects:
+  { "baseCommit": "<full 40-character commit SHA>",
+    "candidate": { "head": "<full commit SHA or null>", "tree": "<full tree SHA>" },
+    "reviewers": [{ "agentId": "<actual reviewer UUID>", "model": "<actual reported model>",
+                    "report": "<exact path also included in evidence>" }] }
+Use the candidate captured for the reviewed files and the actual comparison base, not an inferred
+workspace base. The CLI rejects a different candidate or unavailable base. Include one or two distinct
+reviewers. This is reported provenance, not managed identity/execution verification. agentId remains
+the request runner/continuation owner; do not replace it with a reviewer who does not own continuation.
 
 For kind "plan", save the full plan.md beside task.md and include a required "planBrief":
   { "goal": "<problem being solved>", "before": "<current behavior>",

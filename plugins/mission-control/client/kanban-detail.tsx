@@ -26,6 +26,8 @@ const guidance: Record<KanbanTab, { title: string; steps: string[] }> = {
   Delivery: { title: "Approve delivery separately", steps: ["Inspect the exact PR or delivery operation and destination.", "Code acceptance alone does not authorize publishing, merging or external updates."] },
 };
 
+import { navigateFromKanban } from "./kanban-origin";
+
 export function KanbanDetail({ item, snapshot, colors, compact, height, navigation, close, refresh }: {
   item: KanbanTask; snapshot: FleetSnapshot; colors: Colors; compact: boolean; height: number;
   navigation: PluginSurfaceProps["navigation"]; close(): void; refresh(): void;
@@ -43,7 +45,7 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
   const workspaceId = v2Workspace(row);
   const workspace = row.host.workspaces.find(workspace => workspace.id === workspaceId);
   const openAgent = (serverId: string, agentId: string) => {
-    try { if (!navigation) throw new Error("Conversation navigation is unavailable."); navigation.openAgent({ serverId, agentId }); }
+    try { if (!navigation) throw new Error("Conversation navigation is unavailable."); navigateFromKanban(snapshot.serverId, () => navigation.openAgent({ serverId, agentId })); }
     catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
   };
   const evidence = (name?: string) => { setDocument(name); setTab("Evidence"); };
@@ -75,7 +77,7 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
     <View style={{ padding: compact ? 12 : 20, gap: 10, borderBottomWidth: 1, borderBottomColor: colors.border }}>
       <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
         <CompactLink label="Back to Kanban" icon="ArrowLeft" colors={colors} onPress={close} />
-        <Text style={{ color: colors.foregroundMuted }}>{row.hostLabel} · {row.entry.task.ticket?.key ?? row.entry.task.projectId}</Text>
+        <Text style={{ color: colors.foregroundMuted }}>{row.hostLabel} · {row.entry.task.ticket?.key ?? workspace?.projectName ?? "Project name unavailable"}</Text>
         <CompactLink label="Refresh task" colors={colors} onPress={refresh} />
       </View>
       <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: compact ? 19 : 23, lineHeight: compact ? 26 : 31, fontWeight: "600" }}>{row.entry.task.title}</Text>

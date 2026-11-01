@@ -12,7 +12,29 @@ const ts = require("typescript");
 require.extensions[".ts"] = (module, file) => module._compile(ts.transpileModule(readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, file);
 const { parseDiff } = require("./review-diff.ts");
 const { classifyHunk } = require("./review-rules.ts");
-const { collectSnapshot, untrackedDiff } = require("./review.ts");
+const { collectSnapshot, collectFrozenReview, untrackedDiff } = require("./review.ts");
+
+test("frozen review uses its actual base and saved tree despite later upstream and workspace changes", async t => {
+  const repo = await mkdtemp(join(tmpdir(), "mission-frozen-review-"));
+  t.after(() => rm(repo, { recursive: true, force: true }));
+  const git = (...args) => execFileSync("git", ["-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", ...args], { encoding: "utf8" }).trim();
+  git("init", "-q");
+  await writeFile(join(repo, "old.txt"), "base\n"); git("add", "."); git("commit", "-qm", "old branch point");
+  const old = git("rev-parse", "HEAD");
+  await writeFile(join(repo, "upstream.txt"), "upstream\n"); git("add", "."); git("commit", "-qm", "current dev");
+  const base = git("rev-parse", "HEAD");
+  await writeFile(join(repo, "feature.txt"), "reviewed\n"); git("add", ".");
+  const tree = git("write-tree");
+  await writeFile(join(repo, "feature.txt"), "later changes\n");
+  await writeFile(join(repo, "not-reviewed.txt"), "untracked\n");
+  const frozen = await collectFrozenReview(repo, base, tree);
+  assert.deepEqual(frozen.files.map(file => file.path), ["feature.txt"]);
+  assert.match(JSON.stringify(frozen.files), /reviewed/);
+  assert.doesNotMatch(JSON.stringify(frozen.files), /later changes|not-reviewed/);
+  assert.equal((await collectFrozenReview(repo, old, tree)).files.length, 2);
+  await assert.rejects(collectFrozenReview(repo, '0'.repeat(40), tree));
+  await assert.rejects(collectFrozenReview(repo, base, '--bad'));
+});
 
 test("hunk bodies follow header counts, so markers and trailing blanks never shift line numbers", () => {
   const raw = [
