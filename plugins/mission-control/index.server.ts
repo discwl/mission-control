@@ -65,6 +65,7 @@ import { createVaultStore } from "./server/vault";
 import { defaultVaultPath, getVaultStatus, initializeVault, listVaultFolder, readVaultFile, saveVaultFile, createVaultEntry, moveVaultEntry, trashVaultEntry, locateTaskInVault } from "./shared/vault";
 
 import { registerChatWorkflow } from "./server/chat-workflow";
+import { registerTaskStatusRecovery } from "./server/task-status-recovery";
 
 export default function contribute(context: PluginServerContext) {
   // The status label sync runs outside handlers; it lists through the host's own Paseo API once a handler has seen it.
@@ -73,6 +74,7 @@ export default function contribute(context: PluginServerContext) {
   const review = registerReview(server, defaultVaultPath);
   registerMorning(server);
   registerWorkflowInstructions(server);
+  registerTaskStatusRecovery(server);
   registerOrchestrator(server);
   registerOrchestratorWork(server);
   const projectGit = registerProjectGit(server);
