@@ -90,6 +90,16 @@ node plugins/mission-control/scripts/remote.mjs --offer-file <file> status --wor
 - **What it can't do:** there are no commands for decisions, merges or pull requests. Those stay with you.
 - **How it connects:** like the agent rename, it uses Paseo's internal `DaemonClient`, over the relay with end-to-end encryption, from the plugin's own dependencies.
 
+### Inspect an interrupted worker creation
+
+`status` includes `preparation` when the task offers recovery: the saved provider/model, mode, reasoning, reserved agent ID, creation key, phase and parent. Ordinary `start` without configuration overrides retries that saved configuration. It does not apply newly requested settings or inherit a similarly named native profile's `auto_accept` feature. Read the preparation first; do not retry if those settings are no longer wanted.
+
+For the full read-only receipt, invoke public `tasks.launch.status` on the identity-verified owning host with `{ serverId, workspaceId, taskId }`. An absent list entry is not proof of a missing worker. Exact-ID lookup errors, malformed responses and mismatched identities must be reconciled; they are not permission to create another worker. Uncertain prompt delivery remains blocked.
+
+Changing the configuration of an absent reserved worker is currently unsupported. Paseo binds the native creation key to its request and reserves the agent ID for that key. Changing the request under the same key conflicts; a new key cannot claim the same agent ID. See [Paseo's creation service](https://github.com/getpaseo/paseo/blob/main/packages/server/src/server/creation/index.ts). Do not edit task/run files, replace keys, or create an unbound worker to work around this guard.
+
+A future replacement operation needs exact terminal creation evidence (failed with a known outcome), a fresh absence check, a new worker reservation, and an audited run/launch reassignment that can recover from interruption while retaining the old history. That operation is not provided by this update. Current recovery keeps the original task, run, worktree, parent, worker reservation and configuration.
+
 ## Kanban code review
 
 Open **Kanban → task → Code review**. Tasks waiting for code review open this section directly. The page shows the latest review request for the exact task, run, host and workspace: its saved summary, reviewer/model evidence when recorded, unresolved findings first, validation results and referenced documents. Older records explicitly identify missing reviewer verification or unavailable documents. A completed validation record is historical evidence, not a new check performed by the screen.

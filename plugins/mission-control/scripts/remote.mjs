@@ -77,6 +77,11 @@ export function describeLaunch(status) {
     run: status.run ? { runId: status.run.runId, stage: status.run.stage, outcome: status.run.outcome, nextAction: status.run.nextAction, updatedAt: status.run.updatedAt } : null,
     worktree: status.worktree,
     launchError: status.launch?.error ?? null,
+    preparation: status.action === "recover" && status.launch ? {
+      launchId: status.launch.launchId, agentId: status.launch.agentId, creatingAgent: status.launch.creatingAgent,
+      provider: status.launch.provider, modeId: status.launch.modeId ?? null, thinkingOptionId: status.launch.thinkingOptionId ?? null,
+      phase: status.launch.phase, parent: status.launch.parent ?? null,
+    } : null,
   };
 }
 
@@ -84,7 +89,7 @@ export function describeLaunch(status) {
 export function launchInput(binding, status, values) {
   const input = { ...binding, expectedRevision: status.revision };
   if (status.action !== "start") {
-    if (values.provider || values.thinking || values.mode) throw new Error("This task already has a worker. Resume/recover preserves its model, reasoning and permission settings; requested settings were not applied. Update the existing worker through Paseo, then retry without --provider, --thinking or --mode.");
+    if (values.provider || values.thinking || values.mode) throw new Error("The requested settings were not applied. Resume/recover preserves the saved configuration. Inspect status.preparation before retrying. If the worker is absent, changing its configuration requires a supported reservation replacement; Start cannot do that. Update an existing worker through Paseo.");
     return input;
   }
   if (values.provider) input.provider = values.provider;

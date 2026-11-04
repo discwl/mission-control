@@ -60,6 +60,17 @@ test("start dispatches with the status's revision and reports the new run", asyn
   assert.deepEqual(result.run, { runId: "run_1", stage: "intake", outcome: "in_progress", nextAction: "Plan", updatedAt: "t" });
 });
 
+test("status exposes the reserved configuration without launching or suggesting a nonexistent worker can be updated", async () => {
+  const launch = { launchId: "old", agentId: "reserved", creatingAgent: true, phase: "preparing", provider: "opencode/bedrock/old", modeId: "build", thinkingOptionId: "high", parent: { serverId: "personal", agentId: "coordinator" } };
+  const current = status({ action: "recover", launch });
+  const host = fakeHost({ "tasks.launch.status": current });
+  const result = await runCommand("status", { workspace: "wks_a", task: "task_1" }, host.rpc);
+  assert.deepEqual(result.preparation, launch);
+  await assert.rejects(runCommand("start", { workspace: "wks_a", task: "task_1", provider: "opencode/go/model", mode: "build", thinking: "max" }, host.rpc), /If the worker is absent.*supported reservation replacement/);
+  assert.ok(!host.calls.some(([method]) => method === "tasks.launch.dispatch"));
+  assert.equal(describeLaunch(status()).preparation, null);
+});
+
 test("import-ticket reads description and criteria from files and fills the tracker item", async () => {
   const folder = await mkdtemp(join(tmpdir(), "mc-remote-"));
   try {

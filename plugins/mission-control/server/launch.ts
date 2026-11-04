@@ -143,7 +143,12 @@ async function ensureRun(context: Context, record: LaunchRecord) {
   return run;
 }
 async function refreshAgent(paseo: PaseoApi, agentId: string) {
-  try { return (await paseo.agents.ref(agentId).refresh())?.agent ?? null; }
+  try {
+    const entry = await paseo.agents.ref(agentId).refresh();
+    if (entry === null) return null;
+    if (!entry?.agent || entry.agent.id !== agentId) throw new Error("The exact worker lookup was not confirmed. Refresh before recovering this task.");
+    return entry.agent;
+  }
   catch (error) {
     // SDK 0.9.1 throws for an absent reserved agent. Other errors must surface.
     if (error instanceof Error && error.message === `Agent not found: ${agentId}`) return null;
@@ -257,7 +262,7 @@ export function createTaskLauncher(overrides: Partial<LauncherDeps> = {}) {
     let { context, snapshot, status: current, bound } = await inspect(input, paseo);
     if (current.revision !== input.expectedRevision) throw new Error("Task or agent changed. Refresh before starting it.");
     if (!["start", "resume", "recover"].includes(current.action)) throw new Error(current.message);
-    if (current.action !== "start" && (input.provider || input.modeId || input.thinkingOptionId)) throw new Error("Resume and recovery preserve the saved worker configuration. Requested model, reasoning or permission settings were not applied. Resume or recover without configuration overrides; update an existing worker in Paseo if needed.");
+    if (current.action !== "start" && (input.provider || input.modeId || input.thinkingOptionId)) throw new Error("Resume and recovery preserve the saved worker configuration. Requested model, reasoning or permission settings were not applied. Inspect tasks.launch.status for the saved preparation before retrying. An absent worker cannot be reconfigured through Start; it requires a supported reservation replacement.");
     if (input.parent && current.action === "start") await requireLaunchParent(input.parent, paseo);
     if (input.isolate && current.action === "start") {
       if (!context.canIsolate) throw new Error("This task can't start in its own worktree. Start it in this workspace instead.");

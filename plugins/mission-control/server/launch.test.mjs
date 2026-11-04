@@ -75,6 +75,33 @@ async function fixture(t) {
   return { input, task, state, agents, deps, paseo, launcher, start, run, folder };
 }
 
+test("recovery fails closed on malformed or mismatched exact-ID responses", async t => {
+  for (const response of [undefined, {}, { agent: { id: "different-agent" } }]) {
+    const f = await fixture(t);
+    f.state.rejectCreate = true;
+    await assert.rejects(f.start(), /Provider unavailable/);
+    const before = await f.launcher.status(f.input, f.paseo), original = f.paseo.agents.ref;
+    f.paseo.agents.ref = () => ({ refresh: async () => response });
+    await assert.rejects(f.launcher.dispatch({ ...f.input, expectedRevision: before.revision }, f.paseo), /lookup was not confirmed/);
+    f.paseo.agents.ref = original;
+    assert.deepEqual((await f.launcher.status(f.input, f.paseo)).launch, before.launch);
+    assert.equal(f.state.createCalls, 1);
+    assert.equal(f.state.sends, 0);
+  }
+});
+
+test("an absent reserved worker cannot silently change configuration or creation identity", async t => {
+  const f = await fixture(t);
+  f.state.rejectCreate = true;
+  await assert.rejects(f.start(), /Provider unavailable/);
+  const before = await f.launcher.status(f.input, f.paseo), run = await f.run();
+  await assert.rejects(f.launcher.dispatch({ ...f.input, expectedRevision: before.revision, provider: "opencode/go/model", modeId: "build", thinkingOptionId: "max" }, f.paseo), /absent worker cannot be reconfigured/);
+  assert.deepEqual((await f.launcher.status(f.input, f.paseo)).launch, before.launch);
+  assert.deepEqual(await f.run(), run);
+  assert.equal(f.state.createCalls, 1);
+  assert.equal(f.state.sends, 0);
+});
+
 test("native worker parent survives preparation recovery and is passed to the single task agent", async t => {
   const f = await fixture(t), parent = { serverId: "orchestrator-host", agentId: "orchestrator-chat" }, parents = [];
   const originalContext = f.deps.loadContext;
