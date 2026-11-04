@@ -1,4 +1,4 @@
-import type { FleetAgent, FleetCoordinator, FleetHost, FleetQueueEntry, FleetTask } from "./fleet";
+import type { FleetAgent, FleetCoordinator, FleetHost, FleetQueueEntry, FleetTask, FleetSnapshot } from "./fleet";
 import type { OrchestratorWork } from "./orchestrator-work";
 
 /** A coordinator can itself have been created by a setup agent in a different workspace. */
@@ -6,7 +6,7 @@ export function coordinatorCandidates(agents: readonly FleetAgent[]): FleetAgent
   return agents.filter(agent => !agent.archivedAt && agent.workspaceId && !agents.some(parent => parent.id === agent.labels["paseo.parent-agent-id"] && parent.workspaceId === agent.workspaceId));
 }
 
-export const workflowStages = ["Intake", "Planning", "Ready", "Implementing", "Validating", "Code review", "Your review", "Delivery approval", "Delivered"] as const;
+export const workflowStages = ["Intake", "Planning", "Plan check", "Ready", "Implementing", "Validating", "Code review", "Your review", "Delivery approval", "Delivered"] as const;
 export type WorkflowStage = typeof workflowStages[number] | "Blocked";
 export type Workflow = { stage: WorkflowStage; actor: "agent" | "you" | "dependency" | "done"; next: string; evidence: string };
 
@@ -50,6 +50,14 @@ export function taskWorkers(entry: FleetTask, host: FleetHost, allowed: Readonly
   return host.agents.filter(agent => allowed.has(agent.id) && linked.has(agent.id));
 }
 
+/** Presentation only. Final delivery always rechecks evidence separately. */
+export function withPipelineProjection(snapshot: FleetSnapshot, state = snapshot.state): FleetSnapshot {
+  return { ...snapshot, state, hosts: snapshot.hosts.map(host => ({ ...host, snapshot: host.snapshot ? { ...host.snapshot, tasks: host.snapshot.tasks.map(entry => {
+    const { pipeline: _prior, ...clean } = entry;
+    const row = [...state.pipelines].filter(row => row.workflowMode === "automatic" && row.remoteServerId === host.serverId && row.taskId === entry.task.taskId && entry.run && row.runId === entry.run.runId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    return row?.runId ? { ...clean, pipeline: { runId: row.runId, workflowMode: "automatic" as const, deliveryKind: row.deliveryKind, stage: row.stage, mode: row.mode, message: row.message } } : clean;
+  }) } : null })) };
+}
 export function taskWorkflow(entry: FleetTask, agents: readonly FleetAgent[]): Workflow {
   const { task, run } = entry;
   const evidence = run ? `${run.stage}: ${run.outcome} · ${run.gitHead?.slice(0, 8) ?? "revision unknown"}${run.gitDirty ? " + working changes" : ""}` : "No run evidence recorded";
@@ -65,7 +73,8 @@ export function taskWorkflow(entry: FleetTask, agents: readonly FleetAgent[]): W
   const review = current.find(entry => entry.decision.kind === "review");
   const plan = current.find(entry => entry.decision.kind === "plan");
   if (plan?.decision.status === "approved" && plan.decision.resume && plan.decision.resume.phase !== "sent") return result("Blocked", "you", plan.decision.resume.error || "Plan approval is saved but delivery to the worker is not confirmed. Check the decision in Attention before continuing.");
-  if (current.some(entry => entry.decision.status === "blocked")) return result("Blocked", "you", "Resolve the blocked decision");
+  const stops = run?.workflowMode === "automatic" ? [plan, review] : current;
+  if (stops.some(entry => entry?.decision.status === "blocked")) return result("Blocked", "you", "Resolve the blocked decision");
   const blockingError = agents.some(agent => {
     if (!(agent.status === "error" || agent.attentionReason === "error" || agent.error)) return false;
     // Managed stage workers may have only a task label; do not assume run.agentId owns every stage.
@@ -80,8 +89,24 @@ export function taskWorkflow(entry: FleetTask, agents: readonly FleetAgent[]): W
   // A later blocked handoff supersedes an older acceptance; a newer real decision stays authoritative.
   const acceptedAfterRun = review?.decision.status === "approved" && Boolean(review.decision.resolvedAt && run && review.decision.resolvedAt >= run.updatedAt);
   if (task.status === "blocked" || (!acceptedAfterRun && (run?.outcome === "blocked" || run?.outcome === "waiting"))) return result("Blocked", "you", run?.nextAction || "Resolve the recorded blocker");
+  const pipeline = entry.pipeline?.workflowMode === "automatic" && entry.pipeline.runId === run?.runId ? entry.pipeline : null;
+  if (pipeline) {
+    if (pipeline.mode === "done") return result("Delivered", "done", pipeline.message);
+    if (["blocked", "paused", "stopped"].includes(pipeline.mode)) return result("Blocked", "you", pipeline.message);
+    if (pipeline.stage === "delivery") return pipeline.mode === "ready" && pipeline.deliveryKind !== "report" ? result("Delivery approval", "you", pipeline.message) : result(pipeline.deliveryKind === "actions" ? "Implementing" : "Ready", "agent", pipeline.message);
+    const stages: Record<string, WorkflowStage> = { plan: "Planning", "plan-review": "Plan check", execute: "Implementing", fix: "Implementing", validate: "Validating", review: "Code review" };
+    if (stages[pipeline.stage]) return result(stages[pipeline.stage], "agent", pipeline.message);
+  }
   if (review?.decision.status === "approved") return result("Delivery approval", "you", task.pullRequest ? "Review PR follow-up · external changes need approval" : "Approve the exact PR or delivery action");
   if (review?.decision.status === "changes_requested") return result("Implementing", "agent", "Address requested changes, validate, and request fresh review");
+  if (run?.workflowMode === "automatic") {
+    if (run.stage === "plan") return result("Planning", "agent", run.nextAction || "Prepare the versioned plan for independent checking");
+    if (run.stage === "plan-review") return result("Plan check", "agent", run.nextAction || "Check the plan with a different model");
+    if (run.stage === "execute" || run.stage === "fix") return result("Implementing", "agent", run.nextAction || "Complete the checked scope");
+    if (run.stage === "validate") return result("Validating", "agent", run.nextAction || "Record relevant checks for this candidate");
+    if (run.stage === "review") return result("Code review", "agent", run.nextAction || "Complete both independent model reviews");
+    if (run.stage === "delivery") return result("Delivery approval", "you", "Review the exact prepared publication or action");
+  }
   if (task.status === "in_review") return result("Your review", "you", "Inspect review evidence before accepting work");
   if (!run) return result("Intake", "agent", "Prepare task context and a plan");
   if (run.stage === "intake") return result("Intake", "agent", run.nextAction || "Clarify scope and acceptance criteria");

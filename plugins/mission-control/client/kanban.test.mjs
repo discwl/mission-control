@@ -35,9 +35,9 @@ test('saved decisions route pending and unconfirmed worker delivery to their rec
     e.decisions = [decision('plan', { status: 'approved', resume: { phase } })];
     const s = snapshot([e]); const card = cards(s)[0];
     assert.equal(card.tab, 'Receipt', phase);
-    assert.equal(card.lane, 'attention', phase);
+    assert.equal(card.lane, phase === 'sending' ? 'attention' : 'progress', phase);
     assert.equal(card.needsYou, phase === 'sending');
-    assert.match(card.label, phase === 'sending' ? /unconfirmed/ : /pending/);
+    assert.match(card.label, phase === 'sending' ? /unconfirmed/ : /Sending your decision/);
     assert.match(kanbanGuidance(card).after, /Do not approve.*blindly resend/);
     e.decisions.push(decision('plan', { decisionId: 'new-plan', requestedAt: '2026-10-30T16:01:00Z' }));
     assert.equal(cards(s)[0].tab, 'Plan', 'a newer open request takes precedence');
@@ -120,18 +120,18 @@ test('sidebar finished turns are not completed tasks or ready reviews; saved req
 
 test('planning and a human plan approval are distinct, even with a running worker', () => {
   const e = entry(); e.run = run(); const s = snapshot([e]); s.hosts[0].snapshot.agents = [worker()];
-  assert.equal(cards(s)[0].lane, 'planning');
+  assert.equal(cards(s)[0].lane, 'progress');
   e.decisions = [decision()];
-  const card = cards(s)[0]; assert.equal(card.lane, 'plan'); assert.equal(card.tab, 'Plan'); assert.equal(card.needsYou, true);
+  const card = cards(s)[0]; assert.equal(card.lane, 'attention'); assert.equal(card.tab, 'Plan'); assert.equal(card.needsYou, true);
   assert.equal(kanbanCounts([card]).plans, 1);
 });
 
 test('independent review is work; a saved open review is a human decision', () => {
   const e = entry(); e.run = run('review'); e.decisions = [decision('plan', { status: 'approved' })];
   const s = snapshot([e]); s.hosts[0].snapshot.agents = [worker()];
-  assert.equal(cards(s)[0].lane, 'progress'); assert.equal(cards(s)[0].label, 'Independent reviewer working');
+  assert.equal(cards(s)[0].lane, 'progress'); assert.equal(cards(s)[0].label, 'Reviewing the changes');
   e.decisions.push(decision('review', { requestedAt: '2026-10-30T16:01:00.000Z' }));
-  assert.equal(cards(s)[0].lane, 'review'); assert.equal(cards(s)[0].tab, 'Code review');
+  assert.equal(cards(s)[0].lane, 'attention'); assert.equal(cards(s)[0].tab, 'Code review');
 });
 
 test('a completed run or idle agent cannot mark a task done', () => {
@@ -148,9 +148,9 @@ test('a later blocked handoff and a worker error cannot look ready for delivery'
   assert.equal(cards(s)[0].lane, 'attention');
   assert.match(cards(s)[0].row.next, /Repair the failed checkpoint/);
   e.decisions[0] = decision('review');
-  assert.equal(cards(s)[0].lane, 'review', 'an actual open request remains actionable');
+  assert.equal(cards(s)[0].lane, 'attention', 'an actual open request remains actionable');
   e.decisions = [decision('review', { status: 'approved', resolvedAt: '2026-10-30T16:03:00.000Z' })];
-  assert.equal(cards(s)[0].lane, 'delivery');
+  assert.equal(cards(s)[0].lane, 'attention');
   s.hosts[0].snapshot.agents = [{ ...worker('idle'), attentionReason: 'error', updatedAt: '2026-10-30T16:04:00.000Z' }];
   assert.equal(cards(s)[0].lane, 'attention');
 });
@@ -161,21 +161,21 @@ test('historical worker errors do not hide a later accepted review', () => {
   const s = snapshot([e]);
   const historical = { ...worker('closed'), id: 'old-worker', attentionReason: 'error', error: 'Old failed turn', updatedAt: '2026-10-01T00:00:00Z', activityAt: '2026-10-01T00:00:00Z' };
   s.hosts[0].snapshot.agents = [historical, worker('idle')];
-  assert.equal(cards(s)[0].lane, 'delivery');
+  assert.equal(cards(s)[0].lane, 'attention');
   historical.id = 'worker';
   s.hosts[0].snapshot.agents = [historical];
-  assert.equal(cards(s)[0].lane, 'delivery', 'later acceptance supersedes an older owner error');
+  assert.equal(cards(s)[0].lane, 'attention', 'later acceptance supersedes an older owner error');
   historical.updatedAt = '2026-10-30T16:01:00.000Z';
   assert.equal(cards(s)[0].lane, 'attention', 'a new current-run failure needs action');
   historical.id = 'stage-reviewer';
   assert.equal(cards(s)[0].lane, 'attention', 'task-labelled stage workers need not be run.agentId');
   historical.labels['mission-control.run-id'] = 'run_other';
-  assert.equal(cards(s)[0].lane, 'delivery', 'an explicit different run is historical');
+  assert.equal(cards(s)[0].lane, 'attention', 'an explicit different run is historical');
 });
 
 test('accepted code waits for separate delivery, requested changes return to implementation', () => {
   const e = entry(); e.run = run('review'); e.decisions = [decision('review', { status: 'approved' })];
-  assert.equal(cards(snapshot([e]))[0].lane, 'delivery');
+  assert.equal(cards(snapshot([e]))[0].lane, 'attention'); assert.equal(cards(snapshot([e]))[0].tab, 'Delivery');
   e.decisions[0].decision.status = 'changes_requested';
   assert.equal(cards(snapshot([e]))[0].lane, 'progress');
 });
@@ -187,11 +187,23 @@ test('known stale reviews leave the approval lane and retain the reason', () => 
   assert.equal(kanbanCounts([card]).reviews, 0);
 });
 
+test('current questions and permissions remain reachable when an older review is stale', () => {
+  const e = entry(); e.run = run('review'); e.decisions = [decision('review', { gitHead: 'c'.repeat(40), candidate: { head: 'c'.repeat(40) } })];
+  const s = snapshot([e]);
+  e.questions = [{ question: { questionId: 'current', status: 'open', question: 'Which environment?', askedAt: at } }];
+  let card = cards(s)[0]; assert.equal(card.row.staleReview, true); assert.equal(card.tab, 'Decision'); assert.equal(card.needsYou, true);
+  assert.match(kanbanGuidance(card).title, /Answer the worker/); assert.equal(kanbanCounts([card]).reviews, 0);
+  e.questions = []; const a = worker(); a.pendingPermissions = 1; s.hosts[0].snapshot.agents = [a];
+  card = cards(s)[0]; assert.equal(card.tab, 'Decision'); assert.match(kanbanGuidance(card).title, /Answer the worker/);
+  a.archivedAt = at; card = cards(s)[0]; assert.equal(card.tab, 'Code review'); assert.equal(card.label, 'Fresh review required');
+  assert.equal(kanbanCounts([card]).reviews, 0, 'stale review never becomes an actionable approval');
+});
+
 test('worker questions and permissions take precedence over a pending review', () => {
   const e = entry(); e.run = run('review'); e.decisions = [decision('review')];
   const s = snapshot([e]); const a = worker(); a.pendingPermissions = 1; s.hosts[0].snapshot.agents = [a];
   assert.equal(cards(s)[0].tab, 'Decision'); assert.equal(cards(s)[0].lane, 'attention');
-  a.archivedAt = at; assert.equal(cards(s)[0].lane, 'review');
+  a.archivedAt = at; assert.equal(cards(s)[0].lane, 'attention');
   e.questions = [{ question: { questionId: 'q', status: 'open', question: 'Which environment?' } }];
   assert.equal(cards(s)[0].lane, 'attention');
 });
@@ -199,7 +211,7 @@ test('worker questions and permissions take precedence over a pending review', (
 test('pending delivery never asks for the same plan approval again', () => {
   const e = entry(); e.run = run(); e.decisions = [decision('plan', { status: 'approved', resume: { phase: 'pending', error: null } })];
   const card = cards(snapshot([e]))[0];
-  assert.equal(card.lane, 'attention'); assert.equal(card.label, 'Decision saved; delivery pending'); assert.equal(card.needsYou, false);
+  assert.equal(card.lane, 'progress'); assert.equal(card.label, 'Sending your decision to the worker'); assert.equal(card.needsYou, false);
   assert.equal(kanbanCounts([card]).plans, 0);
 });
 
@@ -215,7 +227,7 @@ test('offline cached tasks and expired observations cannot look ready for approv
   const e = entry(); e.decisions = [decision()]; const before = snapshot([e]);
   const outage = snapshot([]); outage.hosts[0].error = 'offline'; outage.hosts[0].snapshot = null;
   const result = cards(retainV2Hosts(outage, before));
-  assert.equal(result.length, 1); assert.equal(result[0].label, 'Host unconfirmed'); assert.equal(kanbanCounts(result).plans, 0);
+  assert.equal(result.length, 1); assert.equal(result[0].label, 'Status unavailable'); assert.equal(kanbanCounts(result).plans, 0);
   assert.equal(kanbanCanAct(result[0].row, true), false);
   assert.equal(cards(before, { now: now + 91_000 })[0].lane, 'attention');
   assert.equal(cards(before, { unconfirmed: true })[0].row.state, 'Unconfirmed');
@@ -244,8 +256,24 @@ test('compact layout uses one readable lane, desktop keeps bounded lane widths',
   assert.ok(kanbanLayout(1400, false).laneWidth <= 350);
 });
 
-test('lanes follow lifecycle order after the exception lane', () => {
-  assert.deepEqual(kanbanLanes.map(lane => lane.id), ['attention', 'queue', 'planning', 'plan', 'progress', 'review', 'delivery', 'done']);
+test('four lanes keep agent work separate from genuine human decisions', () => {
+  assert.deepEqual(kanbanLanes.map(lane => lane.id), ['queue', 'progress', 'attention', 'done']);
+  assert.deepEqual(kanbanLanes.map(lane => lane.title), ['Up next', 'Working', 'Needs you', 'Done']);
+  const e = entry(); e.run = { ...run(), workflowMode: 'automatic', deliveryKind: 'code' };
+  e.pipeline = { runId: e.run.runId, workflowMode: 'automatic', deliveryKind: 'code', stage: 'plan-review', mode: 'waiting', message: 'Checking plan' };
+  const s = snapshot([e]);
+  for (const stage of ['plan', 'plan-review', 'execute', 'validate', 'review']) {
+    e.pipeline.stage = stage;
+    const card = cards(s)[0]; assert.equal(card.lane, 'progress', stage); assert.equal(card.needsYou, false, stage);
+  }
+  e.pipeline.stage = 'delivery'; e.pipeline.mode = 'ready';
+  assert.equal(cards(s)[0].tab, 'Delivery'); assert.equal(cards(s)[0].needsYou, true);
+  e.pipeline.deliveryKind = 'actions'; e.pipeline.mode = 'waiting';
+  assert.equal(cards(s)[0].lane, 'progress'); assert.equal(cards(s)[0].label, 'Running authorized actions');
+  e.pipeline.deliveryKind = 'report'; e.pipeline.mode = 'ready';
+  assert.equal(cards(s)[0].lane, 'progress'); assert.equal(cards(s)[0].label, 'Saving the completed report');
+  e.pipeline.mode = 'done'; assert.equal(cards(s)[0].lane, 'done');
+  s.hosts[0].error = 'Offline'; assert.equal(cards(s)[0].lane, 'attention'); assert.equal(cards(s)[0].needsYou, false);
 });
 
 test('a blocked handoff without an open request routes to a conversation, not an empty decision', () => {
@@ -262,13 +290,18 @@ test('a blocked handoff without an open request routes to a conversation, not an
   assert.equal(renderDetail(item, 'Decision').nodes.some(node => node.type === 'TaskAttention'), false);
 });
 
-test('guidance covers every lane without turning in-progress work into an approval', () => {
+test('guidance explains real saved requests and automatic planning without inventing approval', () => {
   const base = cards(snapshot())[0];
-  for (const [lane, tab, expected] of [['queue','Workers','priority'], ['planning','Plan','plan'], ['plan','Plan','approve'], ['progress','Workers','waiting'], ['review','Code review','accept'], ['delivery','Delivery','delivery'], ['done','Evidence','outcome']]) {
-    const guide = kanbanGuidance({ ...base, lane, tab, running: 0 });
+  for (const [lane, tab, expected] of [['queue','Workers','priority'], ['progress','Workers','waiting'], ['attention','Delivery','finished work'], ['done','Evidence','outcome']]) {
+    const guide = kanbanGuidance({ ...base, lane, tab, needsYou: lane === 'attention', running: 0 });
     assert.match(guide.title.toLowerCase(), new RegExp(expected)); assert.ok(guide.steps.length >= 2); assert.ok(guide.after);
   }
-  assert.match(kanbanGuidance({ ...base, lane: 'planning', tab: 'Plan', running: 0 }).why, /no open plan approval/);
+  const e = entry(); e.run = { ...run(), workflowMode: 'automatic' };
+  const planning = cards(snapshot([e]))[0];
+  assert.match(kanbanGuidance(planning).why, /no decision waiting/);
+  assert.match(kanbanGuidance(planning).after, /different model checks/);
+  e.decisions = [decision()]; assert.match(kanbanGuidance(cards(snapshot([e]))[0]).title, /approve/);
+  e.decisions = [decision('review')]; assert.match(kanbanGuidance(cards(snapshot([e]))[0]).title, /accept/);
 });
 
 test('pending receipt, stale review and unavailable records keep their specific recovery paths', () => {
@@ -351,7 +384,7 @@ test('new surface routes actions through existing host guards and disposes regis
   assert.match(screen, /trailing=\{trailing\}/); assert.match(screen, /removers\.forEach\(remove => remove\(\)\)/);
   assert.match(detail, /<HostRpcProvider copy=\{bridge\.copy\}>/);
   assert.match(detail, /<TaskPlan /); assert.match(detail, /<TaskAttention /); assert.match(detail, /<ReviewReadiness /);
-  assert.match(detail, /kanbanCanAct\(row, online\)/); assert.match(detail, /tab === "Decision" && !row\.staleReview/);
+  assert.match(detail, /kanbanCanAct\(row, online\)/);
   assert.match(data, /retainV2Hosts\(await read/); assert.match(data, /clearInterval\(timer\)/);
   assert.doesNotMatch(screen + detail + data, /\.agents\.(create|ref)\(|resolveDecision\(|\.send\(/);
 });

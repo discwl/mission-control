@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import type { ChatMessageContext } from "../shared/chat-message";
 
 export type ChatOffer = {
-  id: string; owner: string; target: string; title: string; kind: "plan" | "review" | "draft-pr" | "question";
+  id: string; owner: string; target: string; title: string; kind: "plan" | "review" | "draft-pr" | "actions" | "question";
   text: string; input: Record<string, unknown>; expiresAt: number;
   state: "pending" | "executing" | "complete" | "uncertain" | "rejected"; receipt?: string;
   context?: ChatMessageContext; receiptContext?: ChatMessageContext;
@@ -17,6 +17,7 @@ export type ChatAnswer = { text: string; offerId?: string; state?: ChatOffer["st
 export function parseChatConsent(text: string, kind: ChatOffer["kind"], id: string) {
   const value = text.trim();
   if (value.length > 2100) return null;
+  if (kind === "actions") return value.toLowerCase() === `authorize actions ${id}` ? { outcome: "authorize" as const, note: "" } : null;
   if (kind === "question") { const answer = /^answer:\s*(\S[\s\S]*)$/i.exec(value.endsWith(` ${id}`) ? value.slice(0, -(id.length + 1)) : value); return answer ? { outcome: "answered" as const, note: answer[1] } : null; }
   // Notes may span paragraphs; only standalone approval and publication phrases are consent.
   const noteChanges = /^(?:change(?:s)? requested|request changes|change the plan|changes):\s*(\S[\s\S]*)$/i.exec(value);

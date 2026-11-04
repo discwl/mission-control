@@ -11,8 +11,8 @@ export async function nativeProfiles(paseo: PaseoApi) {
   const response = await paseo.config.get();
   return z.array(nativeProfileSchema).parse((response.config as { agentProfiles?: unknown }).agentProfiles ?? []);
 }
-export async function effectiveAgentPolicy(store: FleetStore, paseo: PaseoApi, projectId: string | null, taskId: string | null): Promise<ResolvedPolicy | null> {
-  const policy = resolveRolePolicy((await store.read()).agentPolicies, await nativeProfiles(paseo), projectId, taskId);
+export async function effectiveAgentPolicy(store: FleetStore, paseo: PaseoApi, projectId: string | null, taskId: string | null, workflowMode: "manual" | "automatic" = "manual"): Promise<ResolvedPolicy | null> {
+  const policy = resolveRolePolicy((await store.read()).agentPolicies, await nativeProfiles(paseo), projectId, taskId, workflowMode);
   if (policy) policy.revision = createHash("sha256").update(policy.revision).digest("hex");
   return policy;
 }
@@ -36,7 +36,7 @@ export function registerAgentPolicies(server: PluginServerContext, store: FleetS
     if (input.serverId !== await daemonServerId()) return readAgentPolicy.output.parse(await invokeChatHost(input.serverId, readAgentPolicy.name, input));
     const state = await store.read(); const profiles = await nativeProfiles(paseo);
     let effective: ResolvedPolicy | null = null; let problem: string | null = null;
-    try { effective = await effectiveAgentPolicy(store, paseo, input.projectId, input.taskId); }
+    try { effective = await effectiveAgentPolicy(store, paseo, input.projectId, input.taskId, input.workflowMode); }
     catch (error) { problem = error instanceof Error ? error.message : String(error); }
     return { revision: state.revision, profiles, policies: state.agentPolicies, effective, problem };
   });

@@ -343,7 +343,11 @@ const newestReview = (decisions: Decisions, taskId: string, runId: string) => [.
 // Paseo's client gives up on a plugin RPC after about 30 s; reply before then and finish in the background.
 export const replyWithinMs = 20_000;
 
+type AutomaticInspection = import("../shared/pipeline").PipelineInspection;
 type Deps = {
+  automaticInspection?: (serverId: string, taskId: string, paseo: PaseoApi) => Promise<AutomaticInspection | null>;
+  automaticMode?: (source: TaskSource, run: RunRecord | null) => Promise<boolean>;
+  automaticInspectionScope?: (serverId: string, paseo: PaseoApi) => (taskId: string) => Promise<AutomaticInspection | null>;
   // Where Attention's result cards are kept until dismissed; in memory only when not given.
   results?: DeliveryResults;
   // The project's delivery (Settings → Delivery); a pull-request project gets Open PR instead of Merge.
@@ -408,6 +412,22 @@ export function createMergeService(deps: Deps) {
     catch (error) { return { mode: "merge", warning: `Delivery settings can't be read (${failure(error)}), so every task is offered Merge until they're fixed in Settings → Delivery.` }; }
   }
 
+  async function isAutomatic(source: TaskSource, run: RunRecord | null) {
+    if (deps.automaticMode) return deps.automaticMode(source, run);
+    if (!deps.automaticInspection) return false;
+    const { hasAutomaticAssignment } = await import("./pipeline-inspect");
+    return hasAutomaticAssignment(source, run);
+  }
+  async function automaticReviewFacts(serverId: string, source: TaskSource, paseo: PaseoApi, inspect?: (taskId: string) => Promise<AutomaticInspection | null>) {
+    let facts = inspect ? await inspect(source.task.taskId) : await deps.automaticInspection?.(serverId, source.task.taskId, paseo) ?? null;
+    if (!facts) throw new Error("The managed automatic run's current review evidence is unavailable.");
+    // Reuse reviews only for our retained delivery commit, with the identical tree and exact parent.
+    if (facts?.deliveryKind === "code" && facts.candidate?.head && await recordedCommit(source.task.taskId, facts.candidate.head)) {
+      const prior = [...facts.checkpoints].filter(item => item.stage === "validate" && item.verdict === "pass" && item.candidate.tree === facts!.candidate!.tree).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]?.candidate;
+      if (prior?.head && (await parentsOf(await deps.projectRoot(source.task.projectId, paseo), facts.candidate.head)).join(" ") === prior.head) facts = { ...facts, candidate: prior };
+    }
+    return facts;
+  }
   async function evaluate(serverId: string, taskId: string, paseo: PaseoApi, mode: EvaluateMode = { kind: "merge" }): Promise<Evaluation> {
     const forMerge = mode.kind === "merge";
     const verb = forMerge ? "merge" : "deliver";
@@ -423,6 +443,12 @@ export function createMergeService(deps: Deps) {
     const worktree = task?.worktree;
     if (!source || !task || !task.assignments.some(item => item.serverId === serverId)) { add("task", "Task", false, "This task isn't on this host."); return result(); }
     if (!source.folder) { add("task", "Task", false, "This task has no task folder."); return result(source); }
+    let runs: RunRecord[]; let automatic: AutomaticInspection | null = null;
+    try {
+      runs = await readRuns(source, serverId);
+      if (await isAutomatic(source, runs[0] ?? null)) automatic = await automaticReviewFacts(serverId, source, paseo);
+    } catch (error) { add("review", "Review evidence", false, `Delivery cannot be verified: ${failure(error)}`); return result(source); }
+    if (automatic && automatic.deliveryKind !== "code") { add("task", "Task", false, "Non-code artifacts use exact action authorization, not Git delivery."); return result(source); }
     if (!worktree) { add("task", "Task", false, `This task didn't run in its own worktree, so there is no task branch to ${verb}.`); return result(source); }
     if (task.status === "delivered" || task.status === "closed") { add("task", "Task", false, `This task is already ${task.status}.`); return result(source); }
     if (forMerge && task.pullRequest) { add("task", "Task", false, `This task was delivered as the pull request ${task.pullRequest.url}; Attention's Pull requests list follows it.`); return result(source); }
@@ -433,7 +459,6 @@ export function createMergeService(deps: Deps) {
     add("task", "Task", true, `Runs in its own worktree on ${worktree.branch}.`);
 
     // Review: the latest run's newest review decision is approved, and nothing is left open.
-    const runs = await readRuns(source, serverId);
     const run = runs[0] ?? null;
     const decisions = await deps.decisions(serverId);
     const own = (entry: DecisionEntry) => entry.decision.taskId === taskId;
@@ -443,6 +468,13 @@ export function createMergeService(deps: Deps) {
     let reviewOk = false;
     if (!run) add("review", "Review approved", false, "The task has no run.");
     else if (open) add("review", "Review approved", false, `A ${open.decision.kind} decision is still waiting for your answer.`);
+    else if (automatic) {
+      const { automaticDeliveryReadiness } = await import("../shared/pipeline-model");
+      const readiness = automaticDeliveryReadiness(automatic);
+      if (automatic.entry.run?.runId !== run.runId) add("review", "Independent reviews", false, "Review evidence belongs to a different run.");
+      else if (!readiness.ready) add("review", "Independent reviews", false, readiness.reason);
+      else reviewOk = true;
+    }
     else if (!review) add("review", "Review approved", false, "The latest run has no review decision.");
     else if (review.decision.status !== "approved") add("review", "Review approved", false, `The latest review decision is ${review.decision.status.replaceAll("_", " ")}, not approved.`);
     else if (unresolved) add("review", "Review approved", false, `${plural(unresolved, "finding")} ${unresolved === 1 ? "is" : "are"} still open or awaiting a fix.`);
@@ -488,7 +520,7 @@ export function createMergeService(deps: Deps) {
     // Uncommitted work is whatever the candidate holds beyond the branch head.
     const dirty = current.tree !== headTree;
     const commitMessage = `${task.title} (${task.taskId})`;
-    const reviewed = review?.decision.candidate;
+    const reviewed = automatic ? automatic.candidate : review?.decision.candidate;
     if (reviewOk && reviewed) {
       // The same files as reviewed, on the reviewed commit or on Mission Control's own commit of them
       // directly on top (left by an earlier attempt that hit a conflict or a failed push). Its own commit has
@@ -501,7 +533,7 @@ export function createMergeService(deps: Deps) {
         add("review", "Review approved", false, `The task changed after its review was requested: ${changed.length ? `${plural(changed.length, "file")} differ (${listed(changed, 10)})` : "its files differ"}. Ask for a fresh review.`);
       } else if (!sameHead) {
         add("review", "Review approved", false, `The task branch moved from ${reviewed.head ? short(reviewed.head) : "no commit"} to ${short(taskHead)} after its review was requested. Ask for a fresh review.`);
-      } else add("review", "Review approved", true, `Review approved${review?.decision.resolvedAt ? ` ${review.decision.resolvedAt.slice(0, 10)}` : ""} for exactly these files, no open findings.`);
+      } else add("review", automatic ? "Independent reviews" : "Review approved", true, automatic ? "Validation and two distinct model reviews passed for exactly these files. Final delivery still requires your authorization." : `Review approved${review?.decision.resolvedAt ? ` ${review.decision.resolvedAt.slice(0, 10)}` : ""} for exactly these files, no open findings.`);
     }
 
     // The main checkout's own checks are Merge's alone: Open PR never touches the main checkout.
@@ -602,25 +634,42 @@ export function createMergeService(deps: Deps) {
    * approved and that have no open decision and no pull request yet: the ones Merge and Open PR are for.
    * Their own checks decide whether each can be delivered now.
    */
-  async function ready(serverId: string): Promise<{ tasks: MergeReadyTask[]; warning: string | null }> {
+  async function ready(serverId: string, paseo?: PaseoApi): Promise<{ tasks: MergeReadyTask[]; warning: string | null }> {
     const [sources, decisions] = await Promise.all([deps.sources(serverId), deps.decisions(serverId)]);
-    const tasks: MergeReadyTask[] = [];
+    const tasks: MergeReadyTask[] = [], errors: string[] = [];
     let warning: string | null = null;
+    let scoped: ((taskId: string) => Promise<AutomaticInspection | null>) | undefined;
     for (const source of sources) {
       const { task } = source;
       const worktree = task.worktree;
       // Only a task that ran in its own worktree has a branch to merge; the others could never pass the checks.
       if (!worktree || task.pullRequest || task.status === "delivered" || task.status === "closed" || !task.assignments.some(item => item.serverId === serverId)) continue;
+      try {
       const own = (entry: DecisionEntry) => entry.decision.taskId === task.taskId;
-      // Reading runs costs a folder scan, so only tasks with an approved review read them.
-      if (decisions.open.some(own) || !decisions.recent.some(entry => own(entry) && entry.decision.kind === "review" && entry.decision.status === "approved")) continue;
-      const run = (await readRuns(source, serverId))[0];
-      const review = run ? newestReview(decisions, task.taskId, run.runId) : undefined;
-      if (!run || review?.decision.status !== "approved") continue;
+      if (decisions.open.some(own)) continue;
+      const run = (await readRuns(source, serverId))[0] ?? null;
+      if (!run) continue;
+      if (await isAutomatic(source, run)) {
+        if (!paseo || !["review", "delivery", "handoff"].includes(run.stage) || run.outcome !== "completed") continue;
+        scoped ??= deps.automaticInspectionScope?.(serverId, paseo);
+        const automatic = await automaticReviewFacts(serverId, source, paseo, scoped);
+        if (automatic) {
+          const { automaticDeliveryReadiness } = await import("../shared/pipeline-model");
+          if (automatic.deliveryKind === "code" && !decisions.open.some(own) && automaticDeliveryReadiness(automatic).ready) {
+            const delivery = await deliveryOf(task.projectId); warning ??= delivery.warning;
+            tasks.push({ taskId: task.taskId, title: task.title, workspaceId: worktree.workspaceId, approvedAt: automatic.checkpoints.filter(item => item.stage === "review").at(-1)?.createdAt ?? null, delivery: delivery.mode });
+          }
+          continue;
+        }
+      }
+      const review = newestReview(decisions, task.taskId, run.runId);
+      if (review?.decision.status !== "approved") continue;
       const delivery = await deliveryOf(task.projectId);
       warning ??= delivery.warning;
       tasks.push({ taskId: task.taskId, title: task.title, workspaceId: worktree.workspaceId, approvedAt: review.decision.resolvedAt, delivery: delivery.mode });
+      } catch (error) { errors.push(`${task.title}: ${failure(error)}`); }
     }
+    if (errors.length) warning = [warning, `Some delivery candidates could not be checked: ${errors.slice(0, 3).join("; ")}${errors.length > 3 ? `; and ${errors.length - 3} more` : ""}`].filter(Boolean).join(" ");
     return { tasks: tasks.sort((a, b) => (a.approvedAt ?? "").localeCompare(b.approvedAt ?? "")), warning };
   }
 

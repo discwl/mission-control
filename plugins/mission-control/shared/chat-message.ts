@@ -10,5 +10,5 @@ export const chatMessageContext = z.object({
 });
 export type ChatMessageContext = z.infer<typeof chatMessageContext>;
 // Navigation opens fresh records; it cannot express a decision or publication consent.
-export const chatReadAction = z.object({ label: z.string(), command: z.string().regex(/^(?:all needs|needs|(?:plan|review|question|review details|decision status|draft pr) [\w-]+)$/i) });
+export const chatReadAction = z.object({ label: z.string(), command: z.string().regex(/^(?:all needs|needs|(?:plan|review|question|review details|decision status|draft pr|actions) [\w-]+)$/i) });
 export type ChatReadAction = z.infer<typeof chatReadAction>;

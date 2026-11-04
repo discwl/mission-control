@@ -5,8 +5,8 @@ import type { FleetCoordinator, FleetSnapshot } from "../shared/fleet";
 import { intakePipeline } from "../shared/pipeline";
 import { CompactLink } from "./compact-link";
 import { usePageState } from "./page-state";
-type Intake = { requestId: string; coordinatorId: string; remoteServerId: string; workspaceId: string; title: string; acceptanceCriteria: string };
-export function PipelineIntakeForm({ snapshot, coordinator, colors, busy, act }: { snapshot: FleetSnapshot; coordinator?: FleetCoordinator; colors: PluginSurfaceProps["theme"]["colors"]; busy: boolean; act: (id: string, work: () => Promise<unknown>) => void }) {
+type Intake = { requestId: string; coordinatorId: string; remoteServerId: string; workspaceId: string; title: string; acceptanceCriteria: string; workflowMode?: "manual" | "automatic"; deliveryKind?: "code" | "actions" | "report" };
+export function PipelineIntakeForm({ snapshot, coordinator, colors, busy, act, workflowMode = "automatic", deliveryKind = "code" }: { snapshot: FleetSnapshot; coordinator?: FleetCoordinator; colors: PluginSurfaceProps["theme"]["colors"]; busy: boolean; act: (id: string, work: () => Promise<unknown>) => void; workflowMode?: "manual" | "automatic"; deliveryKind?: "code" | "actions" | "report" }) {
   const create = useRpc(intakePipeline);
   const [show, setShow] = useState(false); const [workspaceId, setWorkspaceId] = useState(""); const [workspaceSearch, setWorkspaceSearch] = useState("");
   const [title, setTitle] = usePageState(`pipeline-intake:${snapshot.serverId}:title`, "");
@@ -20,7 +20,7 @@ export function PipelineIntakeForm({ snapshot, coordinator, colors, busy, act }:
   const inputStyle = { color: colors.foreground, borderColor: colors.border, borderWidth: 1, borderRadius: 6, padding: 10 };
   function submit() {
     if (!coordinator || !workspace && !pending) return;
-    const request = pending ?? { requestId: globalThis.crypto.randomUUID(), coordinatorId: coordinator.agentId, remoteServerId: coordinator.remoteServerId, workspaceId, title: title.trim(), acceptanceCriteria: criteria.trim() };
+    const request = pending ?? { requestId: globalThis.crypto.randomUUID(), coordinatorId: coordinator.agentId, remoteServerId: coordinator.remoteServerId, workspaceId, title: title.trim(), acceptanceCriteria: criteria.trim(), workflowMode, deliveryKind };
     setPending(request);
     act(request.requestId, async () => {
       const result = await create({ ...request, expectedRevision: snapshot.state.revision });
@@ -30,7 +30,7 @@ export function PipelineIntakeForm({ snapshot, coordinator, colors, busy, act }:
   return <View style={{ gap: 10 }}>
     <CompactLink label={show || pending ? "New task intake" : "Start from a ticket or new task"} colors={colors} expanded={show || Boolean(pending)} onPress={() => setShow(!show)} />
     {show || pending ? <View style={{ gap: 10, padding: 12, borderWidth: 1, borderColor: colors.border, borderRadius: 7 }}>
-      <Text style={{ color: colors.foreground }}>Describe the task and what success looks like. Paste the ticket link and relevant requirements here. The coordinator will clarify gaps and show you a readable plan before building.</Text>
+      <Text style={{ color: colors.foreground }}>Describe the task and what success looks like. Paste the ticket link and relevant requirements here. The coordinator will ask about unresolved requirements and save a readable plan.</Text>
       {pending ? <Text style={{ color: colors.statusWarning }}>An intake request is saved. Retry this same request after a connection failure; its task ID stays the same.{known ? ` Current state: ${known.mode}.` : ""}</Text> : null}
       {!locked ? <>
         <TextInput accessibilityLabel="Find intake workspace" value={workspaceSearch} onChangeText={setWorkspaceSearch} placeholder="Find a project or workspace" placeholderTextColor={colors.foregroundMuted} style={inputStyle} />
@@ -42,7 +42,7 @@ export function PipelineIntakeForm({ snapshot, coordinator, colors, busy, act }:
       <TextInput accessibilityLabel="Task requirements and success checks" value={pending?.acceptanceCriteria ?? criteria} onChangeText={setCriteria} editable={!locked} multiline maxLength={4000} placeholder="Problem, ticket link, expected behavior and success checks" placeholderTextColor={colors.foregroundMuted} style={{ ...inputStyle, minHeight: 140, textAlignVertical: "top" }} />
       <CompactLink label={pending ? "Check and retry this same intake" : "Create task and prepare its plan"} colors={colors} disabled={busy || snapshot.state.paused || !pending && (!workspace || !title.trim() || !criteria.trim() || !remote?.complete)} onPress={submit} />
       {known ? <CompactLink label="Clear this form; keep the saved runner" colors={colors} disabled={busy} onPress={() => { setPending(null); setTitle(""); setCriteria(""); setShow(false); }} /> : null}
-      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Creating a task does not approve its plan or authorize publishing.</Text>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{(pending ? pending.workflowMode ?? "manual" : workflowMode) === "automatic" ? "A different model checks the plan before work begins. Publishing or executing prepared actions waits for your final authorization." : "You approve the plan and review before the final publication or action authorization."}</Text>
     </View> : null}
   </View>;
 }

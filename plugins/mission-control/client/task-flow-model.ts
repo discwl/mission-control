@@ -1,5 +1,5 @@
 export type FlowDocument = { name: string; content: string; revision: string; updatedAt: string; editable: boolean };
-export const flowStages = ["intake", "plan", "execute", "validate", "review", "fix", "delivery", "handoff"] as const;
+export const flowStages = ["intake", "plan", "plan-review", "execute", "validate", "review", "fix", "delivery", "handoff"] as const;
 export const flowOutcomes = ["in_progress", "completed", "blocked", "waiting"] as const;
 export type FlowEvent = { eventId: string; runId: string; taskId: string; stage: typeof flowStages[number]; outcome: typeof flowOutcomes[number]; at: string; agentId: string | null; evidence: string[]; source: string; body: string; gitHead?: string | null; gitDirty?: boolean; serverId?: string; workspaceId?: string };
 export type FlowIssue = { source: string; reason: string };

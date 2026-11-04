@@ -1,0 +1,12 @@
+import type { StageAssignment } from "./stage-records.mjs";
+import type { ActionIdentity, ActionSnapshot, ActionAuthorization, ReportCompletion } from "../shared/action-bundle.mjs";
+export type ActionBundleArgs = { taskFolder: string; runFolder: string; task: { taskId: string; projectId: string; title: string; acceptanceCriteria: string; assignments: { serverId: string; workspaceId: string }[] }; identity: ActionIdentity; planRevision?: string; allowStaleScope?: boolean; policyRevision?: string; checkpointDigest?: string };
+export type ReadActionBundle = ActionSnapshot & { kind: "actions" | "report"; summary: string; scopeMatch?: boolean };
+export function readActionBundle(args: ActionBundleArgs): Promise<ReadActionBundle | null>;
+export function saveActionBundle(args: ActionBundleArgs & { input: unknown; assignment: StageAssignment }): Promise<ReadActionBundle>;
+export function readActionAuthorization(args: ActionBundleArgs): Promise<ActionAuthorization | null>;
+export function reportEvidenceRevision(checkpoints: unknown): string;
+export function readReportCompletion(args: ActionBundleArgs): Promise<ReportCompletion | null>;
+export function saveReportCompletion(args: ActionBundleArgs, value: Omit<ReportCompletion, keyof ActionIdentity | "schemaVersion">): Promise<ReportCompletion>;
+export function completeActionDelivery(args: ActionBundleArgs & { agentId: string; actionRevision: string; policyRevision: string; planRevision: string; evidence: string[]; summary: string }): Promise<ActionAuthorization>;
+export function saveActionAuthorization(args: ActionBundleArgs, value: Omit<ActionAuthorization, keyof ActionIdentity | "schemaVersion">): Promise<ActionAuthorization>;

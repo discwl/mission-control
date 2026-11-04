@@ -32,7 +32,7 @@ const markdown = fields => `---\n${Object.entries(fields).map(([key, value]) => 
  * vault, and stand-ins for Paseo and the decision store. `review()` records a review decision of the
  * worktree as it is at that moment, the way dev-flow request-decision does.
  */
-async function scenario(t, { agentStatus = "idle", writeTimeoutMs, beforeMerge, afterBranchRead, replyWithinMs, deliver = deliverTaskSource, archive, deliveryMode, indexRetryWait } = {}) {
+async function scenario(t, { agentStatus = "idle", writeTimeoutMs, beforeMerge, afterBranchRead, replyWithinMs, deliver = deliverTaskSource, archive, deliveryMode, indexRetryWait, automaticInspection, automaticMode } = {}) {
   const base = await realpath(await mkdtemp(join(tmpdir(), "mission-merge-")));
   // A stopped hook or merge driver can hold the folder open for a moment on Windows.
   t.after(() => rm(base, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }));
@@ -89,7 +89,7 @@ async function scenario(t, { agentStatus = "idle", writeTimeoutMs, beforeMerge, 
   // Attention's result cards, kept in this scenario's own file.
   const results = createDeliveryResults({ file: join(base, "delivery-results.json") });
   const service = createMergeService({
-    results, deliveryMode,
+    results, deliveryMode, automaticInspection, automaticMode,
     sources: async () => [source],
     decisions: async () => decisions,
     runs: async () => [run],
@@ -104,8 +104,49 @@ async function scenario(t, { agentStatus = "idle", writeTimeoutMs, beforeMerge, 
   const merge = async (fingerprint, text = {}) => mergeResultSchema.parse(await service.merge({ serverId, taskId, fingerprint, ...text }, paseo));
   const start = async (fingerprint, text = {}) => mergeReplySchema.parse(await service.start({ serverId, taskId, fingerprint, ...text }, paseo));
   const setRun = next => { run = next; };
-  return { base, vault, repo, worktree, folder, task, git, check, merge, start, service, results, review, events, baseCommit, decisions, entry, run: () => run, setRun };
+  return { base, vault, repo, worktree, folder, task, git, check, merge, start, service, results, review, events, paseo, baseCommit, decisions, entry, run: () => run, setRun };
 }
+
+async function automaticScenario(t, options = {}) {
+  const { automaticFixture } = await import("./automatic-pipeline-fixture.mjs");
+  let facts, s;
+  s = await scenario(t, { ...options, automaticMode: async () => true, automaticInspection: async () => facts ? { ...facts, candidate: await reviewCandidate(s.worktree) } : null });
+  await writeFile(join(s.worktree, "greeting.txt"), "hello\n");
+  facts = automaticFixture().facts; facts.entry.task = s.task; facts.entry.run = s.run();
+  facts.candidate = await reviewCandidate(s.worktree);
+  for (const checkpoint of facts.checkpoints) {
+    checkpoint.taskId = s.task.taskId; checkpoint.runId = s.run().runId; checkpoint.serverId = serverId; checkpoint.workspaceId = "wks_task";
+    if (checkpoint.stage !== "plan-review") checkpoint.candidate = { ...facts.candidate };
+  }
+  return { ...s, facts };
+}
+
+test("automatic dual model evidence replaces human code approval but exact candidate drift still blocks", async t => {
+  const s = await automaticScenario(t);
+  assert.equal(s.decisions.recent.length, 0);
+  assert.equal((await s.check()).ready, true);
+  assert.equal((await s.service.ready(serverId, s.paseo)).tasks.length, 1);
+  s.facts.checkpoints.pop(); assert.equal((await s.check()).ready, false);
+  await writeFile(join(s.worktree, "greeting.txt"), "changed after review\n");
+  assert.equal((await s.check()).ready, false);
+});
+
+test("artifact hashes cannot enter Git delivery even when machine reviews passed", async t => {
+  const s = await automaticScenario(t); s.facts.deliveryKind = "actions";
+  const result = await s.check(); assert.equal(result.ready, false); assert.match(result.checks[0].detail, /Non-code artifacts/);
+});
+
+test("automatic review proof permits only a retained delivery commit with identical tree and exact parent", async t => {
+  const s = await automaticScenario(t);
+  await writeFile(join(s.repo, "greeting.txt"), "conflicting greeting on main\n");
+  s.git(s.repo, "add", "greeting.txt"); s.git(s.repo, "commit", "-qm", "main greeting");
+  const initial = await s.check(); assert.equal(initial.ready, true);
+  await s.start(initial.plan.fingerprint);
+  assert.notEqual(s.git(s.worktree, "rev-parse", "HEAD"), s.facts.candidate.head);
+  const retry = await s.check(); assert.equal(retry.ready, true, JSON.stringify(retry.checks));
+  assert.equal((await s.service.ready(serverId, s.paseo)).tasks.length, 1);
+  await writeFile(join(s.worktree, "greeting.txt"), "unreviewed change\n"); assert.equal((await s.check()).ready, false);
+});
 
 const failing = status => status.checks.filter(item => !item.ok).map(item => item.id);
 const detail = (status, id) => status.checks.find(item => item.id === id).detail;

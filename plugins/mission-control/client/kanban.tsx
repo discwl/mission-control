@@ -15,7 +15,7 @@ import { changeKanbanScope, emptyKanbanScope, kanbanFilterOptions, kanbanProject
 type Colors = PluginSurfaceProps["theme"]["colors"];
 const focuses: KanbanFocus[] = ["All work", "Needs you", "Running"];
 function laneColor(lane: KanbanLane, colors: Colors) {
-  return lane === "attention" || lane === "plan" ? colors.statusWarning : lane === "review" || lane === "done" ? colors.statusSuccess : colors.foregroundMuted;
+  return lane === "attention" ? colors.statusWarning : lane === "done" ? colors.statusSuccess : colors.foregroundMuted;
 }
 
 function TaskCard({ item, colors, open }: { item: KanbanTask; colors: Colors; open(): void }) {
@@ -66,7 +66,7 @@ function Lane({ lane, tasks, colors, width, open, loading }: { lane: typeof kanb
 
 import { KanbanOrigin } from "./kanban-origin";
 
-export function Kanban({ theme, host, layout, navigation, params }: PluginScreenProps) {
+export function Kanban({ theme, host, layout, navigation, params, openNeedsYou }: PluginScreenProps & { openNeedsYou?: () => void }) {
   const colors = theme.colors;
   const query = useKanbanData(host.id);
   const [width, setWidth] = useState(0);
@@ -75,7 +75,7 @@ export function Kanban({ theme, host, layout, navigation, params }: PluginScreen
   const [scope, setScope] = useState(emptyKanbanScope);
   const [filterMenu, setFilterMenu] = useState<ScopeKind | null>(null);
   const [search, setSearch] = useState("");
-  const [showEmpty, setShowEmpty] = useState(false);
+  const [showEmpty, setShowEmpty] = useState(true);
   const [laneFilter, setLaneFilter] = useState<KanbanLane | "all">("all");
   const [selection, setSelection] = useState<string | null>(null);
   const [notices, setNotices] = useState(false);
@@ -98,17 +98,20 @@ export function Kanban({ theme, host, layout, navigation, params }: PluginScreen
   const limited = hosts.filter(remote => remote.snapshot && !remote.snapshot.complete);
   const eligibleLanes = kanbanLanes.filter(lane => showEmpty || visible.some(item => item.lane === lane.id));
   const lanes = eligibleLanes.length ? eligibleLanes : kanbanLanes.filter(lane => lane.id === "attention");
-  const chosenLane = lanes.find(lane => lane.id === laneFilter) ?? lanes[0];
+  const chosenLane = lanes.find(lane => lane.id === laneFilter)
+    ?? (sizing.singleLane ? lanes.find(lane => visible.some(item => item.lane === lane.id)) : undefined)
+    ?? lanes[0];
   const displayedLanes = sizing.singleLane ? [chosenLane] : laneFilter === "all" ? lanes : [kanbanLanes.find(lane => lane.id === laneFilter)!];
   const selected = query.tasks.find(item => item.row.key === selection);
   const reset = () => { setScope(emptyKanbanScope()); setFilterMenu(null); setSearch(""); setFocus("All work"); setLaneFilter("all"); };
   const refresh = () => { void query.refetch(); };
   const header = <View style={{ zIndex: 3, padding: sizing.singleLane ? 12 : 18, gap: 12, borderBottomWidth: 1, borderBottomColor: colors.border }}>
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
-          <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}><Icon name="SquareKanban" size={22} color={colors.foregroundMuted} /><Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 22, fontWeight: "600" }}>Kanban</Text></View>
-          <TextInput accessibilityLabel="Search Kanban tasks" placeholder="Search tickets, tasks, workers or blockers" placeholderTextColor={colors.foregroundMuted} value={search} onChangeText={setSearch} style={{ flex: 1, minWidth: sizing.singleLane ? 180 : 260, color: colors.foreground, backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.border, borderRadius: 7, padding: 10, minHeight: 42 }} />
+          <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}><Icon name="SquareKanban" size={22} color={colors.foregroundMuted} /><Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 22, fontWeight: "600" }}>All work</Text></View>
+          <TextInput accessibilityLabel="Search all work" placeholder="Search tickets, tasks, workers or blockers" placeholderTextColor={colors.foregroundMuted} value={search} onChangeText={setSearch} style={{ flex: 1, minWidth: sizing.singleLane ? 180 : 260, color: colors.foreground, backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.border, borderRadius: 7, padding: 10, minHeight: 42 }} />
           <Text style={{ color: colors.foregroundMuted }}>{query.isPending ? "Loading…" : `${visible.length} tasks`}</Text>
-          <CompactLink label="Intake" colors={colors} disabled={!query.data} onPress={() => { setFilterMenu(null); setIntake(true); }} />
+          <CompactLink label="Open Needs you" colors={colors} disabled={!openNeedsYou} onPress={() => openNeedsYou?.()} />
+          <CompactLink label="New task" colors={colors} disabled={!query.data} onPress={() => { setFilterMenu(null); setIntake(true); }} />
           <CompactLink label={query.isFetching ? "Refreshing…" : "Refresh"} colors={colors} disabled={query.isFetching} onPress={refresh} />
         </View>
         <KanbanOrigin serverId={query.data?.serverId ?? host.id} colors={colors} />
@@ -127,7 +130,7 @@ export function Kanban({ theme, host, layout, navigation, params }: PluginScreen
           {scope.hosts.length || scope.projects.length || scope.workspaces.length || search || focus !== "All work" || laneFilter !== "all" ? <CompactLink label="Reset filters" colors={colors} onPress={reset} /> : null}
         </View>
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-          <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>One card per task · {hosts.length} managed hosts · {counts.plans} plan approvals · {counts.reviews} code reviews</Text>
+          <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>One card per task · {hosts.length} hosts · {filteredCounts.needsYou} need your attention</Text>
           {unavailable.length || limited.length || query.data?.warnings.length || counts.unconfirmed ? <CompactLink label={`${unavailable.length} unavailable · ${limited.length} partial · ${counts.unconfirmed} unconfirmed tasks`} colors={colors} expanded={notices} onPress={() => setNotices(!notices)} /> : null}
         </View>
         {notices ? <View style={{ gap: 6 }}>{hosts.filter(remote => remote.error || !remote.snapshot || !remote.snapshot.complete).map(remote => <Text key={remote.serverId} selectable style={{ color: colors.statusWarning, fontSize: 12 }}>{remote.label}: {remote.error ?? remote.snapshot?.warnings.join(" · ") ?? "No snapshot returned"}</Text>)}{query.data?.warnings.map((warning, index) => <Text key={index} style={{ color: colors.statusWarning, fontSize: 12 }}>{warning}</Text>)}<Text style={{ color: colors.statusWarning, fontSize: 12 }}>Unavailable hosts may have more work. Last-known tasks stay visible; unconfirmed counts are not live status.</Text></View> : null}
@@ -170,22 +173,22 @@ export function KanbanSidebar(props: PluginSidebarItemProps) {
     { key: "review", icon: "ClipboardCheck" as const, count: counts.ready, label: `${counts.plans} plans and ${counts.reviews} code reviews waiting for your decision; not completed tasks`, color: colors.statusSuccess },
     { key: "hosts", icon: "CloudOff" as const, count: counts.unavailableHosts, label: `${counts.unavailableHosts} hosts unavailable, stale or incomplete; their activity and decisions are excluded`, color: colors.foregroundMuted },
   ];
-  const summary = "Selected host's managed fleet, before board filters. " + (query.isPending ? "Loading Kanban status" : query.isError ? "Could not refresh Kanban. Open the board and refresh the host connections." : indicators.map(item => item.label).join(". "));
+  const summary = "Selected host's managed fleet, before board filters. " + (query.isPending ? "Loading work status" : query.isError ? "Could not refresh All work. Open the board and refresh the host connections." : indicators.map(item => item.label).join(". "));
   const trailing = <View accessibilityLabel={summary} style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
-    {query.isPending ? <Text accessibilityLabel="Loading Kanban status" style={{ color: colors.foregroundMuted }}>…</Text> : indicators.filter(item => item.count > 0).map(item => <View key={item.key} accessible accessibilityLabel={item.label} {...(Platform.OS === "web" ? { title: item.label } : {})} style={{ flexDirection: "row", alignItems: "center", gap: 3 }}>
+    {query.isPending ? <Text accessibilityLabel="Loading work status" style={{ color: colors.foregroundMuted }}>…</Text> : indicators.filter(item => item.count > 0).map(item => <View key={item.key} accessible accessibilityLabel={item.label} {...(Platform.OS === "web" ? { title: item.label } : {})} style={{ flexDirection: "row", alignItems: "center", gap: 3 }}>
       {item.key === "running" ? <ActivityIndicator size={12} color={item.color} accessibilityLabel="Agents running" /> : <Icon name={item.icon} size={12} color={item.color} />}
       <Text style={{ color: colors.foregroundMuted, fontSize: 11, fontVariant: ["tabular-nums"] }}>{item.count}</Text>
     </View>)}
     {query.isError && !counts.unavailableHosts ? <View accessible accessibilityLabel={summary} {...(Platform.OS === "web" ? { title: summary } : {})}><Icon name="CloudOff" size={13} color={colors.foregroundMuted} /></View> : null}
   </View>;
-  return <View {...(Platform.OS === "web" ? { title: summary } : {})}><SidebarRow icon="SquareKanban" label="Kanban" active={props.currentScreen?.screenId === kanbanScreenId} trailing={trailing} onPress={() => props.openScreen({ screenId: kanbanScreenId })} /></View>;
+  return <View {...(Platform.OS === "web" ? { title: summary } : {})}><SidebarRow icon="SquareKanban" label="All work" active={props.currentScreen?.screenId === kanbanScreenId} trailing={trailing} onPress={() => props.openScreen({ screenId: kanbanScreenId })} /></View>;
 }
 
 export function registerKanban(client: PluginClientContext) {
   const removers = [
-    client.addScreen({ id: kanbanScreenId, title: "Kanban", Component: Kanban }),
-    client.addSidebarHeaderItem({ id: kanbanScreenId, title: "Kanban", Component: KanbanSidebar }),
-    client.addCommandCenterItem({ id: "open-kanban", title: "Open Mission Control Kanban", icon: "SquareKanban", context: "global", keywords: ["board", "tasks", "hosts", "plan", "review"], onSelect: () => client.openScreen({ screenId: kanbanScreenId }) }),
+    client.addScreen({ id: kanbanScreenId, title: "All work", Component: props => <Kanban {...props} openNeedsYou={() => client.openScreen({ screenId: "mission-control-v2" })} /> }),
+    client.addSidebarHeaderItem({ id: kanbanScreenId, title: "All work", Component: KanbanSidebar }),
+    client.addCommandCenterItem({ id: "open-kanban", title: "Open Mission Control All work", icon: "SquareKanban", context: "global", keywords: ["board", "tasks", "hosts", "plan", "review"], onSelect: () => client.openScreen({ screenId: kanbanScreenId }) }),
     client.addSlashCommand({ name: "kanban", description: "Open the Mission Control task board across managed hosts", argumentHint: "", context: "workspace", onSubmit: () => client.openScreen({ screenId: kanbanScreenId }) }),
   ];
   return () => removers.forEach(remove => remove());

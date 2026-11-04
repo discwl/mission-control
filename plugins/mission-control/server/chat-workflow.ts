@@ -29,9 +29,11 @@ import { resolveCurrentChatReview } from "./chat-review";
 // messages do not identify their transport, so we deliberately do not scrape them for consent.
 import { createFleetStore } from "./fleet-store";
 import { PIPELINE_CHAT_HELP } from "./chat-pipeline";
+import { checkActionDelivery, authorizeActionDelivery } from "../shared/action-delivery";
+import type { createActionDeliveryService } from "./action-delivery";
 import { INTAKE_CHAT_HELP } from "./chat-intake";
 
-export function registerChatWorkflow(server: PluginServerContext, deps: { decisions: ReturnType<typeof createDecisionStore>; pullRequests: ReturnType<typeof createPullRequestService>; questions: ReturnType<typeof createQuestionStore> }) {
+export function registerChatWorkflow(server: PluginServerContext, deps: { decisions: ReturnType<typeof createDecisionStore>; pullRequests: ReturnType<typeof createPullRequestService>; actionDelivery?: ReturnType<typeof createActionDeliveryService>; questions: ReturnType<typeof createQuestionStore> }) {
   const offers = createChatActions(join(process.env.PASEO_HOME?.trim() || join(homedir(), ".paseo"), "plugin-data", "mission-control", "chat-actions.json"));
   const links = createOrchestratorWorkStore();
   server.handle(chatContext, async ({ agentId }, { paseo }) => {
@@ -62,6 +64,8 @@ export function registerChatWorkflow(server: PluginServerContext, deps: { decisi
       [resolveDecision.name]: input => deps.decisions.resolve(input, paseo),
       [checkPullRequest.name]: input => deps.pullRequests.check(input, paseo),
       [runPullRequest.name]: input => deps.pullRequests.start(input, paseo),
+      [checkActionDelivery.name]: input => { if (!deps.actionDelivery) throw new Error("Action delivery is unavailable."); return deps.actionDelivery.check(input, paseo); },
+      [authorizeActionDelivery.name]: input => { if (!deps.actionDelivery) throw new Error("Action delivery is unavailable."); return deps.actionDelivery.authorize(input, paseo); },
     };
     const call = async <T>(contract: { name: string; input: { parse(input: unknown): unknown }; output: { parse(input: unknown): T } }, input: unknown): Promise<T> => {
       const parsed = contract.input.parse(input);
@@ -87,12 +91,16 @@ export function registerChatWorkflow(server: PluginServerContext, deps: { decisi
       }
       const management = await manageChatCommand(command, { local, target, agentId, label, orchestrator: Boolean(binding) });
       if (management) return management;
-      if (/^(yes\b|approve\b|accept\b|request changes\b|changes:|change the plan:|stop:|answer:|open draft pr\b)/i.test(command)) {
+      if (/^(yes\b|approve\b|accept\b|request changes\b|changes:|change the plan:|stop:|answer:|open draft pr\b|authorize actions\b)/i.test(command)) {
         return await offers.answer(owner, command, async (offer, consent) => {
           if (offer.target !== target) throw new Error("This chat's host changed. Show the proposal again.");
           if (offer.kind === "question") {
             const result = await call(replyToQuestion, { ...offer.input, text: consent.note });
             return { text: `${label} · ${offer.title}\nAnswer ${result.question.status === "answered" ? "recorded" : "submitted"}.\nThe task's overall completion has not changed.`, context: { host: label, title: offer.title, taskId: typeof offer.input.taskId === "string" ? offer.input.taskId : undefined, type: "receipt" as const, status: result.question.status === "answered" ? "Answer recorded" : "Answer submitted", waitingOn: "Worker", observedAt: new Date().toISOString(), evidence: "saved_record" as const } };
+          }
+          if (offer.kind === "actions") {
+            const result = await call(authorizeActionDelivery, { ...offer.input, actorId: owner });
+            return { text: `${label} · ${offer.title}\n${result.reason}`, context: { host: label, title: offer.title, taskId: String(offer.input.taskId), type: "receipt" as const, status: result.outcome === "resumed" ? "Actions authorized; worker resumed" : result.outcome === "uncertain" ? "Resume uncertain" : "Authorization refused", waitingOn: result.outcome === "resumed" ? "Worker" : "You", observedAt: new Date().toISOString(), evidence: "saved_record" as const } };
           }
           if (offer.kind === "draft-pr") {
             const reply = await call(runPullRequest, { ...offer.input, dryRun: false });
@@ -103,10 +111,20 @@ export function registerChatWorkflow(server: PluginServerContext, deps: { decisi
           return decisionReceipt(resolved, label);
         }, offerId);
       }
+      const actionRequest = /^actions\s+(task_[a-f0-9-]+)$/i.exec(command);
+      if (actionRequest) {
+        const status = await call(checkActionDelivery, { serverId: target, taskId: actionRequest[1] });
+        if (!status.ready || !status.plan) return { text: `${label} · ${status.reason}`, ...(status.authorized ? { authorized: true } : {}), ...(status.completed ? { completed: true } : {}), context: { host: label, title: status.plan?.title, taskId: actionRequest[1], type: status.completed ? "completion" : status.authorized ? "receipt" : "blocker", status: status.completed ? "Work completed" : status.authorized ? "Actions already authorized" : "Final actions need attention", waitingOn: status.completed ? "None" : "Worker", observedAt: new Date().toISOString(), evidence: "saved_record" } };
+        const plan = status.plan;
+        if (plan.kind === "report") return { text: `${label} · ${plan.title}\nReviewed report ${plan.revision}\n\n${plan.bundle.report}\n\n${status.reason}\nNo external actions were executed.`, completed: true, context: { host: label, title: plan.title, taskId: plan.taskId, type: "completion", status: "Reviewed read-only result", waitingOn: "None", observedAt: new Date().toISOString(), evidence: "saved_record" } };
+        const preview = `${label} · ${plan.title}\nExact action bundle ${plan.revision}\nEnvironment: ${plan.bundle.environment}\n\n${plan.bundle.summary}\n\nPrerequisites\n${plan.bundle.prerequisites.join("\n")}\n\nActions\n${plan.bundle.steps.map((step, index) => `${index + 1}. ${step.instruction}\nExpected effect: ${step.effect}`).join("\n\n")}\n\nVerification\n${plan.bundle.verification.join("\n")}\n\nRollback\n${plan.bundle.rollback}\n\nThe exact bundle passed validation and two independent reviews. Authorization resumes the assigned worker; it does not establish successful execution.`;
+        const offer = await offers.prepare({ owner, target, title: plan.title, kind: "actions", text: preview, input: { serverId: target, taskId: plan.taskId, fingerprint: plan.fingerprint }, context: { host: label, title: plan.title, taskId: plan.taskId, type: "delivery", stage: "Action preview", status: "Awaiting exact action authorization", waitingOn: "You", observedAt: new Date().toISOString(), evidence: "saved_record" } });
+        return { text: `${offer.text}\n\nTo authorize these exact actions, reply: authorize actions ${offer.id}`, offerId: offer.id, state: offer.state, proposalKind: offer.kind, context: offer.receiptContext ?? offer.context };
+      }
       const draft = /^draft pr\s+(task_[a-f0-9-]+)$/i.exec(command);
       if (draft) {
         const status = await call(checkPullRequest, { serverId: target, taskId: draft[1] });
-        if (!status.ready || !status.plan) return { text: `${label} · Draft PR is not ready.\n${status.checks.map(check => Object.values(check).filter(value => typeof value === "string").join(": ")).join("\n")}` };
+        if (!status.ready || !status.plan) return { text: `${label} · Draft PR is not ready.\n${status.checks.map(check => Object.values(check).filter(value => typeof value === "string").join(": ")).join("\n")}`, context: { host: label, taskId: draft[1], type: "blocker", status: "Publication checks need attention", waitingOn: "Worker", actionNeeded: "Open the task in Paseo to inspect the failed checks", observedAt: new Date().toISOString(), evidence: "saved_record" } };
         const plan = status.plan;
         const offer = await offers.prepare({ owner, target, title: plan.taskTitle, kind: "draft-pr", context: { host: label, title: plan.taskTitle, taskId: draft[1], type: "delivery", stage: "Draft PR preview", status: "Awaiting publication approval", waitingOn: "You", actionNeeded: "Read the exact commit, push and draft PR preview", nextStep: "Publish only after your separate approval", observedAt: new Date().toISOString(), evidence: "saved_record" }, text: chatPullRequest(plan, label), input: { serverId: target, taskId: draft[1], fingerprint: plan.fingerprint, title: plan.title, body: plan.body, commitMessage: plan.commitMessage } });
         return { text: `${offer.text}\n\nTo authorize these exact actions, reply: open draft PR ${offer.id}\n${chatLinks(target, plan.worktreeWorkspaceId)}`, offerId: offer.id, state: offer.state, proposalKind: offer.kind, context: offer.receiptContext ?? offer.context };
@@ -134,25 +152,31 @@ export function registerChatWorkflow(server: PluginServerContext, deps: { decisi
       }
       const owned = binding ? await links.list({ serverId: local, agentId, remoteServerId: target }) : [];
       const displayed = (await offers.forOwner(owner)).filter(offer => offer.target === target);
-      const belongs = (entry: typeof decisions.open[number]) => binding
-        ? owned.some(link => link.taskId === entry.decision.taskId || link.remoteAgentId === entry.decision.agentId) || displayed.some(offer => offer.input.taskId === entry.decision.taskId)
-        : entry.decision.workspaceId === agent.workspaceId;
       if (!requested) {
-        const selected = decisions.open.filter(entry => all || belongs(entry));
+        const pipelines = (await createFleetStore().read()).pipelines.filter(row => row.remoteServerId === target && (all || row.coordinatorId === agentId || owned.some(link => link.taskId === row.taskId) || displayed.some(offer => offer.input.taskId === row.taskId)));
+        const belongs = (record: { serverId: string; workspaceId: string; taskId: string; agentId: string | null }) => record.serverId === target && (all || (binding
+          ? pipelines.some(row => row.taskId === record.taskId) || owned.some(link => link.taskId === record.taskId || link.remoteAgentId === record.agentId) || displayed.some(offer => offer.input.taskId === record.taskId)
+          : record.workspaceId === agent.workspaceId));
+        const selected = decisions.open.filter(entry => belongs(entry.decision));
         const waiting = await call(listWaiting, { serverId: target });
-        const questions = waiting.questions.filter(entry => entry.question.status === "open" && (all || (binding ? owned.some(link => link.taskId === entry.question.taskId || link.remoteAgentId === entry.question.agentId) || displayed.some(offer => offer.input.taskId === entry.question.taskId) : entry.question.workspaceId === agent.workspaceId)));
-        const recent = decisions.recent.filter(entry => all || belongs(entry));
+        const questions = waiting.questions.filter(entry => entry.question.status === "open" && belongs(entry.question));
+        const recent = decisions.recent.filter(entry => belongs(entry.decision));
+        const finalReady = pipelines.filter(row => row.stage === "delivery" && row.mode === "ready" && !row.pending && row.deliveryKind !== "report" && !selected.some(entry => entry.decision.taskId === row.taskId) && !questions.some(entry => entry.question.taskId === row.taskId));
+        const intervention = pipelines.filter(row => (row.mode === "blocked" || row.mode === "paused" || Boolean(row.pending)) && !selected.some(entry => entry.decision.taskId === row.taskId) && !questions.some(entry => entry.question.taskId === row.taskId));
         const rejectedFor = (entry: typeof selected[number]) => displayed.find(offer => offer.state === "rejected" && offer.input.decisionId === entry.decision.decisionId && offer.input.expectedRevision === entry.revision);
         const sections = [
           ...selected.map(entry => { const rejected = rejectedFor(entry); return rejected ? `**${entry.taskTitle}**\nReview out of date\nWaiting on: Worker — fresh review required\nNext step: The current code needs a fresh review and a new approval request.` : `**${entry.taskTitle}**\n${entry.decision.kind === "plan" ? "Plan approval · Planning" : "Code review · Review"}\nWaiting on: You\nNext step: Open this ${entry.decision.kind} and choose your decision.`; }),
           ...questions.map(entry => `**${entry.taskTitle}**\nQuestion · Waiting on you\n${entry.question.question}\nNext step: Open this question to answer.`),
-          ...recent.filter(entry => entry.decision.resume?.phase !== "sent").map(entry => { const receipt = decisionReceipt(entry, label, [...decisions.open, ...decisions.recent]); return `**${entry.taskTitle}**\n${receipt.context.status}\nWaiting on: ${receipt.context.waitingOn}\nNext step: ${receipt.context.nextStep}`; }),
+          ...finalReady.map(row => `**${row.title}**\n${row.deliveryKind === "code" ? "Ready to publish" : "Ready to execute"}\n${row.deliveryKind === "code" ? "Review the code and comments in Paseo, then open the exact draft PR preview below." : "Open the prepared actions to review their environment and effects before authorizing them."}`),
+          ...intervention.map(row => `**${row.title}**\nNeeds attention\n${row.pending ? "A request could not be confirmed. Check the task in Paseo before retrying." : row.mode === "paused" ? "This task is paused. Open it in Paseo when you are ready to resume." : "The task cannot continue automatically. Open it in Paseo to review the blocker."}\nDetails: ${row.message}`),
+          ...recent.filter(entry => entry.decision.resume?.phase !== "sent").map(entry => { const receipt = decisionReceipt(entry, label, [...decisions.open, ...decisions.recent]); return `**${entry.taskTitle}**\n${receipt.context.status}\nNext: ${receipt.context.nextStep}`; }),
         ];
-        return { text: `${label} · What needs me\n${selected.length + questions.length} decisions or questions${all ? " across this host" : " linked to this chat"}.\n\n${sections.join("\n\n") || "No linked decisions are waiting. Older work may be unlinked; use All host work to inspect it without changing ownership."}\n\nNative tool permissions still appear in Paseo.`,
+        return { text: `${label} · What needs me\n${selected.length + questions.length + finalReady.length + intervention.length} items needing attention${all ? " across this host" : " linked to this chat"}.\n\n${sections.join("\n\n") || "No linked questions or final actions are waiting. Older work may be unlinked; use All host work to inspect it without changing ownership."}\n\nNative tool permissions still appear in Paseo.`,
           context: { host: label, type: "summary", status: "Current saved requests", observedAt: new Date().toISOString(), evidence: "saved_record" },
           actions: [
             ...selected.map(entry => ({ label: `${rejectedFor(entry) ? "Outdated review" : entry.decision.kind === "plan" ? "Plan" : "Review"} · ${entry.taskTitle}`.slice(0, 60), command: `${entry.decision.kind} ${entry.decision.decisionId}` })),
             ...questions.map(entry => ({ label: `Question · ${entry.taskTitle}`.slice(0, 60), command: `question ${entry.question.questionId}` })),
+            ...finalReady.map(row => ({ label: `${row.deliveryKind === "code" ? "Preview draft PR" : "Review actions"} · ${row.title}`.slice(0, 60), command: `${row.deliveryKind === "code" ? "draft pr" : "actions"} ${row.taskId}` })),
             ...recent.filter(entry => entry.decision.resume?.phase !== "sent").map(entry => ({ label: `Receipt · ${entry.taskTitle}`.slice(0, 60), command: `decision status ${entry.decision.decisionId}` })),
             ...(!all ? [{ label: "All host work (including unlinked)", command: "all needs" }] : []),
           ],
@@ -205,20 +229,22 @@ export function registerChatWorkflow(server: PluginServerContext, deps: { decisi
     const decisions = listDecisions.output.parse(await invokeChatHost(target, listDecisions.name, { serverId: target }));
     const waiting = listWaiting.output.parse(await invokeChatHost(target, listWaiting.name, { serverId: target }));
     const scoped = (taskId: string, worker: string | null) => displayed.some(offer => offer.input.taskId === taskId) || pipelines.some(row => row.taskId === taskId) || owned.some(link => link.taskId === taskId || worker && link.remoteAgentId === worker);
+    const concreteRequests = new Set([...decisions.open.map(entry => entry.decision.taskId), ...waiting.questions.filter(entry => entry.question.status === "open").map(entry => entry.question.taskId)]);
     const requests = [
-      ...pipelines.filter(row => row.mode === "ready" && !row.pending).map(row => ({ id: `${target}:pipeline:${row.id}:draft:${row.lastDispatch}`, command: `draft PR ${row.taskId}` })),
+      ...pipelines.filter(row => row.stage === "delivery" && row.mode === "ready" && !row.pending && row.deliveryKind !== "report" && !concreteRequests.has(row.taskId)).map(row => ({ id: `${target}:pipeline:${row.id}:draft:${row.lastDispatch}`, command: `${row.deliveryKind === "code" ? "draft PR" : "actions"} ${row.taskId}` })),
       ...decisions.open.filter(entry => scoped(entry.decision.taskId, entry.decision.agentId)).map(entry => ({ id: `${target}:${entry.decision.decisionId}:${entry.revision}`, command: `${entry.decision.kind} ${entry.decision.decisionId}` })),
       ...waiting.questions.filter(entry => entry.question.status === "open" && scoped(entry.question.taskId, entry.question.agentId)).map(entry => ({ id: `${target}:${entry.question.questionId}:${entry.question.askedAt}`, command: `question ${entry.question.questionId}` })),
     ];
-    const entries: RpcOutput<typeof chatInbox>["entries"] = pipelines.map(row => ({
+    const entries: RpcOutput<typeof chatInbox>["entries"] = pipelines.filter(row => (row.mode !== "ready" || row.pending) && !((["blocked", "waiting"].includes(row.mode) || row.pending) && concreteRequests.has(row.taskId))).map(row => ({
       id: `pipeline:${row.id}:${row.mode}:${row.stage}:${row.lastDispatch}:${row.message}`,
-      text: `${binding.label} · ${row.title}\nWhat changed\n${row.message}${row.mode === "done" ? "\nThis task runner has finished. This does not establish a merge, deployment, or customer enablement." : ""}`,
+      text: `${binding.label} · ${row.title}\n${row.mode === "done" ? row.deliveryKind === "report" ? "Your reviewed report is complete. Open it below to read the result." : row.deliveryKind === "actions" ? "The authorized actions have a saved completion receipt. Review the execution and verification results in Paseo." : "The task runner has completed its delivery work. Check the saved receipt for the published result; a merge or deployment is separate." : row.mode === "blocked" || row.pending ? "This task needs attention before it can continue. Open it in Paseo to inspect the issue." : row.mode === "paused" ? "This task is paused. Resume it in Paseo when you are ready." : ({ plan: "The planner is preparing the scope and checks.", "plan-review": "A second model is checking the plan.", execute: "The builder is carrying out the task.", validate: "The validator is running the planned checks.", review: "Independent reviewers are checking the result.", fix: "The builder is addressing the requested fixes.", approval: "A saved manual approval is waiting for you.", delivery: "The final result is being prepared." })[row.stage]}${row.mode === "blocked" || row.pending ? `\nDetails: ${row.message}` : ""}`,
+      ...(row.mode === "done" && row.deliveryKind === "report" ? { actions: [{ label: "Read the completed report", command: `actions ${row.taskId}` }] } : {}),
       context: {
         host: binding.label, title: row.title, taskId: row.taskId,
-        type: row.mode === "blocked" ? "blocker" : row.mode === "done" ? "completion" : "update",
-        stage: ({ plan: "Planning", execute: "Implementation", validate: "Validation", review: "Independent review", fix: "Fixing findings", approval: "Code approval", delivery: "Draft PR delivery" })[row.stage],
-        status: row.mode === "done" ? "Task runner complete" : row.mode,
-        waitingOn: ["blocked", "paused", "ready"].includes(row.mode) ? "You" : row.mode === "running" ? "Worker" : row.mode === "waiting" ? "The saved stage requirement" : "None",
+        type: row.mode === "blocked" || row.mode === "paused" || row.pending ? "blocker" : row.mode === "done" ? "completion" : "update",
+        stage: ({ plan: "Planning", "plan-review": "Independent plan check", execute: "Implementation", validate: "Validation", review: "Independent review", fix: "Fixing findings", approval: "Code approval", delivery: row.deliveryKind === "code" ? "Draft PR delivery" : "Reviewed result" })[row.stage],
+        status: row.mode === "done" ? row.deliveryKind === "report" ? "Report complete" : row.deliveryKind === "actions" ? "Actions complete" : "Delivery complete" : row.pending ? "Request needs confirmation" : row.mode === "blocked" ? "Needs attention" : row.mode === "paused" ? "Paused" : "Work in progress",
+        waitingOn: ["blocked", "paused"].includes(row.mode) || row.pending ? "You" : row.mode === "done" || row.mode === "stopped" ? "None" : "Worker",
         observedAt: row.updatedAt, evidence: "saved_record",
       },
     }));

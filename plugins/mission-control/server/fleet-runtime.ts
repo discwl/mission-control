@@ -1,6 +1,6 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { acknowledgeFleetDispatch, configureSupervisor, fleetSnapshotSchema, pauseFleet, readFleet, readFleetHost, reconcileFleet, setFleetQueue, supervisorEntrySchema, type FleetSnapshot } from "../shared/fleet";
-import { chooseNextTask, coordinatorCandidates, managedTasks, taskFingerprint } from "../shared/fleet-model";
+import { chooseNextTask, coordinatorCandidates, managedTasks, taskFingerprint, withPipelineProjection } from "../shared/fleet-model";
 import { hideSecrets } from "../shared/secret-mask";
 import { isQuiet } from "../shared/agent-tree";
 import { collectFleetHost, fleetDirectory, toFleetAgent, type FleetHostDeps } from "./fleet-host";
@@ -45,7 +45,7 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
     });
   }
   async function snapshot(refresh = false): Promise<FleetSnapshot> {
-    if (!refresh && cached && Date.now() - Date.parse(cached.observedAt) < 10_000) return { ...cached, state: await store.read() };
+    if (!refresh && cached && Date.now() - Date.parse(cached.observedAt) < 10_000) return withPipelineProjection(cached, await store.read());
     if (!loading) loading = collect().then(async result => {
       const observed: Record<string, string> = {};
       const changes: { coordinatorId: string; remoteServerId: string; taskId: string; title: string }[] = [];
@@ -64,7 +64,7 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
       });
       cached = result; return result;
     }).finally(() => { loading = null; });
-    return loading;
+    return withPipelineProjection(await loading, await store.read());
   }
   const pipeline = registerPipelineRuntime(server, store, hostDeps, () => snapshot(true), (id, prompt, requestId) => withFleetConnection(async paseo => {
     const entry = await paseo.agents.ref(id).refresh();

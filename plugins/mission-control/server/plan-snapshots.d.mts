@@ -1,6 +1,14 @@
 import type { Decision } from "../shared/decisions";
 import type { DecisionPlan } from "../shared/plan-approval";
+import type { TaskRecord } from "../shared/tasks";
+import type { StageAssignment } from "./stage-records.mjs";
 type PlanInput = { taskFolder: string; runFolder: string; decision: Decision };
+type AutomaticPlanInput = { taskFolder: string; runFolder: string; task: TaskRecord; identity: { taskId: string; runId: string; serverId: string; workspaceId: string }; policyRevision?: string };
+export type AutomaticPlan = { revision: string; scopeRevision: string; plannerAgentId: string; plannerModel: string; policyRevision: string; createdAt: string; assignmentId: string; documentRevision: string; path: string; markdown: string; brief: NonNullable<DecisionPlan["brief"]>; currentMatch: boolean; scopeMatch: boolean; policyMatch: boolean };
+export function planScopeRevision(task: TaskRecord, identity: AutomaticPlanInput["identity"]): string;
+export function readAutomaticPlan(input: AutomaticPlanInput): Promise<AutomaticPlan | null>;
+export function verifyAutomaticPlanAcceptance(input: AutomaticPlanInput): Promise<AutomaticPlan>;
+export function saveAutomaticPlan(input: AutomaticPlanInput & { assignment: StageAssignment; brief: unknown }): Promise<AutomaticPlan>;
 export function capturePlanSnapshot(input: { taskFolder: string; runFolder: string; taskId: string; runId: string; decisionId: string; requestedAt: string; brief: unknown }): Promise<NonNullable<Decision["plan"]>>;
 export function readPlanSnapshot(input: PlanInput): Promise<DecisionPlan>;
 export function verifyPlanApproval(input: PlanInput, expectedPlanRevision?: string): Promise<DecisionPlan>;

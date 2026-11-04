@@ -1,0 +1,11 @@
+import type { z } from "zod";
+export type ActionBundle = { kind: "actions" | "report"; summary: string; environment: string; prerequisites: string[]; steps: { instruction: string; effect: string }[]; verification: string[]; rollback: string; report?: string };
+export type ActionIdentity = { taskId: string; runId: string; serverId: string; workspaceId: string };
+export type ActionSnapshot = ActionIdentity & { schemaVersion: 1; projectId: string; planRevision: string; scopeRevision: string; revision: string; createdAt: string; bundle: ActionBundle };
+export type ActionAuthorization = ActionIdentity & { schemaVersion: 1; revision: string; fingerprint: string; planRevision: string; policyRevision: string; actorId: string; authorizedAt: string; agentId: string; resumeState: "pending" | "sending" | "sent" | "uncertain" | "completed"; completion?: { completedAt: string; summary: string; reconciledFrom?: "sending" | "uncertain"; evidence: { path: string; sha256: string; bytes: number }[] } };
+export const actionBundleSchema: z.ZodType<ActionBundle>;
+export const actionIdentitySchema: z.ZodType<ActionIdentity>;
+export const actionSnapshotSchema: z.ZodType<ActionSnapshot>;
+export const actionAuthorizationSchema: z.ZodType<ActionAuthorization>;
+export type ReportCompletion = ActionIdentity & { schemaVersion: 1; revision: string; fingerprint: string; planRevision: string; policyRevision: string; completedAt: string; checkpointDigest: string; checkpointIds: string[] };
+export const reportCompletionSchema: z.ZodType<ReportCompletion>;

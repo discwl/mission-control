@@ -16,6 +16,8 @@ function load(relative) {
 }
 const { buildV2Tasks, retainV2Hosts, v2TasksForView, v2Workspace } = load('./mission-control-v2-model.ts');
 const { decisionReceipt } = load('../shared/decision-receipt.ts');
+const { attentionTask, attentionTasks } = load('./needs-you-model.ts');
+const { kanbanTask } = load('./kanban-model.ts');
 const at = '2026-10-30T04:00:00.000Z', now = Date.parse(at), head = 'a'.repeat(40);
 const task = (id = 'task_a') => ({ schemaVersion: 1, taskId: id, hostId: 'h', projectId: 'p', title: 'Fix boundary date', acceptanceCriteria: 'Preserve the date.', status: 'in_progress', source: 'manual', assignments: [{ serverId: 'remote', workspaceId: 'owned' }], createdAt: at, updatedAt: at });
 const entry = (id = 'task_a') => ({ task: task(id), run: null, decisions: [], questions: [], problem: null });
@@ -92,9 +94,82 @@ test('unreadable records and archived permissions do not become actionable appro
   const actual = rows(s); assert.equal(actual[0].workers.length, 1); assert.equal(actual[0].state, 'Waiting on worker');
 });
 
-test('native V2 registers separately and contains only read RPCs', () => {
+test('Needs you groups actual questions and final decisions, while routine automatic work stays on All work', () => {
+  const e = entry(); e.run = { ...run(), workflowMode: 'automatic', deliveryKind: 'code' };
+  const card = () => kanbanTask(rows(snapshot([e]))[0]);
+  for (const stage of ['plan', 'plan-review', 'execute', 'validate', 'review']) {
+    e.pipeline = { runId: e.run.runId, workflowMode: 'automatic', deliveryKind: 'code', stage, mode: 'ready', message: 'Work continues' };
+    assert.equal(attentionTask(card()), null, stage);
+  }
+  e.pipeline.stage = 'delivery';
+  assert.equal(attentionTask(card()).section, 'publish');
+  e.pipeline.deliveryKind = 'actions';
+  assert.equal(attentionTask(card()).section, 'execute');
+  e.pipeline.mode = 'waiting';
+  assert.equal(attentionTask(card()), null, 'authorized actions still running do not ask again');
+  e.pipeline.mode = 'blocked';
+  assert.equal(attentionTask(card()).section, 'intervention');
+  e.questions = [{ question: { questionId: 'q', status: 'open', question: 'Which test environment should be used?', askedAt: at, plain: null } }];
+  assert.equal(attentionTask(card()).section, 'questions');
+  assert.equal(attentionTask(card()).why, 'Which test environment should be used?');
+});
+
+test('Needs you deduplicates tasks, preserves manual approvals and never clears incomplete or offline work', () => {
+  const e = entry(); e.run = run(); e.decisions = [decision({ kind: 'plan' })];
+  const s = snapshot([e]); const item = kanbanTask(rows(s)[0]);
+  assert.equal(attentionTask(item).section, 'manual');
+  assert.equal(attentionTasks([item, item]).length, 1);
+  assert.equal(attentionTasks([item], 'foreign').length, 0);
+  assert.equal(attentionTasks([item], 'remote', 'boundary').length, 1);
+  s.hosts[0].snapshot.complete = false;
+  assert.equal(attentionTask(kanbanTask(rows(s)[0])).section, 'intervention');
+  s.hosts[0].error = 'Disconnected';
+  assert.equal(attentionTask(kanbanTask(rows(s)[0])).section, 'intervention');
+});
+
+function needsYouRenderer(data, tasks) {
+  const states = []; let cursor = 0; let opened = 0;
+  const jsx = (type, props) => ({ type, props: props ?? {} });
+  const hooks = { useState(initial) { const index = cursor++; if (!(index in states)) states[index] = typeof initial === 'function' ? initial() : initial; return [states[index], value => { states[index] = typeof value === 'function' ? value(states[index]) : value; }]; } };
+  const modules = {
+    '@getpaseo/plugin/client/ui': { SidebarRow: 'SidebarRow' }, react: hooks, 'react/jsx-runtime': { jsx, jsxs: jsx },
+    'react-native': { Pressable: 'Pressable', ScrollView: 'ScrollView', Text: 'Text', TextInput: 'TextInput', View: 'View' },
+    './needs-you-model': { attentionTasks, attentionSections: load('./needs-you-model.ts').attentionSections },
+    './compact-link': { CompactLink: 'CompactLink' }, './date-time': { formatDateTime: value => value },
+    './kanban-data': { useKanbanData: () => ({ data, tasks, now, isError: false, isPending: false, isFetching: false, refetch() {} }) },
+    './kanban-detail': { KanbanDetail: 'KanbanDetail' }, './mission-control-v2-model': { missionControlV2ScreenId: 'mission-control-v2' },
+  };
+  const code = ts.transpileModule(readFileSync(new URL('./mission-control-v2.tsx', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+  const module = { exports: {} }; new Function('require', 'module', 'exports', code)(name => { if (!(name in modules)) throw Error(name); return modules[name]; }, module, module.exports);
+  const colors = new Proxy({}, { get: (_, key) => String(key) });
+  const expand = node => Array.isArray(node) ? node.flatMap(expand) : !node || typeof node !== 'object' ? [node] : typeof node.type === 'function' ? expand(node.type(node.props)) : [node, ...expand(node.props.children)];
+  const render = () => { cursor = 0; return expand(module.exports.MissionControlV2({ theme: { colors }, host: { id: 'personal' }, layout: { compact: true }, openAllWork: () => { opened++; } })); };
+  return { render, opened: () => opened };
+}
+
+test('Needs you opens actionable task detail and All work without a second vertical scroll on compact screens', () => {
+  const e = entry(); e.run = run(); e.decisions = [decision({ kind: 'plan' })];
+  const s = snapshot([e]); const renderer = needsYouRenderer(s, rows(s).map(kanbanTask)); let tree = renderer.render();
+  assert.equal(tree.filter(node => node?.type === 'ScrollView' && !node.props.horizontal).length, 1);
+  tree.find(node => node?.type === 'CompactLink' && node.props.label === 'All work').props.onPress();
+  assert.equal(renderer.opened(), 1);
+  tree.find(node => node?.type === 'Pressable').props.onPress(); tree = renderer.render();
+  const detail = tree.find(node => node?.type === 'KanbanDetail');
+  assert.equal(detail.props.item.row.entry.task.taskId, 'task_a');
+  assert.equal(tree.filter(node => node?.type === 'ScrollView').length, 0, 'detail owns its own scrolling');
+  detail.props.close(); assert.ok(renderer.render().some(node => node?.type === 'Pressable'));
+});
+
+test('Needs you cannot show an all-clear empty state when a host is unavailable', () => {
+  const s = snapshot([]); s.hosts[0].snapshot = null; s.hosts[0].error = 'offline';
+  const text = needsYouRenderer(s, []).render().filter(node => typeof node === 'string').join(' ');
+  assert.match(text, /Some tasks could not be checked/); assert.doesNotMatch(text, /No tasks need you right now/);
+});
+
+test('Needs you preserves its screen identity and delegates actions to the existing task detail', () => {
   const source = readFileSync(new URL('./mission-control-v2.tsx', import.meta.url), 'utf8');
-  assert.match(source, /title: "Mission Control V2"/); assert.match(source, /Read-only preview/);
+  assert.match(source, /title: "Needs you"/); assert.match(source, /<KanbanDetail/); assert.match(source, /openAllWork=\{\(\) => client\.openScreen\(\{ screenId: "kanban" \}\)\}/);
+  assert.doesNotMatch(source, /navigation\.openScreen/);
   assert.doesNotMatch(source, /\b(resolveDecision|resendDecision|replyToQuestion|setFleetQueue|configureSupervisor|pauseFleet|saveTaskDocument|chatCommand|chatInbox)\b/);
   assert.doesNotMatch(source, /\.send\(|\.approve\(|\.create\(/);
 });

@@ -9,6 +9,9 @@ import { FleetWorkerTree, TaskAttention, TaskDelivery, TaskPlan } from "./fleet-
 import { MissionReview } from "./mission-review";
 import { ReviewReport } from "./review-report";
 import { ReviewReadiness } from "./review-readiness";
+import { PipelineReviewEvidence } from "./pipeline-review";
+import { ActionDeliveryCard } from "./action-delivery";
+import { FinalChangeRequest } from "./final-change-request";
 import { TaskFlowDetail } from "./task-flow";
 import { v2Workspace } from "./mission-control-v2-model";
 import { kanbanCanAct, kanbanGuidance, kanbanHasRequest, type KanbanTab, type KanbanTask } from "./kanban-model";
@@ -33,12 +36,20 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
   navigation: PluginSurfaceProps["navigation"]; close(): void; refresh(): void;
 }) {
   const row = item.row;
-  const [tab, setTab] = useState<KanbanTab>(item.lane === "plan" ? "Plan" : item.lane === "review" ? "Code review" : "Next step");
+  const automatic = row.entry.pipeline?.workflowMode === "automatic" && row.entry.pipeline.runId === row.entry.run?.runId;
+  const nonCode = automatic && row.entry.pipeline?.deliveryKind !== "code";
+  const [tab, setTab] = useState<KanbanTab>(item.tab);
+  const showCode = !nonCode && (tab === "Code review" || tab === "Delivery");
+  const tabLabel = (name: KanbanTab) => name === "Delivery" ? nonCode ? "Actions and report" : "Review and publish" : name === "Decision" ? "Your answer" : name === "Evidence" ? "Checks and results" : name === "Receipt" ? "What happened" : name === "Workers" ? "Conversations" : name;
   const [criteria, setCriteria] = useState(false);
   const [handoff, setHandoff] = useState(false);
   const [allTabs, setAllTabs] = useState(false);
   const [document, setDocument] = useState<string | undefined>();
   const [error, setError] = useState<string | null>(null);
+  const [requestedCycle, setRequestedCycle] = useState<string | null>(null);
+  const cycle = `${row.entry.run?.updatedAt}:${row.entry.pipeline?.stage}:${row.entry.pipeline?.mode}`;
+  const fixesRequested = requestedCycle === cycle;
+  const finalReady = !automatic || (row.entry.pipeline?.stage === "delivery" && row.entry.pipeline?.mode === "ready");
   const bridge = useMissionControlCopy(row.serverId);
   const online = useHosts().some(host => host.serverId === row.serverId && host.status === "online");
   const available = kanbanCanAct(row, online) && "copy" in bridge;
@@ -53,9 +64,12 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
     .sort((a, b) => b.decision.requestedAt.localeCompare(a.decision.requestedAt))[0];
   const receipt = resolved ? decisionReceipt(resolved, row.hostLabel, row.entry.decisions) : null;
   const next = kanbanGuidance(item);
-  const hasRequest = kanbanHasRequest(row);
+  const attentionEntry = row.staleReview ? { ...row.entry, decisions: row.entry.decisions.filter(item => item.decision.kind !== "review") } : row.entry;
+  const hasRequest = kanbanHasRequest({ ...row, entry: attentionEntry });
   const activeWorkers = row.workers.filter(worker => !worker.archivedAt);
   const singleWorker = activeWorkers.length === 1 ? activeWorkers[0] : null;
+  const builders = activeWorkers.filter(worker => worker.labels["mission-control.task-id"] === row.entry.task.taskId && worker.labels["mission-control.role"] === "builder" && worker.workspaceId === workspaceId);
+  const commentRecipient = builders.length === 1 ? builders[0].id : undefined;
   const singleCoordinator = !activeWorkers.length && row.coordinators.length === 1 ? row.coordinators[0] : null;
   const findOwnerInWorkspace = !activeWorkers.length && !row.coordinators.length && !!workspaceId && !!navigation;
   const conversationLabel = singleWorker ? "Open worker conversation" : singleCoordinator ? "Open coordinator conversation" : findOwnerInWorkspace ? "Find owner in workspace" : activeWorkers.length || row.coordinators.length ? "Choose a conversation" : "Find task owner";
@@ -66,17 +80,23 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
       try { navigation.openWorkspace({ serverId: row.serverId, workspaceId }); } catch (cause) { setError(String(cause)); }
     } else setTab("Workers");
   };
-  const visibleTabs = tabs.filter(name => (name !== "Decision" || (hasRequest && !row.staleReview))
+  const visibleTabs = tabs.filter(name => (name !== "Decision" || hasRequest)
     && (allTabs || ["Next step", "Workers", "Evidence", tab, next.tab, ...(hasRequest ? ["Decision"] : []), ...(receipt ? ["Receipt"] : [])].includes(name)));
-  const guide = tab === "Next step" ? next : tab === "Plan" && item.lane !== "plan"
-    ? { title: "Read the saved plan and planning history", steps: ["Only an open plan request can be approved. If the current plan is missing or unclear, ask the owner for a readable version and a new request."] }
+  const guide = tab === "Next step" ? next : automatic && tab === "Plan"
+    ? { title: "What the agents plan to change", steps: ["The planner describes the intended result, scope and checks. A second model checks that plan before implementation starts.", "You do not need to approve routine plans. The agents will ask you when a requirement or permission is missing."] }
+    : automatic && showCode
+    ? { title: tab === "Delivery" ? "Review the result before publishing" : "Inspect the changes and add comments", steps: ["Read the check results and both independent reviews, then inspect the code below.", "Select a line or file to add a comment using the existing review panel. Saved comments are notes; send them to the task's worker when you want a response.", "Publishing is a separate action. Its final check verifies the current changes and exact destination again."] }
+    : nonCode && tab === "Delivery"
+    ? { title: "Review the exact actions and their effects", steps: ["Read what will run, where it will run, how success will be checked and how to recover if it fails.", "Authorize only the displayed actions. A report by itself does not run anything."] }
+    : tab === "Plan" && !row.entry.decisions.some(entry => entry.decision.kind === "plan" && entry.decision.status === "open")
+    ? { title: "Read the saved plan", steps: ["This plan is available for reference. No plan approval is waiting for you."] }
     : tab === "Decision" && item.tab === "Decision" ? next
     : tab === "Decision" && !hasRequest ? { title: "No decision is waiting", steps: ["Return to Next step for the current blocker or progress. Open the linked conversation if a new request is needed."] }
     : guidance[tab];
   return <View style={{ flex: 1, minHeight: 0 }}>
     <View style={{ padding: compact ? 12 : 20, gap: 10, borderBottomWidth: 1, borderBottomColor: colors.border }}>
       <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
-        <CompactLink label="Back to Kanban" icon="ArrowLeft" colors={colors} onPress={close} />
+        <CompactLink label="Back to tasks" icon="ArrowLeft" colors={colors} onPress={close} />
         <Text style={{ color: colors.foregroundMuted }}>{row.hostLabel} · {row.entry.task.ticket?.key ?? workspace?.projectName ?? "Project name unavailable"}</Text>
         <CompactLink label="Refresh task" colors={colors} onPress={refresh} />
       </View>
@@ -90,7 +110,7 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
         </View>
       </View> : null}
       <ScrollView horizontal style={{ flexGrow: 0 }} contentContainerStyle={{ gap: 8 }} showsHorizontalScrollIndicator={false}>
-        {visibleTabs.map(name => <CompactLink key={name} label={name} selected={tab === name} colors={colors} onPress={() => setTab(name)} />)}
+        {visibleTabs.map(name => <CompactLink key={name} label={tabLabel(name)} selected={tab === name} colors={colors} onPress={() => setTab(name)} />)}
         <CompactLink label={allTabs ? "Fewer sections" : "All sections"} colors={colors} expanded={allTabs} onPress={() => setAllTabs(!allTabs)} />
       </ScrollView>
     </View>
@@ -130,17 +150,34 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
       {tab === "Receipt" ? receipt ? <View style={{ gap: 10, maxWidth: 950 }}><Text style={{ color: colors.foreground, fontWeight: "600" }}>{receipt.context.status}</Text><Text selectable style={{ color: colors.foreground, lineHeight: 23 }}>{receipt.text}</Text></View> : <Text style={{ color: colors.foregroundMuted }}>No resolved decision receipt has been returned for this task.</Text> : null}
       {available && "copy" in bridge ? <HostRpcProvider copy={bridge.copy}>
         {tab === "Plan" ? <View style={{ gap: 12 }}><CompactLink label="Open saved plan documents" icon="FileText" colors={colors} onPress={() => evidence()} /><TaskPlan entry={row.entry} host={row.host} colors={colors} openAgent={openAgent} /></View> : null}
-        {tab === "Decision" && !row.staleReview && hasRequest ? <TaskAttention entry={row.entry} workers={row.workers.filter(worker => !worker.archivedAt)} host={row.host} colors={colors} openAgent={openAgent} /> : null}
-        {tab === "Delivery" && !row.staleReview ? <TaskDelivery entry={row.entry} serverId={row.serverId} colors={colors} /> : null}
+        {tab === "Decision" && hasRequest ? <TaskAttention entry={attentionEntry} workers={row.workers.filter(worker => !worker.archivedAt)} host={row.host} colors={colors} openAgent={openAgent} /> : null}
+        {tab === "Delivery" && nonCode && !fixesRequested ? <View style={{ gap: 14 }}>
+          <ActionDeliveryCard key={`${row.serverId}:${row.entry.task.taskId}:${row.entry.run?.runId}`} serverId={row.serverId} taskId={row.entry.task.taskId} actorId="human-ui" colors={colors}
+            renderFeedback={plan => finalReady && row.entry.run ? <FinalChangeRequest key={`${plan.runId}:${plan.revision}:${plan.planRevision}`} serverId={row.serverId} workspaceId={plan.workspaceId} taskId={plan.taskId} runId={plan.runId} artifact={plan} stale={false} colors={colors} onSaved={() => { setRequestedCycle(cycle); refresh(); }} /> : null} />
+        </View> : null}
         {tab === "Evidence" ? workspaceId ? <TaskFlowDetail key={document ?? "activity"} initialDocument={document} task={row.entry.task} binding={{ serverId: row.serverId, workspaceId, taskId: row.entry.task.taskId }} online colors={colors} hostLabel={row.hostLabel} openAgent={id => openAgent(row.serverId, id)} /> : <Text style={{ color: colors.statusWarning }}>The owning workspace is not verified. Inspect the linked worker before opening evidence.</Text> : null}
-        {tab === "Code review" ? workspace ? <View style={{ minHeight: Math.max(800, height - 260), flexShrink: 0, gap: 10 }}>
+        {showCode ? workspace ? <View style={{ minHeight: Math.max(800, height - 260), flexShrink: 0, gap: 10 }}>
           <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Changes are from this task's workspace. Other agents may have contributed to a shared checkout.</Text>
-          <MissionReview embedded sessionId={`kanban:${row.key}`} serverId={row.serverId} localServerId={row.serverId} online colors={colors} compact={compact}
+          <MissionReview embedded sessionId={`task:${row.key}:${row.entry.run?.runId ?? "current"}`} serverId={row.serverId} localServerId={row.serverId} online colors={colors} compact={compact}
+            agentId={commentRecipient} requireAgentSelection
             workspace={{ ...workspace, hostLabel: row.hostLabel }} onChangeWorkspace={() => setTab("Workers")}
             openWorkspace={navigation ? () => navigation.openWorkspace({ serverId: row.serverId, workspaceId: workspace.id }) : undefined}
-            brief={(live, stale, selectFile) => <ReviewReport entry={row.entry} serverId={row.serverId} workspace={{ ...workspace, hostLabel: row.hostLabel }} snapshot={live} stale={stale || row.staleReview} colors={colors} selectFile={selectFile} openAgent={id => openAgent(row.serverId, id)} onEvidence={() => evidence()} />}
-            readiness={(live, stale) => <ReviewReadiness entry={row.entry} serverId={row.serverId} workspaceId={workspace.id} online snapshot={live} stale={stale} complete={row.host.complete} colors={colors} onEvidence={evidence} onDecision={() => setTab("Decision")} />} />
+            brief={(live, stale, selectFile) => automatic ? <View style={{ gap: 10, paddingVertical: 12 }}>
+              <Text style={{ color: colors.foreground, fontWeight: "600", fontSize: 17 }}>Checks and independent reviews</Text>
+              <Text style={{ color: colors.foregroundMuted, lineHeight: 22 }}>Validation runs before two reviews by different models. Any code change requires fresh validation and both reviews.</Text>
+              <PipelineReviewEvidence serverId={row.serverId} workspaceId={workspace.id} taskId={row.entry.task.taskId} colors={colors} openAgent={openAgent} />
+              <CompactLink label="Read saved results and reports" colors={colors} onPress={() => evidence()} />
+              {tab === "Delivery" && finalReady && row.entry.run ? <FinalChangeRequest key={`${row.serverId}:${row.entry.task.taskId}:${row.entry.run.runId}:${live?.fingerprint}`} serverId={row.serverId} workspaceId={workspace.id} taskId={row.entry.task.taskId} runId={row.entry.run.runId} stale={stale || !live} reviewFingerprint={live?.fingerprint} colors={colors} onSaved={() => { setRequestedCycle(cycle); refresh(); }} /> : null}
+              <Text style={{ color: stale ? colors.statusWarning : colors.foregroundMuted }}>{!live ? "Loading the code changes…" : stale ? "The code changed while you were reviewing it. Refresh the comparison before continuing." : "The code browser shows the workspace's current comparison. The publication check verifies the exact version independently."}</Text>
+            </View> : <ReviewReport entry={row.entry} serverId={row.serverId} workspace={{ ...workspace, hostLabel: row.hostLabel }} snapshot={live} stale={stale || row.staleReview} colors={colors} selectFile={selectFile} openAgent={id => openAgent(row.serverId, id)} onEvidence={() => evidence()} />}
+            readiness={(live, stale) => automatic ? null : <ReviewReadiness entry={row.entry} serverId={row.serverId} workspaceId={workspace.id} online snapshot={live} stale={stale} complete={row.host.complete} colors={colors} onEvidence={evidence} onDecision={() => setTab("Decision")} />} />
         </View> : <Text style={{ color: colors.statusWarning }}>The task's owning workspace is unavailable. Open its worker conversation to recover the workspace before reviewing code.</Text> : null}
+        {fixesRequested ? <Text style={{ color: colors.foreground }}>Your fixes are requested. Publishing stays blocked until the work has fresh validation and two passing reviews.</Text> : null}
+        {tab === "Delivery" && !nonCode && finalReady && !row.staleReview && !fixesRequested && workspace ? <View style={{ gap: 10, paddingTop: 16, borderTopWidth: 1, borderTopColor: colors.border }}>
+          <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 18, fontWeight: "600" }}>Publish only when you are ready</Text>
+          <Text style={{ color: colors.foregroundMuted, lineHeight: 22 }}>If you need fixes, use Request fixes above and wait for updated checks and reviews. Opening the publication preview does not publish anything.</Text>
+          <TaskDelivery entry={row.entry} serverId={row.serverId} colors={colors} />
+        </View> : null}
       </HostRpcProvider> : null}
     </ScrollView>
   </View>;

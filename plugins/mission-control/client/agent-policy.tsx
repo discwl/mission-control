@@ -5,7 +5,7 @@ import { readAgentPolicy, saveAgentPolicy, roleMappingSchema, resolveRolePolicy,
 import { CompactLink } from "./compact-link";
 import type { z } from "zod";
 type Colors = PluginSurfaceProps["theme"]["colors"];
-const names = { planner: "Planning", builder: "Implementation and fixes", validator: "Validation", reviewer: "Independent review", reviewer2: "Second independent review" };
+const names = { planner: "Planning", planReviewer: "Independent plan check", builder: "Implementation and fixes", validator: "Validation", reviewer: "Independent review", reviewer2: "Second independent review" };
 export function TaskAgentPolicyEditor(props: { serverId: string; projectId: string; taskId: string; colors: Colors }) {
   const [scope, setScope] = useState<"task" | "project">("task");
   return <View style={{ gap: 6 }}>
@@ -20,7 +20,7 @@ export function TaskAgentPolicyEditor(props: { serverId: string; projectId: stri
 export function AgentPolicyEditor({ serverId, projectId = null, taskId = null, label, colors }: { serverId: string; projectId?: string | null; taskId?: string | null; label: string; colors: Colors }) {
   const read = useRpc(readAgentPolicy); const save = useRpc(saveAgentPolicy);
   const [data, setData] = useState<z.infer<typeof readAgentPolicy.output> | null>(null);
-  const [draft, setDraft] = useState<RoleMapping>({ planner: "", builder: "", validator: null, reviewer: "", reviewer2: null, reviewCount: 1 });
+  const [draft, setDraft] = useState<RoleMapping>({ planner: "", planReviewer: null, builder: "", validator: null, reviewer: "", reviewer2: null, reviewCount: 2 });
   const [error, setError] = useState(""); const [busy, setBusy] = useState(false); const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState<string | null>(null); const [reload, setReload] = useState(0);
   useEffect(() => {
@@ -32,7 +32,7 @@ export function AgentPolicyEditor({ serverId, projectId = null, taskId = null, l
       const selected = value.policies.find(item => item.projectId === projectId && item.taskId === taskId)
         ?? value.policies.find(item => item.projectId === projectId && !item.taskId)
         ?? value.policies.find(item => !item.projectId && !item.taskId);
-      setDraft(selected?.mapping ?? { planner: "", builder: "", validator: null, reviewer: "", reviewer2: null, reviewCount: 1 });
+      setDraft(selected?.mapping ?? { planner: "", planReviewer: null, builder: "", validator: null, reviewer: "", reviewer2: null, reviewCount: 2 });
     }).catch(reason => { if (active) setError(String(reason.message ?? reason)); });
     return () => { active = false; };
   }, [expanded, serverId, projectId, taskId, reload, read]);
@@ -52,20 +52,22 @@ export function AgentPolicyEditor({ serverId, projectId = null, taskId = null, l
       <Text style={{ color: colors.foregroundMuted }}>Scope: {taskId ? "This task" : projectId ? "This project" : "Host default"}. Task settings override project settings, which override the host default.</Text>
       {!data && !error ? <Text style={{ color: colors.foregroundMuted }}>Loading profiles…</Text> : null}
       {data ? <>
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>{([1, 2] as const).map(count => <CompactLink key={count} label={count === 1 ? "One reviewer" : "Two different models"} colors={colors} selected={draft.reviewCount === count} disabled={busy} onPress={() => setDraft(value => ({ ...value, reviewCount: count }))} />)}</View>
-        {workflowRoles.filter(role => role !== "reviewer2" || draft.reviewCount === 2).map(role => {
+        <Text style={{ color: colors.foregroundMuted }}>Automatic workflows require a plan checker using a different model from the planner, and two independent review models. One-review settings apply only to manual workflows.</Text>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>{([1, 2] as const).map(count => <CompactLink key={count} label={count === 1 ? "One reviewer (manual only)" : "Two different models"} colors={colors} selected={draft.reviewCount === count} disabled={busy} onPress={() => setDraft(value => ({ ...value, reviewCount: count }))} />)}</View>
+        {workflowRoles.map(role => {
           const profile = data.profiles.find(item => item.id === draft[role]);
           return <View key={role} style={{ gap: 6 }}>
             <Text style={{ color: colors.foreground, fontWeight: "600" }}>{names[role]}</Text>
-            <CompactLink label={profile ? `${profile.name} · ${profile.provider}/${profile.model ?? "Choose model"}` : role === "validator" && !draft.validator ? "Use implementation profile" : "Choose a native profile"} colors={colors} disabled={busy} expanded={editing === role} onPress={() => setEditing(editing === role ? null : role)} />
+            <CompactLink label={profile ? `${profile.name} · ${profile.provider}/${profile.model ?? "Choose model"}` : role === "validator" && !draft.validator ? "Use implementation profile" : role === "planReviewer" && !draft.planReviewer ? "Use a different mapped reviewer" : "Choose a native profile"} colors={colors} disabled={busy} expanded={editing === role} onPress={() => setEditing(editing === role ? null : role)} />
             {editing === role ? <View style={{ gap: 6, paddingLeft: 12 }}>
               {role === "validator" ? <CompactLink label="Use implementation profile" colors={colors} onPress={() => { setDraft(value => ({ ...value, validator: null })); setEditing(null); }} /> : null}
+              {role === "planReviewer" ? <CompactLink label="Use a different mapped reviewer" colors={colors} onPress={() => { setDraft(value => ({ ...value, planReviewer: null })); setEditing(null); }} /> : null}
               {data.profiles.map(item => <CompactLink key={item.id} label={`${item.name} · ${item.provider}/${item.model ?? "No explicit model"}`} colors={colors} selected={draft[role] === item.id} onPress={() => { setDraft(value => ({ ...value, [role]: item.id })); setEditing(null); }} />)}
               {!data.profiles.length ? <Text style={{ color: colors.statusWarning }}>Create a native profile on this host, then refresh.</Text> : null}
             </View> : null}
           </View>;
         })}
-        {problem ? <Text style={{ color: colors.statusWarning }}>Choose explicit models for the required roles. Two reviewers must use different models.</Text> : null}
+        {problem ? <Text style={{ color: colors.statusWarning }}>{problem}</Text> : null}
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
           <CompactLink label={busy ? "Saving…" : "Save agent choices"} colors={colors} disabled={busy || Boolean(problem)} onPress={() => void persist(draft)} />
           {projectId ? <CompactLink label="Use inherited choices" colors={colors} disabled={busy} onPress={() => void persist(null)} /> : null}

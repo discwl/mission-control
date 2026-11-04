@@ -35,7 +35,7 @@ test('compact board gives controls and every card one bounded vertical list', ()
   assert.equal(tree.props.style.flex, 1); assert.equal(list.props.style.flex, 1);
   assert.equal(nodes(tree).filter(n => n.type === 'FlatList').length, 1);
   const header = nodes(list.props.ListHeaderComponent);
-  assert.ok(header.some(n => n.props?.accessibilityLabel === 'Search Kanban tasks'));
+  assert.ok(header.some(n => n.props?.accessibilityLabel === 'Search all work'));
   assert.equal(header.filter(n => n.type === 'KanbanFilterMenu').length, 3);
   assert.ok(header.filter(n => n.type === 'ScrollView').every(n => n.props.horizontal));
   assert.equal(header.filter(n => n.type === 'FlatList').length, 0);
@@ -53,7 +53,7 @@ test('compact load errors and retry controls stay inside the same scroll owner',
 });
 test('desktop retains a fixed toolbar and independent lane scrolling', () => {
   const all = nodes(fixture(false).render());
-  assert.ok(all.some(n => n.props?.accessibilityLabel === 'Search Kanban tasks'));
+  assert.ok(all.some(n => n.props?.accessibilityLabel === 'Search all work'));
   const board = all.find(n => n.type === 'ScrollView' && n.props.contentContainerStyle?.flexDirection === 'row');
   assert.equal(board.props.horizontal, true);
   const laneList = nodes(board).find(n => n.type === 'FlatList');

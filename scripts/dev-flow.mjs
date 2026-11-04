@@ -15,7 +15,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 const vaultPath = process.env.DEV_VAULT_ROOT || "C:\\dev-vault";
 const taskIdPattern = /^task_[a-f0-9-]+$/;
 const runIdPattern = /^run_[a-f0-9-]+$/;
-const stages = new Set(["intake", "plan", "execute", "validate", "review", "fix", "delivery", "handoff"]);
+const stages = new Set(["intake", "plan", "plan-review", "execute", "validate", "review", "fix", "delivery", "handoff"]);
 const outcomes = new Set(["in_progress", "completed", "blocked", "waiting"]);
 
 function options(argv) {
@@ -234,7 +234,11 @@ async function context(args) {
   const findings = latest ? await readFindings(latest.folder, latest.run.runId) : [];
   const questions = latest ? await readQuestions(latest.folder) : [];
   const workflowInstructions = await createWorkflowInstructionsStore(bound.root).read({ serverId: bound.host.serverId, hostId: bound.host.hostId, projectId: bound.task.projectId });
-  return { task: bound.task, taskMarkdown: bound.taskMarkdown, taskFile: bound.taskFile, profile: bound.profile, git: bound.git, latestRun: latest?.run || null, handoff, decisions, findings, questions, workflowInstructions: { ...workflowInstructions, prompt: workflowInstructionsPrompt(workflowInstructions) } };
+  const identity = latest ? { taskId: bound.task.taskId, runId: latest.run.runId, serverId: bound.host.serverId, workspaceId: bound.workspaceId } : null;
+  const assignments = latest ? await readStageAssignments(latest.folder, identity) : [];
+  const managedStage = assignments.find(item => item.agentId === agentIdOf(args)) ?? null;
+  const automaticPlan = latest && assignments[0]?.workflowMode === "automatic" ? await readAutomaticPlan({ taskFolder: bound.folder, runFolder: latest.folder, task: bound.task, identity }) : null;
+  return { task: bound.task, taskMarkdown: bound.taskMarkdown, taskFile: bound.taskFile, profile: bound.profile, git: bound.git, latestRun: latest?.run || null, handoff, decisions, findings, questions, managedStage, automaticPlan, workflowInstructions: { ...workflowInstructions, prompt: workflowInstructionsPrompt(workflowInstructions) } };
 }
 
 async function start(args) {
@@ -297,9 +301,60 @@ async function loadRun(bound, folder, runId) {
 }
 
 import { preparePipelineCheckpoint, savePipelineCheckpoint, readPipelineCheckpoints } from "../plugins/mission-control/server/pipeline-records.mjs";
-import { checkpointStageEvidence } from "../plugins/mission-control/server/stage-records.mjs";
+import { checkpointStageEvidence, readStageAssignments } from "../plugins/mission-control/server/stage-records.mjs";
+import { readAutomaticPlan, saveAutomaticPlan, verifyAutomaticPlanAcceptance } from "../plugins/mission-control/server/plan-snapshots.mjs";
+import { verifyNativeStageAgent } from "../plugins/mission-control/server/native-stage-identity.mjs";
+import { readActionBundle, saveActionBundle } from "../plugins/mission-control/server/action-bundles.mjs";
 import { verifyManagedReviewDecision } from "../plugins/mission-control/server/review-decision-evidence.mjs";
 import { normalizeReviewContext } from "../plugins/mission-control/shared/review-context.mjs";
+
+async function checkpointCandidate(bound, folder, identity, assignment, stage, planRevision) {
+  if (stage === "plan-review") return { head: null, tree: planRevision };
+  if (assignment && assignment.deliveryKind !== "code") {
+    const saved = await readActionBundle({ taskFolder: bound.folder, runFolder: folder, task: bound.task, identity, planRevision });
+    if (!saved || saved.kind !== assignment.deliveryKind) throw new Error("Save the exact action bundle before validation or review.");
+    return { head: null, tree: saved.revision };
+  }
+  return reviewedCandidate(bound.cwd, bound.repository, bound.checkoutRoot);
+}
+
+async function submitPlan(args) {
+  const bound = await binding(args); const folder = await runFolder(bound.folder, required(args.run, "--run"));
+  const input = await readInput(args); const agentId = agentIdOf(args);
+  return withRunLock(folder, async () => {
+    const current = await loadRun(bound, folder, args.run);
+    const identity = { taskId: current.taskId, runId: current.runId, serverId: current.serverId, workspaceId: current.workspaceId };
+    const assignments = await readStageAssignments(folder, identity);
+    const assigned = assignments.find(item => item.agentId === agentId && item.stage === "plan");
+    if (!assigned || assigned.workflowMode !== "automatic" || assigned.execution.role !== "planner") throw new Error("submit-plan requires an assigned automatic planner; manual tasks still require their human plan decision.");
+    if ((await readDecisions(folder)).some(item => item.decision.status === "open")) throw new Error("Resolve or explicitly transition the existing human decision first.");
+    await verifyNativeStageAgent(assigned);
+    const plan = await saveAutomaticPlan({ taskFolder: bound.folder, runFolder: folder, task: bound.task, identity, assignment: assigned, brief: input.planBrief });
+    await appendEvent(bound, folder, { ...current, workflowMode: assigned.workflowMode, deliveryKind: assigned.deliveryKind }, {
+      stage: "plan", outcome: "completed", summary: "Saved a versioned plan for independent model critique. This is not a human approval.",
+      nextAction: "The runner launches the independent plan checker; implementation waits for its passing result.", evidence: [plan.path],
+    }, agentId);
+    return { plan };
+  });
+}
+
+async function saveActions(args) {
+  const bound = await binding(args); const folder = await runFolder(bound.folder, required(args.run, "--run"));
+  const input = await readInput(args); const agentId = agentIdOf(args);
+  return withRunLock(folder, async () => {
+    const current = await loadRun(bound, folder, args.run);
+    const identity = { taskId: current.taskId, runId: current.runId, serverId: current.serverId, workspaceId: current.workspaceId };
+    const assignments = await readStageAssignments(folder, identity);
+    const assigned = assignments.find(item => item.agentId === agentId && ["execute", "fix"].includes(item.stage));
+    if (!assigned || assigned.workflowMode !== "automatic" || assigned.deliveryKind === "code") throw new Error("save-actions requires an automatic action/report builder assignment.");
+    if ((await readDecisions(folder)).some(item => item.decision.status === "open")) throw new Error("An existing human decision is still open.");
+    await verifyNativeStageAgent(assigned);
+    const plan = await verifyAutomaticPlanAcceptance({ taskFolder: bound.folder, runFolder: folder, task: bound.task, identity, policyRevision: assigned.execution.policyRevision });
+    if (assigned.planRevision !== plan.revision) throw new Error("Builder assignment has an outdated plan.");
+    const bundle = await saveActionBundle({ taskFolder: bound.folder, runFolder: folder, task: bound.task, identity, input, assignment: assigned });
+    return { bundle, nextAction: "Record the preparation checkpoint. External actions remain pending final human authorization." };
+  });
+}
 
 async function checkpoint(args) {
   const bound = await binding(args);
@@ -308,6 +363,19 @@ async function checkpoint(args) {
   if (!agentId) throw new Error("A checkpoint needs --agent for its actual author.");
   return withRunLock(folder, async () => {
     const current = await loadRun(bound, folder, args.run);
+    const identity = { taskId: bound.task.taskId, runId: current.runId, serverId: bound.host.serverId, workspaceId: bound.workspaceId };
+    const assignments = await readStageAssignments(folder, identity);
+    const assigned = assignments.find(item => item.agentId === agentId && item.stage === input.stage);
+    const automatic = assigned?.workflowMode === "automatic";
+    if (input.stage === "plan-review" && !automatic) throw new Error("Plan critique requires an automatic managed plan-review assignment.");
+    let planRevision, submittedPlan;
+    if (automatic) {
+      if ((await readDecisions(folder)).some(item => item.decision.status === "open")) throw new Error("An existing human decision is still open; transition it explicitly before automatic work.");
+      const planInput = { taskFolder: bound.folder, runFolder: folder, task: bound.task, identity, policyRevision: assigned.execution.policyRevision };
+      submittedPlan = input.stage === "plan-review" ? await readAutomaticPlan(planInput) : await verifyAutomaticPlanAcceptance(planInput);
+      if (!submittedPlan?.currentMatch || !submittedPlan.scopeMatch || !submittedPlan.policyMatch || assigned.planRevision !== submittedPlan.revision) throw new Error("This assignment does not cover the current submitted plan.");
+      planRevision = submittedPlan.revision;
+    } else {
     const directory = join(folder, "decisions");
     const names = await readdir(directory).catch(error => { if (error.code === "ENOENT") return []; throw error; });
     const plans = (await Promise.all(names.filter(name => /^decision_[a-f0-9-]+\.md$/.test(name)).map(async name => parseRecord(await readFile(join(directory, name), "utf8"), "Decision"))))
@@ -318,17 +386,19 @@ async function checkpoint(args) {
     if (plan.resume && plan.resume.phase !== "sent") throw new Error("Plan approval is saved, but delivery is not confirmed. Inspect its receipt and worker before retrying; do not ask for the same approval again.");
     const { verifyPlanApproval } = await import("../plugins/mission-control/server/plan-snapshots.mjs");
     await verifyPlanApproval({ taskFolder: bound.folder, runFolder: folder, decision: plan }, plan.plan.revision);
-    const identity = { taskId: bound.task.taskId, runId: current.runId, serverId: bound.host.serverId, workspaceId: bound.workspaceId };
+    planRevision = plan.plan.revision;
+    }
     const previous = await readPipelineCheckpoints(folder, identity);
-    const implementationAgentId = ["execute", "fix"].includes(input.stage) ? agentId : previous.find(entry => ["execute", "fix"].includes(entry.stage))?.agentId ?? current.agentId;
+    const implementationAgentId = input.stage === "plan-review" ? submittedPlan.plannerAgentId : ["execute", "fix"].includes(input.stage) ? agentId : previous.find(entry => ["execute", "fix"].includes(entry.stage))?.agentId ?? current.agentId;
     if (!implementationAgentId) throw new Error("Record implementation evidence before validation or review.");
-    const candidate = reviewedCandidate(bound.cwd, bound.repository, bound.checkoutRoot);
-    const stageInput = await checkpointStageEvidence(folder, { ...identity, agentId, candidate }, { ...input, planRevision: plan.plan.revision });
+    const candidate = await checkpointCandidate(bound, folder, identity, assigned, input.stage, planRevision);
+    const stageInput = await checkpointStageEvidence(folder, { ...identity, agentId, candidate }, { ...input, planRevision });
     const prepared = await preparePipelineCheckpoint(folder, { ...identity, agentId, implementationAgentId, candidate }, stageInput);
-    await appendEvent(bound, folder, current, { stage: input.stage, outcome: input.verdict === "pass" && input.scope === "approved" ? "completed" : "blocked", summary: input.summary,
-      nextAction: input.verdict === "pass" ? "Continue the pipeline from its saved checkpoint." : "Inspect this checkpoint before further work.", evidence: input.evidence }, agentId);
-    const after = reviewedCandidate(bound.cwd, bound.repository, bound.checkoutRoot);
-    if (candidate.head !== after.head || candidate.tree !== after.tree) throw new Error("Code changed while recording the stage; no checkpoint was saved.");
+    const repairable = automatic && input.verdict === "repair" && input.scope === "approved";
+    await appendEvent(bound, folder, assigned ? { ...current, workflowMode: assigned.workflowMode, deliveryKind: assigned.deliveryKind } : current, { stage: input.stage, outcome: input.verdict === "pass" && input.scope === "approved" ? "completed" : repairable ? "in_progress" : "blocked", summary: input.summary,
+      nextAction: input.verdict === "pass" || repairable ? "Continue the pipeline from its saved checkpoint." : "Inspect this checkpoint before further work.", evidence: input.evidence }, agentId);
+    const after = await checkpointCandidate(bound, folder, identity, assigned, input.stage, planRevision);
+    if (candidate.head !== after.head || candidate.tree !== after.tree) throw new Error("The reviewed artifact changed while recording the stage; no checkpoint was saved.");
     const saved = await savePipelineCheckpoint(folder, prepared);
     return { checkpoint: saved };
   });
@@ -338,12 +408,36 @@ async function record(args) {
   const bound = await binding(args);
   const folder = await runFolder(bound.folder, required(args.run, "--run"));
   const input = await readInput(args);
+  validateEventInput(input);
   const agentId = agentIdOf(args);
-  return withRunLock(folder, async () => appendEvent(bound, folder, await loadRun(bound, folder, args.run), input, agentId));
+  return withRunLock(folder, async () => {
+    const current = await loadRun(bound, folder, args.run);
+    const identity = { taskId: current.taskId, runId: current.runId, serverId: current.serverId, workspaceId: current.workspaceId };
+    const assignments = await readStageAssignments(folder, identity);
+    const actionCompletion = assignments[0]?.workflowMode === "automatic" && assignments[0]?.deliveryKind === "actions" && input.stage === "delivery" && input.outcome === "completed";
+    let assigned, policyRevision, acceptedPlan;
+    if (actionCompletion) {
+      if (!/^[a-f0-9]{64}$/.test(input.actionRevision ?? "") || !Array.isArray(input.evidence) || !input.evidence.length) throw new Error("Completed actions require the authorized actionRevision and saved execution/verification evidence.");
+      assigned = assignments.find(item => item.agentId === agentId && item.workflowMode === "automatic" && item.deliveryKind === "actions" && item.execution.role === "builder" && ["execute", "fix"].includes(item.stage));
+      if (!assigned) throw new Error("Only the assigned action worker may record actual execution completion.");
+      const verified = await verifyNativeStageAgent(assigned, { projectId: bound.task.projectId, workflowMode: "automatic" });
+      policyRevision = verified.policyRevision;
+      if (!policyRevision || policyRevision !== assigned.execution.policyRevision) throw new Error("The current action policy changed; completion cannot use stale review authority.");
+      acceptedPlan = await verifyAutomaticPlanAcceptance({ taskFolder: bound.folder, runFolder: folder, task: bound.task, identity, policyRevision });
+      if (assigned.planRevision !== acceptedPlan.revision) throw new Error("The action worker has an outdated plan; completion cannot use stale review authority.");
+    }
+    let completedAction;
+    if (actionCompletion) {
+      const { completeActionDelivery } = await import("../plugins/mission-control/server/action-bundles.mjs");
+      completedAction = await completeActionDelivery({ taskFolder: bound.folder, runFolder: folder, task: bound.task, identity, agentId, policyRevision, planRevision: acceptedPlan.revision, actionRevision: input.actionRevision, evidence: input.evidence, summary: input.summary });
+    }
+    const result = await appendEvent(bound, folder, assigned ? { ...current, workflowMode: assigned.workflowMode, deliveryKind: assigned.deliveryKind } : current, input, agentId);
+    if (completedAction) result.actionCompletion = completedAction;
+    return result;
+  });
 }
 
-// Callers hold the run lock.
-async function appendEvent(bound, folder, current, input, agentId) {
+function validateEventInput(input) {
   if (!stages.has(input.stage) || !outcomes.has(input.outcome)) throw new Error("Invalid stage or outcome.");
   const summary = required(input.summary, "Event summary").trim();
   const nextAction = required(input.nextAction, "Event nextAction").trim();
@@ -352,6 +446,12 @@ async function appendEvent(bound, folder, current, input, agentId) {
   if (["validate", "review"].includes(input.stage) && input.outcome === "completed" && input.evidence.length === 0) {
     throw new Error("Completed validation and review require evidence.");
   }
+  return { summary, nextAction };
+}
+
+// Callers hold the run lock.
+async function appendEvent(bound, folder, current, input, agentId) {
+  const { summary, nextAction } = validateEventInput(input);
   {
     const file = join(folder, "run.md");
     const now = new Date().toISOString();
@@ -512,6 +612,8 @@ async function requestDecision(args) {
     const current = await loadRun(bound, folder, args.run);
     const open = (await readDecisions(folder)).find(item => item.decision.status === "open");
     if (open) throw new Error(`Decision ${open.decision.decisionId} is still open. Wait for the user.`);
+    const managed = await readStageAssignments(folder, { taskId: current.taskId, runId: current.runId, serverId: current.serverId, workspaceId: current.workspaceId });
+    if (managed[0]?.workflowMode === "automatic") throw new Error("Automatic tasks use submit-plan, independent checkpoints and the final delivery authorization. Use ask for a genuine unresolved question; do not create routine human plan or code-review decisions.");
     const now = new Date().toISOString();
     const decisionId = `decision_${randomUUID()}`;
     const reviewVerification = input.kind === "review" ? await verifyManagedReviewDecision(folder, { taskId: current.taskId, runId: current.runId, serverId: current.serverId, workspaceId: current.workspaceId }, candidate, requested, async () => {
@@ -771,7 +873,7 @@ async function workspaceLabel(args) {
   } finally { await client.close(); }
 }
 
-const help = `Usage: dev-flow.mjs context|start|record|checkpoint|request-decision|ask|decision|finding|workspace-label --task ID --server ID --workspace ID [--run ID] [--input JSON] [--decision ID] [--finding ID --status STATUS --evidence TEXT] [--agent ID] [--cwd PATH]
+const help = `Usage: dev-flow.mjs context|start|record|checkpoint|submit-plan|save-actions|request-decision|ask|decision|finding|workspace-label --task ID --server ID --workspace ID [--run ID] [--input JSON] [--decision ID] [--finding ID --status STATUS --evidence TEXT] [--agent ID] [--cwd PATH]
 
 workspace-label [--action get|assign|remove|status] [--label NAME] [--color COLOR] [--reason TEXT] [--url ws://host:port/ws]
   get reads the live labels, catalog and linked tasks. assign creates a missing label and assigns it;
@@ -782,11 +884,27 @@ workspace-label [--action get|assign|remove|status] [--label NAME] [--color COLO
   Paseo files are written. Labels never alter task status or grant approval. See docs/agent-workflow.md.
 
 checkpoint --run ID --agent ID --input JSON records a revision-bound pipeline result:
-  { "stage": "execute" | "fix" | "validate" | "review", "verdict": "pass" | "repair" | "blocked",
+  { "stage": "plan-review" | "execute" | "fix" | "validate" | "review", "verdict": "pass" | "repair" | "blocked",
     "scope": "approved" | "needs_plan", "summary": "<concise actual outcome>", "evidence": ["<report inside this run>"] }
-A current versioned approved plan is required. Evidence files are hashed; changing them invalidates
-this checkpoint. Use unique report names. A fresh independent reviewer must use its own agent ID.
+Manual mode requires the current human-approved plan. Automatic mode requires a current submitted plan
+for plan-review, then a passing independent model critique for all implementation/validation/review checkpoints.
+Plan-review includes findings:[] or concrete defects; pass is valid when no substantive blocker exists.
+Code reviews require OCR coverage and findings; action/report reviews cover the exact saved bundle.
+Evidence files are hashed; changing them invalidates this checkpoint. Use unique report names. A fresh independent reviewer must use its own agent ID.
 This command records evidence you actually produced; it does not run checks or approve anything.
+
+submit-plan --run ID --agent ID --input JSON is for an assigned automatic planner only:
+  { "planBrief": { <the same readable planBrief fields documented below> } }
+Write plan.md beside task.md first. This saves a versioned machine proposal, never human approval.
+The runner launches a different model to critique it before implementation. Existing human decisions
+must be explicitly resolved or transitioned; this command cannot bypass them.
+
+save-actions --run ID --agent ID --input JSON prepares an action/report bundle for an assigned builder:
+  { "kind":"actions"|"report", "summary":"...", "environment":"...", "prerequisites":["..."],
+    "steps":[{"instruction":"exact command/script or action","effect":"expected effect"}],
+    "verification":["safe check and expected result"], "rollback":"...", "report":"optional report" }
+It only saves reviewable evidence. It does not execute commands or authorize external actions.
+Validation and both independent reviews must cover the resulting version before final human authorization.
 
 request-decision --input is a JSON file:
   { "kind": "plan" | "review",
@@ -852,7 +970,7 @@ async function main() {
     return;
   }
   const args = options(argv);
-  const commands = { context, start, record, checkpoint, "request-decision": requestDecision, ask, decision: showDecision, finding: updateFinding, "workspace-label": workspaceLabel };
+  const commands = { context, start, record, checkpoint, "submit-plan": submitPlan, "save-actions": saveActions, "request-decision": requestDecision, ask, decision: showDecision, finding: updateFinding, "workspace-label": workspaceLabel };
   const result = Object.hasOwn(commands, command) ? await commands[command](args) : null;
   if (!result) throw new Error(`Unknown command: ${command}`);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

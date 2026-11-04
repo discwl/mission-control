@@ -31,6 +31,13 @@ test("invalid dates, stages, outcomes, evidence and Git metadata are rejected", 
   const result = recentActivity([document(changed)], taskId); assert.equal(result.events.length, 0); assert.equal(result.issues.length, 1);
  }
 });
+test("plan-review events remain distinct from human decisions and render their actual outcome", () => {
+ const result = recentActivity([document({ stage: "plan-review", outcome: "completed", evidence: ["critic.md"] })], taskId);
+ assert.equal(result.issues.length, 0); assert.equal(result.events[0].stage, "plan-review");
+ const { activityTitle } = require("./task-flow-presentation.ts");
+ assert.equal(activityTitle(result.events[0]), "Plan review completed");
+ assert.equal(activityTitle({ stage: "plan-review", outcome: "blocked" }), "Plan review blocked");
+});
 test("duplicate event identities are ambiguous and rejected", () => { const result = recentActivity([document(), document()], taskId); assert.equal(result.events.length, 0); assert.equal(result.issues.length, 2); });
 test("events sort by real timestamps and preserve waiting distinctly from blocked", () => {
  const result = recentActivity([document({ outcome: "waiting" }), document({ eventId: "event_ccc", at: "2026-09-29T13:00:00Z", outcome: "blocked" }, "runs/run_bbb/events/event_ccc.md")], taskId);

@@ -25,7 +25,7 @@ export function eventSummary(event: FlowEvent): string {
 }
 
 export function activityTitle(event: Pick<FlowEvent, "stage" | "outcome">): string {
-  const stages: Record<FlowEvent["stage"], string> = { intake: "Intake", plan: "Planning", execute: "Implementation", validate: "Validation", review: "Review", fix: "Fixes", delivery: "Delivery", handoff: "Handoff" };
+  const stages: Record<FlowEvent["stage"], string> = { intake: "Intake", plan: "Planning", "plan-review": "Plan review", execute: "Implementation", validate: "Validation", review: "Review", fix: "Fixes", delivery: "Delivery", handoff: "Handoff" };
   const outcomes: Record<FlowEvent["outcome"], string> = { completed: "completed", in_progress: "in progress", blocked: "blocked", waiting: "waiting" };
   return `${stages[event.stage]} ${outcomes[event.outcome]}`;
 }

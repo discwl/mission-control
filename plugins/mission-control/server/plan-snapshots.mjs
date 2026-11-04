@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import { normalizePlanBrief } from "../shared/plan-brief.mjs";
+import { randomUUID } from "node:crypto";
+import { readStageAssignments } from "./stage-records.mjs";
 
 const snapshotName = /^(decision_[a-f0-9-]+)\.([a-f0-9]{64})\.json$/;
 const runName = /^run_[a-f0-9-]+$/;
@@ -140,6 +142,83 @@ export async function readPlanSnapshot({ taskFolder, runFolder, decision }) {
   return { source: "snapshot", revision: snapshot.revision, documentRevision: snapshot.documentRevision, requestedAt: snapshot.requestedAt,
     markdown: snapshot.markdown, brief: snapshot.brief, previous: snapshot.previous, currentMatch,
     canApprove: decision.status === "open" && !warning, warning };
+}
+
+const automaticName = /^([a-f0-9-]{36})\.([a-f0-9]{64})\.json$/;
+export function planScopeRevision(task, identity) {
+  return hash(JSON.stringify([identity.taskId, identity.runId, identity.serverId, identity.workspaceId, task.hostId, task.projectId, task.title, task.acceptanceCriteria]));
+}
+
+/** Machine submissions are separate evidence: they never create a human decision or approval. */
+export async function readAutomaticPlan({ taskFolder, runFolder, task: record, identity, policyRevision }) {
+  const { task, run } = await folders(taskFolder, runFolder);
+  let names;
+  try { names = await readdir(join(run, "automatic-plans")); } catch (error) { if (error.code === "ENOENT") return null; throw error; }
+  if (names.length > 200 || names.some(name => !automaticName.test(name))) throw new Error("Invalid automatic plan history.");
+  const directory = await realpath(join(run, "automatic-plans"));
+  if (!inside(run, directory)) throw new Error("Automatic plans escape the run.");
+  const assignments = await readStageAssignments(run, identity);
+  const history = [];
+  for (const name of names) {
+    const raw = await regular(join(directory, name), 1_000_000); const match = automaticName.exec(name);
+    if (hash(raw) !== match[2]) throw new Error("Automatic plan snapshot changed.");
+    const saved = JSON.parse(raw); const assignment = assignments.find(item => item.id === saved.assignmentId);
+    if (saved.schemaVersion !== 1 || saved.submissionId !== match[1] || Object.entries(identity).some(([key, value]) => saved[key] !== value)
+      || !/^[a-f0-9]{64}$/.test(saved.scopeRevision) || !Number.isFinite(Date.parse(saved.createdAt))
+      || typeof saved.markdown !== "string" || !saved.markdown.trim() || saved.markdown.length > 200_000
+      || !assignment || assignment.workflowMode !== "automatic" || assignment.stage !== "plan" || assignment.execution.role !== "planner"
+      || assignment.agentId !== saved.plannerAgentId || assignment.execution.model !== saved.plannerModel || assignment.execution.policyRevision !== saved.policyRevision
+      || Date.parse(saved.createdAt) < Date.parse(assignment.createdAt)) throw new Error("Automatic plan provenance is invalid.");
+    const brief = normalizePlanBrief(saved.brief);
+    if (!brief) throw new Error("Automatic plans require a readable brief.");
+    history.push({ ...saved, brief, revision: match[2], documentRevision: hash(saved.markdown), path: `automatic-plans/${name}` });
+  }
+  history.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.submissionId.localeCompare(a.submissionId));
+  const saved = history[0];
+  if (!saved) return null;
+  const current = await currentPlan(task);
+  return { ...saved, currentMatch: current?.documentRevision === saved.documentRevision,
+    scopeMatch: saved.scopeRevision === planScopeRevision(record, identity), policyMatch: !policyRevision || policyRevision === saved.policyRevision };
+}
+
+export async function verifyAutomaticPlanAcceptance(input) {
+  const plan = await readAutomaticPlan(input);
+  if (!plan || !plan.currentMatch || !plan.scopeMatch || !plan.policyMatch) throw new Error("Submit the current scoped plan before implementation.");
+  const { readPipelineCheckpoints } = await import("./pipeline-records.mjs");
+  const checkpoints = await readPipelineCheckpoints(input.runFolder, input.identity);
+  const assignments = await readStageAssignments(input.runFolder, input.identity);
+  const modelKey = value => value.toLowerCase().split("/").at(-1).replace(/[._-]/g, "").replace(/(?:latest|\d{8})$/, "");
+  const review = checkpoints.find(item => item.stage === "plan-review" && item.planRevision === plan.revision);
+  const assignment = review?.execution && assignments.find(item => item.id === review.execution.assignmentId);
+  if (!review || review.verdict !== "pass" || review.scope !== "approved" || !review.planReview || review.planReview.findings.length
+    || review.planReview.scopeRevision !== plan.scopeRevision || review.execution?.policyRevision !== plan.policyRevision || review.execution?.role !== "planReviewer"
+    || review.agentId === plan.plannerAgentId || modelKey(review.execution.model) === modelKey(plan.plannerModel)
+    || review.candidate.head !== null || review.candidate.tree !== plan.revision || review.createdAt < plan.createdAt
+    || !assignment || assignment.stage !== "plan-review" || assignment.workflowMode !== "automatic" || assignment.agentId !== review.agentId
+    || assignment.planRevision !== plan.revision || assignment.planScopeRevision !== plan.scopeRevision || JSON.stringify(assignment.execution) !== JSON.stringify(review.execution)) throw new Error("The current plan needs a passing independent model critique before implementation.");
+  return plan;
+}
+
+/** Caller holds the run lock and verifies the actual native planner before saving. */
+export async function saveAutomaticPlan({ taskFolder, runFolder, task: record, identity, assignment, brief }) {
+  const { task, run } = await folders(taskFolder, runFolder);
+  const assignments = await readStageAssignments(run, identity);
+  const actual = assignments.find(item => item.id === assignment?.id);
+  if (!actual || JSON.stringify(actual) !== JSON.stringify(assignment) || actual.workflowMode !== "automatic" || actual.stage !== "plan" || actual.execution.role !== "planner") throw new Error("An automatic managed planner assignment is required.");
+  const current = await currentPlan(task); const normalized = normalizePlanBrief(brief);
+  if (!current || !normalized) throw new Error("Write plan.md and supply a readable planBrief before submitting the plan.");
+  const previous = await readAutomaticPlan({ taskFolder, runFolder, task: record, identity });
+  if (previous && (previous.documentRevision !== current.documentRevision || JSON.stringify(previous.brief) !== JSON.stringify(normalized)) && !normalized.changesSincePrevious.length) throw new Error("Explain changesSincePrevious when revising the plan.");
+  const saved = { schemaVersion: 1, submissionId: randomUUID(), ...identity, scopeRevision: planScopeRevision(record, identity),
+    assignmentId: actual.id, plannerAgentId: actual.agentId, plannerModel: actual.execution.model, policyRevision: actual.execution.policyRevision,
+    createdAt: new Date(Math.max(Date.now(), previous ? Date.parse(previous.createdAt) + 1 : 0)).toISOString(), markdown: current.markdown, brief: normalized, previousRevision: previous?.revision ?? null };
+  const raw = JSON.stringify(saved); const revision = hash(raw);
+  await mkdir(join(run, "automatic-plans"), { recursive: true });
+  const directory = await realpath(join(run, "automatic-plans"));
+  if (!inside(run, directory)) throw new Error("Automatic plans escape the run.");
+  const name = `${saved.submissionId}.${revision}.json`;
+  await writeFile(join(directory, name), raw, { flag: "wx" });
+  return { ...saved, revision, documentRevision: current.documentRevision, path: `automatic-plans/${name}`, currentMatch: true, scopeMatch: true, policyMatch: true };
 }
 
 export async function verifyPlanApproval(input, expectedPlanRevision) {

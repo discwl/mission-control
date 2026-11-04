@@ -34,6 +34,12 @@ import { createQuestionStore } from "./server/questions";
 import { createNeedsYouTimeline } from "./server/needs-you-timeline";
 import { listWaiting, replyToQuestion } from "./shared/questions";
 import { createMergeService } from "./server/merge";
+import { createFleetStore } from "./server/fleet-store";
+import { createAutomaticInspectionScope, hasAutomaticAssignment } from "./server/pipeline-inspect";
+import { createActionDeliveryService } from "./server/action-delivery";
+import { createDeliveryFeedbackService } from "./server/delivery-feedback";
+import { finalReviewChanges } from "./shared/delivery-feedback";
+import { checkActionDelivery, authorizeActionDelivery } from "./shared/action-delivery";
 import { checkMerge, listMergeReady, runMerge } from "./shared/merge";
 import { createPullRequestService, projectRemotes } from "./server/pull-request";
 import { checkPullRequest, dismissDeliveryResult, listDeliveryResults, listPullRequests, planCleanup, runCleanup, runPullRequest } from "./shared/pull-request";
@@ -137,6 +143,23 @@ export default function contribute(context: PluginServerContext) {
     return result;
   });
   server.handle(replyToQuestion, (input, { paseo }) => questions.reply(input, paseo));
+  const deliveryFleetStore = createFleetStore();
+  const automaticInspectionScope = (serverId: string, paseo: PaseoApi) => createAutomaticInspectionScope(serverId, paseo, deliveryFleetStore, {
+    decisions: id => decisions.list(id, Infinity), questions: id => questions.list(id),
+    stoppedAgents: async () => (await deliveryFleetStore.read()).stoppedAgentIds,
+  });
+  const automaticInspection = (serverId: string, taskId: string, paseo: PaseoApi) => automaticInspectionScope(serverId, paseo)(taskId);
+  const actionDelivery = createActionDeliveryService({ sources: taskSources, inspect: automaticInspection });
+  const finalFeedback = createDeliveryFeedbackService({ sources: taskSources, inspect: automaticInspection, projectRoot: (projectId, paseo) => projectRoot(paseo, projectId),
+    reviewFingerprint: async (serverId, workspaceId, paseo) => {
+      const snapshot = await review.freshSnapshot(paseo, serverId, workspaceId);
+      if (!snapshot || !snapshot.fingerprint) throw new Error("The current code comparison is unavailable. Refresh the review before requesting fixes.");
+      return snapshot.fingerprint;
+    },
+  });
+  server.handle(finalReviewChanges, (input, { paseo }) => finalFeedback.request(input, paseo));
+  server.handle(checkActionDelivery, (input, { paseo }) => actionDelivery.check(input, paseo));
+  server.handle(authorizeActionDelivery, (input, { paseo }) => actionDelivery.authorize(input, paseo));
   // Settings → Delivery: Merge, or a draft pull request, per project.
   const deliverySettingsStore = server.registerSettings(deliverySettings);
   async function deliveryOf(projectId: string) {
@@ -164,6 +187,7 @@ export default function contribute(context: PluginServerContext) {
   // Attention's Merge action: checks first, then commit, merge --no-ff and clean up.
   const merges = createMergeService({
     results,
+    automaticInspection, automaticInspectionScope, automaticMode: hasAutomaticAssignment,
     deliveryMode: async projectId => (await deliveryOf(projectId)).mode,
     sources: taskSources,
     decisions: serverId => decisions.list(serverId, Infinity),
@@ -174,7 +198,7 @@ export default function contribute(context: PluginServerContext) {
   server.handle(checkMerge, (input, { paseo }) => merges.check(input, paseo));
   // Replies within 20 s; a slower merge finishes in the background and reports through merge.progress.
   server.handle(runMerge, (input, { paseo }) => merges.start(input, paseo));
-  server.handle(listMergeReady, ({ serverId }) => merges.ready(serverId));
+  server.handle(listMergeReady, ({ serverId }, { paseo }) => merges.ready(serverId, paseo));
   // Attention's Open PR action for pull-request projects, the pull requests' states, and Clean up after one merges.
   const pullRequests = createPullRequestService({
     results,
@@ -188,7 +212,7 @@ export default function contribute(context: PluginServerContext) {
     clearReviewMarks: workspaceId => review.marks.clear(workspaceId),
   });
   registerAgentCleanup(server, { decisions, questions, pullRequests });
-  registerChatWorkflow(server, { decisions, pullRequests, questions });
+  registerChatWorkflow(server, { decisions, pullRequests, questions, actionDelivery });
   server.handle(checkPullRequest, (input, { paseo }) => pullRequests.check(input, paseo));
   server.handle(runPullRequest, (input, { paseo }) => pullRequests.start(input, paseo));
   server.handle(listPullRequests, input => pullRequests.list(input));

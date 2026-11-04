@@ -81,6 +81,35 @@ test("pipeline checkpoints require a versioned approved plan, bind actual report
   assert.match(checkpoint(reviewer).stderr, /plan changed|Plan is not ready/i);
 });
 
+test("automatic CLI commands require an assigned role and expose task policy without inventing human approval", async t => {
+  const f = await fixture(t); const started = f.run("start", ["--agent", "planner"]); assert.equal(started.status, 0, started.stderr);
+  const runId = JSON.parse(started.stdout).run.runId; const folder = join(f.folder, "runs", runId);
+  const input = join(f.base, "automatic-input.json"); await writeFile(input, JSON.stringify({ planBrief }));
+  for (const command of ["submit-plan", "save-actions"]) {
+    const result = f.run(command, ["--run", runId, "--agent", "planner", "--input", input]);
+    assert.notEqual(result.status, 0); assert.match(result.stderr, /assignment|required|assigned/i);
+  }
+  const { assignmentSchema } = await import("../plugins/mission-control/server/stage-records.mjs");
+  const id = "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa";
+  const assignment = assignmentSchema.parse({ id, taskId, runId, serverId, workspaceId, agentId: "planner", stage: "plan", workflowMode: "automatic", deliveryKind: "code", execution: { assignmentId: id, policyRevision: "policy", role: "planner", profileId: "planner", profileName: "Planner", provider: "claude", model: "fable" }, planRevision: null, candidate: null, createdAt: "2026-01-01T00:00:00Z", reviewCount: 2, manifest: null });
+  await mkdir(join(folder, "stage-assignments")); await writeFile(join(folder, "stage-assignments", `${id}.json`), JSON.stringify(assignment));
+  const context = f.run("context", ["--run", runId, "--agent", "planner"]); assert.equal(context.status, 0, context.stderr);
+  const data = JSON.parse(context.stdout); assert.equal(data.managedStage.workflowMode, "automatic"); assert.equal(data.automaticPlan, null);
+  await writeFile(input, JSON.stringify({ kind: "plan", question: "Approve this plan?", summary: "Scoped plan", evidence: [join(f.folder, "plan.md")], planBrief, plain: { built: "Existing orders remain unchanged.", recommendation: { action: "accept", reason: "The scope is clear." } } }));
+  const decision = f.run("request-decision", ["--run", runId, "--agent", "planner", "--input", input]);
+  assert.notEqual(decision.status, 0); assert.match(decision.stderr, /Automatic tasks use submit-plan/);
+  assert.deepEqual(await readdir(join(folder, "decisions")).catch(error => error.code === "ENOENT" ? [] : Promise.reject(error)), []);
+  const builder = { ...assignment, stage: "execute", deliveryKind: "actions", execution: { ...assignment.execution, role: "builder" } };
+  await writeFile(join(folder, "stage-assignments", `${id}.json`), JSON.stringify(builder));
+  const completion = { stage: "delivery", outcome: "completed", summary: "Executed authorized steps", nextAction: "Verify receipts", evidence: ["actual-results.md"] };
+  await writeFile(input, JSON.stringify(completion));
+  const absentRevision = f.run("record", ["--run", runId, "--agent", "planner", "--input", input]);
+  assert.notEqual(absentRevision.status, 0); assert.match(absentRevision.stderr, /authorized actionRevision/);
+  await writeFile(input, JSON.stringify({ ...completion, actionRevision: "a".repeat(64) }));
+  const wrongAuthor = f.run("record", ["--run", runId, "--agent", "other", "--input", input]);
+  assert.notEqual(wrongAuthor.status, 0); assert.match(wrongAuthor.stderr, /Only the assigned action worker/);
+});
+
 // Execute the real adapter against controlled client boundaries; no daemon or label files are touched.
 const labelSource = await readFile(cli, "utf8");
 const labelStart = labelSource.indexOf("const workspaceStatusColors =");

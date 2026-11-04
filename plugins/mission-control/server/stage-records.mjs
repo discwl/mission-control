@@ -7,7 +7,9 @@ import { verifyNativeStageAgent } from "./native-stage-identity.mjs";
 
 export const assignmentSchema = z.object({
   id: z.string().uuid(), taskId: z.string(), runId: z.string(), serverId: z.string(), workspaceId: z.string(), agentId: z.string(),
-  stage: z.enum(["plan", "execute", "fix", "validate", "review"]), execution: executionSchema,
+  stage: z.enum(["plan", "plan-review", "execute", "fix", "validate", "review"]), execution: executionSchema,
+  workflowMode: z.enum(["manual", "automatic"]).default("manual"), deliveryKind: z.enum(["code", "actions", "report"]).default("code"),
+  planScopeRevision: z.string().regex(/^[a-f0-9]{64}$/).nullable().default(null),
   planRevision: z.string().nullable(), candidate: candidateSchema.nullable(), createdAt: z.string(),
   reviewCount: z.union([z.literal(1), z.literal(2)]), manifest: z.string().nullable(),
   requestId: z.string().optional(),
@@ -32,23 +34,32 @@ export async function readStageAssignments(folder, identity) {
 }
 export async function checkpointStageEvidence(folder, identity, input, { verifyAgent = verifyNativeStageAgent } = {}) {
   const assignments = await readStageAssignments(folder, { taskId: identity.taskId, runId: identity.runId, serverId: identity.serverId, workspaceId: identity.workspaceId });
-  if (!assignments.length) return { ...input, execution: undefined, ocr: undefined }; // Preserve legacy runs without claiming new verification.
+  if (!assignments.length) return { ...input, execution: undefined, ocr: undefined, planReview: undefined, artifactReview: undefined, deliveryKind: "code" }; // Preserve legacy runs without claiming new verification.
   const assigned = assignments.find(item => item.agentId === identity.agentId && item.stage === input.stage);
   if (!assigned || assigned.planRevision !== input.planRevision) throw new Error("This agent has no assignment for this stage and approved plan.");
   await verifyAgent(assigned);
-  if (["validate", "review"].includes(input.stage) && JSON.stringify(assigned.candidate) !== JSON.stringify(identity.candidate)) throw new Error("Code changed since this stage was assigned. Start a fresh stage.");
+  if (["plan-review", "validate", "review"].includes(input.stage) && JSON.stringify(assigned.candidate) !== JSON.stringify(identity.candidate)) throw new Error(`${assigned.deliveryKind === "code" && input.stage !== "plan-review" ? "Code" : "The candidate"} changed since this stage was assigned. Start a fresh stage.`);
   const evidence = [...input.evidence, `stage-assignments/${assigned.id}.json`];
-  let ocr;
-  if (input.stage === "review") {
+  let ocr, planReview, artifactReview;
+  const findings = z.array(reviewFindingSchema).max(50).parse(input.findings ?? []);
+  if (["plan-review", "review"].includes(input.stage) && findings.length && input.verdict === "pass") throw new Error("A passing review cannot leave findings unresolved.");
+  if (input.stage === "plan-review") {
+    if (assigned.workflowMode !== "automatic" || assigned.execution.role !== "planReviewer" || !assigned.planScopeRevision) throw new Error("An automatic independent plan-review assignment is required.");
+    planReview = { scopeRevision: assigned.planScopeRevision, findings };
+  }
+  if (input.stage === "review" && assigned.deliveryKind !== "code") {
+    if (!assigned.candidate || !/^[a-f0-9]{64}$/.test(assigned.candidate.tree)) throw new Error("Review requires the exact saved action bundle.");
+    artifactReview = { revision: assigned.candidate.tree, findings };
+  }
+  if (input.stage === "review" && assigned.deliveryKind === "code") {
     if (!assigned.manifest) throw new Error("OCR execution evidence is missing.");
     const manifest = await readStageJson(folder, assigned.manifest);
     if (manifest.assignmentId !== assigned.id || JSON.stringify(manifest.candidate) !== JSON.stringify(identity.candidate)) throw new Error("OCR manifest belongs to a different review.");
     const coverage = coverageSchema.parse(input.coverage);
     verifyCoverage(manifest.files, coverage, input.verdict === "pass");
-    const findings = z.array(reviewFindingSchema).max(50).parse(input.findings ?? []);
-    if (findings.length && input.verdict === "pass") throw new Error("Record repair or blocked when the review has findings; do not silently discard them.");
+
     ocr = { manifest: assigned.manifest, coverage, excluded: manifest.excluded.length, findings };
     evidence.push(assigned.manifest);
   }
-  return { ...input, evidence, execution: assigned.execution, ocr };
+  return { ...input, evidence, execution: assigned.execution, ocr, planReview, artifactReview, deliveryKind: assigned.deliveryKind };
 }

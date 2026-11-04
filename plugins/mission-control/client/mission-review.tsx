@@ -200,7 +200,7 @@ function scopeLabel(snapshot: ReviewSnapshot | null) {
   return snapshot.base === "head" ? `uncommitted changes vs ${snapshot.head!.slice(0, 7)}` : "all files; the repository has no commits yet";
 }
 
-export function MissionReview({ serverId, localServerId = serverId, online, workspace, colors, compact, onChangeWorkspace, onNavigate, agentId: preferredAgentId, tab, sessionId = "workspace", openWorkspace, readiness, brief, embedded = false }: {
+export function MissionReview({ serverId, localServerId = serverId, online, workspace, colors, compact, onChangeWorkspace, onNavigate, agentId: preferredAgentId, tab, sessionId = "workspace", openWorkspace, readiness, brief, embedded = false, requireAgentSelection = false }: {
   serverId: string; online: boolean; workspace: { id: string; name: string; projectName: string; hostLabel: string };
   colors: Colors; compact: boolean; onChangeWorkspace?: () => void; onNavigate?: () => void; agentId?: string;
   // The host this Mission Control runs on, whose vault names the tasks in sub-agents' context lines.
@@ -208,6 +208,8 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
   tab?: PluginTab; sessionId?: string;
   /** The containing task page scrolls the summary; reserve a separate tall diff viewport. */
   embedded?: boolean;
+  /** Task pages must not silently send comments to an unrelated workspace agent. */
+  requireAgentSelection?: boolean;
   openWorkspace?: () => void;
   readiness?: (snapshot: ReviewSnapshot | null, stale: boolean) => React.ReactNode;
   brief?: (snapshot: ReviewSnapshot | null, stale: boolean, selectFile: (path: string) => void) => React.ReactNode;
@@ -274,7 +276,7 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
   // Task titles come from this Mission Control's vault, also for another host's workspace.
   const contextLine = useContextLines(serverId, localServerId, online);
   const agents = agentsQuery.data ?? [];
-  const agentId = agents.some(agent => agent.id === agentChoice) ? agentChoice : agents[0]?.id ?? null;
+  const agentId = agents.some(agent => agent.id === agentChoice) ? agentChoice : requireAgentSelection ? null : agents[0]?.id ?? null;
   const agentName = (id: string | null) => agents.find(agent => agent.id === id)?.name ?? "an agent";
 
   const marks = marksQuery.data?.marks ?? {};

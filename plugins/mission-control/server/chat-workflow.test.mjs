@@ -148,3 +148,145 @@ test("review approval checks the current working tree and refuses changed code",
   const fresh = await f.command("review task_a"); assert.equal(fresh.state, "pending");
   await f.command(`yes approve ${fresh.offerId}`); assert.equal(resolves, 1);
 });
+
+function automaticRow(taskId, extra = {}) {
+  return { id: `pipeline_${taskId}`, coordinatorId: "coordinator", remoteServerId: "local", taskId, title: `Automatic ${taskId}`, workflowMode: "automatic", deliveryKind: "code", stage: "review", mode: "waiting", pending: null, lastDispatch: `dispatch_${taskId}`, message: "Saved pipeline details", updatedAt: new Date().toISOString(), ...extra };
+}
+async function automaticChatFixture(t, rows) {
+  const f = await fixture(t), fleet = require("./fleet-store.ts");
+  f.deps.decisions.list = async () => ({ open: [], recent: [] });
+  t.mock.method(bindings, "readOrchestratorBindings", async () => ({ bindings: { w: { serverId: "local", label: "CNS" } }, problems: {} }));
+  t.mock.method(fleet, "createFleetStore", () => ({ read: async () => ({ pipelines: rows }) }));
+  t.mock.method(transport, "invokeChatHost", async (host, method, input) => {
+    assert.equal(host, "local"); assert.equal(input.serverId, "local");
+    if (method === "decisions.list") return f.deps.decisions.list("local");
+    if (method === "attention.waiting") return f.deps.questions.list("local");
+    assert.fail(`Unexpected host call ${method}`);
+  });
+  return { ...f, inbox: () => f.handlers.get("chat.inbox")({ agentId: "coordinator", conversationId: "telegram:topic2:owner" }, { paseo: f.paseo }) };
+}
+test("needs finds pipeline-owned questions and decisions without links and suppresses stale final actions", async t => {
+  const f = await automaticChatFixture(t, [
+    automaticRow("task_a", { stage: "delivery", mode: "ready" }),
+    automaticRow("task_b", { stage: "delivery", mode: "ready", deliveryKind: "actions" }),
+    automaticRow("task_c", { stage: "delivery", mode: "ready", coordinatorId: "other" }),
+    automaticRow("task_d", { stage: "delivery", mode: "ready", remoteServerId: "other-host" }),
+  ]);
+  const question = (suffix, serverId = "local") => ({ taskTitle: `Question task_${suffix}`, projectId: "p", question: { schemaVersion: 1, questionId: `question_${suffix}`, taskId: `task_${suffix}`, runId: `run_${suffix}`, serverId, workspaceId: "worker-workspace", agentId: `worker_${suffix}`, status: "open", question: `Resolve requirement ${suffix}`, askedAt: new Date().toISOString(), answeredAt: null, answer: null, plain: null } });
+  const decision = (suffix, serverId = "local") => {
+    const item = entry(); item.taskTitle = `Decision task_${suffix}`;
+    Object.assign(item.decision, { taskId: `task_${suffix}`, decisionId: `decision_${suffix}`, serverId, workspaceId: "worker-workspace", agentId: `worker_${suffix}` });
+    return item;
+  };
+  f.deps.questions.list = async () => ({ questions: [question("a"), question("c"), question("d", "other-host")], taskTitles: {} });
+  f.deps.decisions.list = async () => ({ open: [decision("b"), decision("c"), decision("d", "other-host")], recent: [] });
+  const { createOrchestratorWorkStore } = require("./orchestrator-work.ts");
+  assert.deepEqual(await createOrchestratorWorkStore().list({ serverId: "local", agentId: "coordinator", remoteServerId: "local" }), []);
+  const own = await f.command("needs");
+  assert.match(own.text, /2 items needing attention linked to this chat/);
+  assert.match(own.text, /Resolve requirement a/); assert.match(own.text, /Decision task_b/);
+  assert.deepEqual(own.actions.map(action => action.command), ["plan decision_b", "question question_a", "all needs"]);
+  assert.doesNotMatch(own.text, /task_c|task_d|Ready to publish|Ready to execute/);
+  assert.equal(own.offerId, undefined); assert.equal(f.calls.length, 0);
+  const all = await f.command("all needs");
+  assert.match(all.text, /4 items needing attention across this host/);
+  assert.ok(all.actions.some(action => action.command === "question question_c"));
+  assert.ok(all.actions.some(action => action.command === "plan decision_c"));
+  assert.ok(all.actions.every(action => !/draft pr|actions task_|_d\b/.test(action.command)));
+  assert.doesNotMatch(all.text, /task_d|Ready to publish|Ready to execute/);
+  assert.equal(f.calls.length, 0);
+});
+
+test("needs lists automatic final actions in this coordinator and all needs broadens only the same host", async t => {
+  const f = await automaticChatFixture(t, [
+    automaticRow("task_a", { stage: "delivery", mode: "ready" }),
+    automaticRow("task_b", { stage: "delivery", mode: "ready", deliveryKind: "actions" }),
+    automaticRow("task_c", { stage: "delivery", mode: "ready", coordinatorId: "other" }),
+    automaticRow("task_d", { stage: "delivery", mode: "ready", remoteServerId: "other-host" }),
+    automaticRow("task_e", { stage: "plan-review", mode: "waiting" }),
+  ]);
+  const own = await f.command("needs");
+  assert.match(own.text, /2 items needing attention linked to this chat/);
+  assert.match(own.text, /Ready to publish/); assert.match(own.text, /Ready to execute/);
+  assert.deepEqual(own.actions.filter(a => a.command !== "all needs").map(a => a.command), ["draft pr task_a", "actions task_b"]);
+  require("../shared/chat-workflow.ts").chatCommand.output.parse(own);
+  assert.doesNotMatch(own.text, /Automatic task_[cde]|Plan approval|Code review · Review|yes approve/);
+  const all = await f.command("all needs");
+  assert.match(all.text, /3 items needing attention across this host/);
+  assert.ok(all.actions.some(a => a.command === "draft pr task_c"));
+  assert.ok(!all.actions.some(a => a.command.includes("task_d")));
+  assert.equal(f.calls.length, 0);
+});
+test("needs distinguishes paused and unconfirmed work from automatic agent progress", async t => {
+  const f = await automaticChatFixture(t, [
+    automaticRow("task_a", { mode: "paused" }),
+    automaticRow("task_b", { mode: "waiting", pending: { requestId: "request_b" } }),
+    automaticRow("task_c", { mode: "blocked" }),
+    automaticRow("task_d", { stage: "plan-review" }),
+  ]);
+  const result = await f.command("needs");
+  assert.match(result.text, /3 items needing attention/);
+  assert.match(result.text, /This task is paused/); assert.match(result.text, /request could not be confirmed/); assert.match(result.text, /cannot continue automatically/);
+  assert.doesNotMatch(result.text, /Automatic task_d|Plan approval|yes approve/);
+  assert.equal(result.actions.filter(a => a.command !== "all needs").length, 0);
+});
+test("automatic inbox keeps final publication and report completion but labels routine reviews as updates", async t => {
+  const f = await automaticChatFixture(t, [
+    automaticRow("task_a", { stage: "delivery", mode: "ready" }),
+    automaticRow("task_b", { deliveryKind: "report", stage: "delivery", mode: "done" }),
+    automaticRow("task_c", { stage: "plan-review" }),
+    automaticRow("task_d", { stage: "delivery", mode: "ready", coordinatorId: "other" }),
+  ]);
+  const result = await f.inbox();
+  assert.equal(result.entries.length, 3);
+  require("../shared/chat-workflow.ts").chatInbox.output.parse(result);
+  const final = result.entries.find(e => e.context?.taskId === "task_a");
+  assert.equal(final.proposalKind, "draft-pr"); assert.equal(final.context.type, "delivery");
+  assert.match(final.text, /open draft PR [a-f0-9]{10}/); assert.doesNotMatch(final.text, /yes approve/);
+  assert.equal(result.entries.filter(e => e.context?.taskId === "task_a").length, 1);
+  const report = result.entries.find(e => e.context?.taskId === "task_b");
+  assert.equal(report.context.type, "completion"); assert.equal(report.context.waitingOn, "None");
+  assert.match(report.text, /reviewed report is complete/); assert.deepEqual(report.actions, [{ label: "Read the completed report", command: "actions task_b" }]);
+  const routine = result.entries.find(e => e.context?.taskId === "task_c");
+  assert.equal(routine.context.type, "update"); assert.equal(routine.context.waitingOn, "Worker");
+  assert.match(routine.text, /second model is checking the plan/); assert.equal(routine.offerId, undefined);
+  assert.doesNotMatch(result.entries.map(e => e.text).join("\n"), /task_d|yes approve/);
+  assert.equal(f.calls.length, 0);
+});
+test("automatic inbox prioritizes a concrete question over final-ready or generic pipeline cards", async t => {
+  const f = await automaticChatFixture(t, [automaticRow("task_a", { stage: "delivery", mode: "ready" })]);
+  f.deps.questions.list = async () => ({ questions: [{ taskTitle: "Automatic task_a", projectId: "p", question: { schemaVersion: 1, questionId: "question_a", taskId: "task_a", runId: "run_a", serverId: "local", workspaceId: "w", agentId: "worker", status: "open", question: "Which environment is intended?", askedAt: new Date().toISOString(), answeredAt: null, answer: null, plain: null } }], taskTitles: {} });
+  const result = await f.inbox();
+  assert.equal(result.entries.length, 1);
+  assert.equal(result.entries[0].proposalKind, "question");
+  assert.match(result.entries[0].text, /Which environment is intended/);
+  assert.doesNotMatch(result.entries[0].text, /open draft PR|yes approve/);
+  assert.equal(f.calls.length, 0);
+});
+test("automatic inbox exposes an unconfirmed final dispatch as a blocker instead of hiding it", async t => {
+  const f = await automaticChatFixture(t, [automaticRow("task_a", { stage: "delivery", mode: "ready", pending: { requestId: "request_a" } })]);
+  const result = await f.inbox();
+  assert.equal(result.entries.length, 1);
+  assert.equal(result.entries[0].context.type, "blocker");
+  assert.equal(result.entries[0].context.waitingOn, "You");
+  assert.equal(result.entries[0].context.status, "Request needs confirmation");
+  assert.equal(result.entries[0].offerId, undefined);
+});
+test("automatic inbox keeps paused and blocked work actionable without creating intermediate approvals", async t => {
+  const f = await automaticChatFixture(t, [
+    automaticRow("task_a", { mode: "paused" }),
+    automaticRow("task_b", { mode: "blocked" }),
+    automaticRow("task_c", { mode: "waiting", pending: { requestId: "request_c" } }),
+  ]);
+  const result = await f.inbox();
+  assert.equal(result.entries.length, 3);
+  for (const item of result.entries) {
+    assert.equal(item.context.type, "blocker"); assert.equal(item.context.waitingOn, "You");
+    assert.equal(item.offerId, undefined); assert.equal(item.proposalKind, undefined);
+    assert.doesNotMatch(item.text, /yes approve|open draft PR|authorize actions/);
+  }
+  assert.match(result.entries.find(e => e.context.taskId === "task_a").text, /This task is paused/);
+  assert.match(result.entries.find(e => e.context.taskId === "task_b").text, /needs attention before it can continue/);
+  assert.equal(result.entries.find(e => e.context.taskId === "task_c").context.status, "Request needs confirmation");
+  assert.equal(f.calls.length, 0);
+});

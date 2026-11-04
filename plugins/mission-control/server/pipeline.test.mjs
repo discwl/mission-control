@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
+import { automaticFixture } from "./automatic-pipeline-fixture.mjs";
 import { writePipelineCheckpoint, readPipelineCheckpoints } from "./pipeline-records.mjs";
 const require = createRequire(import.meta.url); const ts = require("typescript");
 require.extensions[".ts"] = (module, file) => module._compile(ts.transpileModule(readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, file);
@@ -68,6 +69,18 @@ async function fixture(t, overrides = {}) {
   const engine = createPipelineEngine(deps); t.after(() => engine.stop());
   return { file, directory, store, engine, deps, sent, prepared, f, host, coordinator, p, advance: () => { clock += 6 * 60_000; } };
 }
+test("final user feedback dispatches one bounded repair and never prepares the old publication", async t => {
+  const f = await fixture(t); const auto = automaticFixture();
+  Object.assign(f.f, auto.facts); f.f.entry.run.agentId = "worker"; f.host.tasks = [f.f.entry];
+  const request = { schemaVersion: 1, id: randomUUID(), taskId: f.f.entry.task.taskId, runId: f.f.entry.run.runId, serverId: "remote", workspaceId: "work", candidate: { ...f.f.candidate }, planRevision: f.f.planRevision, policyRevision: f.f.agentPolicy.revision, scopeRevision: f.f.submittedPlan.scopeRevision, note: "Fix the empty result.", requestedAt: auto.at(10), requestedBy: "human" };
+  f.f.deliveryFeedback = request;
+  await f.store.update(state => Object.assign(state.pipelines[0], auto.row, { id: f.p.id, stage: "delivery", mode: "ready", repairs: 1, repairIds: ["previous-fix"] }));
+  await f.engine.tick(); assert.equal(f.sent.length, 1); assert.equal(f.prepared.length, 0); assert.match(f.sent[0][1], /Fix the empty result/);
+  const saved = (await f.store.read()).pipelines[0]; assert.equal(saved.repairs, 2); assert.deepEqual(saved.repairIds, ["previous-fix", request.id]);
+  f.advance(); await f.engine.tick(); assert.equal(f.sent.length, 1); assert.equal(f.prepared.length, 0);
+  assert.equal((await f.store.read()).pipelines[0].stage, "fix");
+});
+
 test("dispatch intent is durable before send and a no-progress wake-up is never repeated", async t => {
   const f = await fixture(t); f.deps.send = async (...args) => { assert.ok((await f.store.read()).pipelines[0].pending); f.sent.push(args); };
   await f.engine.tick(); assert.equal(f.sent.length, 1); assert.match(f.sent[0][1], /No commit, push, PR publication/);
@@ -115,6 +128,39 @@ test("disposable task pilot advances saved stages, waits at human review and end
   f.f.entry.decisions = [decision("review", "approved", { candidate })]; f.advance(); await f.engine.tick();
   assert.equal(f.prepared.length, 1); assert.equal(f.sent.length, 3); assert.equal((await f.store.read()).pipelines[0].mode, "ready");
   const restored = createFleetStore(f.file); assert.equal((await restored.read()).pipelines[0].mode, "ready");
+});
+
+test("automatic lifecycle advances plan check, validation and two reviews without synthetic human decisions", async t => {
+  const f = await fixture(t); const auto = automaticFixture(); const all = [...auto.facts.checkpoints];
+  Object.assign(f.f, auto.facts); f.f.entry.run.agentId = "worker"; f.f.checkpoints = []; const savedPlan = f.f.submittedPlan; f.f.submittedPlan = null; f.f.planRevision = null;
+  await f.store.update(state => { Object.assign(state.pipelines[0], { workflowMode: "automatic", deliveryKind: "code", planRepairs: 0, planRepairIds: [] }); });
+  const stages = []; f.deps.dispatch = async (_row, facts) => { const { nextPipelineStep } = require("../shared/pipeline-model.ts"); stages.push(nextPipelineStep((await f.store.read()).pipelines[0], facts).stage); return { agentId: "worker", runId: "run_a" }; };
+  await f.engine.tick(); assert.deepEqual(stages, ["plan"]);
+  f.f.submittedPlan = savedPlan; f.f.planRevision = savedPlan.revision; f.advance(); await f.engine.tick(); assert.equal(stages.at(-1), "plan-review");
+  for (const cp of all) { f.f.checkpoints.push(cp); f.advance(); await f.engine.tick(); }
+  assert.deepEqual(stages, ["plan", "plan-review", "execute", "validate", "review", "review"]);
+  assert.equal(f.prepared.length, 1); assert.equal(f.sent.length, 0); assert.deepEqual(f.f.entry.decisions, []);
+  f.advance(); await f.engine.tick(); assert.equal(f.prepared.length, 1);
+  assert.equal((await f.store.read()).pipelines[0].mode, "ready");
+});
+
+test("report receipts complete the runner; action authorization waits for actual execution and never replays", async t => {
+  for (const kind of ["report", "actions"]) {
+    const f = await fixture(t); const auto = automaticFixture(kind); Object.assign(f.f, auto.facts); f.f.entry.run.agentId = "worker";
+    await f.store.update(state => { Object.assign(state.pipelines[0], { workflowMode: "automatic", deliveryKind: kind, planRepairs: 0, planRepairIds: [] }); });
+    f.deps.prepare = async (...args) => { f.prepared.push(args); if (kind === "report") return { completed: true }; f.f.actionAuthorization = { phase: "sent", bundleRevision: f.f.candidate.tree }; return { authorized: true }; };
+    await f.engine.tick(); assert.equal(f.prepared.length, 1); assert.equal((await f.store.read()).pipelines[0].mode, kind === "report" ? "done" : "waiting");
+    f.advance(); await f.engine.tick(); assert.equal(f.prepared.length, 1);
+    if (kind === "actions") { assert.equal((await f.store.read()).pipelines[0].mode, "waiting"); f.f.actionAuthorization.phase = "completed"; f.advance(); await f.engine.tick(); assert.equal((await f.store.read()).pipelines[0].mode, "done"); }
+  }
+});
+
+test("plan repair dispatch increments only its own durable bounded counter", async t => {
+  const f = await fixture(t); const auto = automaticFixture(); Object.assign(f.f, auto.facts); f.f.entry.run.agentId = "worker"; f.f.checkpoints[0].verdict = "repair";
+  await f.store.update(state => { Object.assign(state.pipelines[0], { workflowMode: "automatic", deliveryKind: "code", planRepairs: 0, planRepairIds: [], repairs: 1 }); });
+  f.deps.dispatch = async () => ({ agentId: "worker", runId: "run_a" });
+  await f.engine.tick(); const saved = (await f.store.read()).pipelines[0]; assert.equal(saved.planRepairs, 1); assert.equal(saved.repairs, 1); assert.deepEqual(saved.planRepairIds, [f.f.checkpoints[0].id]);
+  f.advance(); await f.engine.tick(); assert.equal((await f.store.read()).pipelines[0].planRepairs, 1);
 });
 
 test("checkpoint receipts hash saved reports and reject changed evidence, wrong identities and self review", async t => {

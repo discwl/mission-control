@@ -9,9 +9,10 @@ import { fleetEvent, type FleetStore } from "./fleet-store";
 
 type Deps = { store: FleetStore; snapshot(): Promise<FleetSnapshot>; inspect(row: Pipeline, snapshot: FleetSnapshot): Promise<PipelineInspection>;
   dispatch?(row: Pipeline, facts: PipelineInspection, fingerprint: string, requestId: string): Promise<{ agentId: string; runId: string }>;
-  send(id: string, prompt: string, requestId: string): Promise<void>; prepare(id: string, taskId: string): Promise<void>; now?: () => number };
+  send(id: string, prompt: string, requestId: string): Promise<void>; prepare(id: string, taskId: string, deliveryKind: Pipeline["deliveryKind"]): Promise<void | { completed?: boolean; authorized?: boolean }>; now?: () => number };
 const active = (row: Pipeline) => ["running", "waiting", "ready"].includes(row.mode);
 export function pipelinePrompt(row: Pipeline, facts: PipelineInspection, next: PipelineStep): string {
+  if (row.workflowMode === "automatic") return automaticPipelinePrompt(row, facts, next);
   const readyForHuman = next.stage === "review" && Boolean(facts.agentPolicy) && !missingReviewRole(facts, facts.checkpoints.find(item => item.stage === "validate" && item.verdict === "pass")?.createdAt);
   return ["Mission Control — Run to draft PR", `Task ${row.taskId}; host ${row.remoteServerId}; run ${facts.entry.run?.runId ?? "start one for this existing task"}.`,
     `This wake-up authorizes only the ${next.stage} stage: ${next.message}`,
@@ -30,6 +31,26 @@ export function pipelinePrompt(row: Pipeline, facts: PipelineInspection, next: P
     `Recent saved stage reports (paths are relative to this exact run folder; read the reports before acting): ${JSON.stringify(facts.checkpoints.filter(item => readyForHuman || next.stage !== "review" || item.stage !== "review").slice(0, readyForHuman ? 6 : 3).map(item => ({ stage: item.stage, verdict: item.verdict, scope: item.scope, author: item.agentId, model: item.execution?.model, summary: item.summary, evidence: item.evidence.map(file => file.path) })))}`,
     "Use existing project patterns and dependencies. Implement only the approved acceptance criteria. Avoid speculative abstractions and unrelated cleanup; material scope changes need a revised plan.",
     "Stop after this stage. The durable controller will choose the next step from saved checkpoints. No commit, push, PR publication, merge, deployment, Jira/ADO comments or other external updates are authorized by this wake-up.",
+  ].join("\n\n");
+}
+function automaticPipelinePrompt(row: Pipeline, facts: PipelineInspection, next: PipelineStep): string {
+  const nonCode = row.deliveryKind !== "code";
+  const instruction = next.stage === "plan" ? "Use check-environment and plan-task. Save the readable plan and structured planBrief, then submit-plan under this managed assignment. Do not request or simulate human plan approval. Address concrete previous plan findings, if any; do not implement yet." :
+    next.stage === "plan-review" ? "Independently check the immutable submitted plan, task requirements and repository evidence. Use a fresh plan-checker session with the assigned distinct model. Look for concrete correctness gaps, missing checks, unjustified scope and needless complexity. A sufficient plan should pass: do not invent changes or demand stylistic rewrites. Save planReview with its exact scopeRevision and findings; pass requires no unresolved findings. Ask a specific question for missing authority or material ambiguity." :
+    next.stage === "review" ? nonCode ? "Review the exact saved action/report bundle independently. Examine scope, script behavior, targets, environment, preconditions, reversibility and safe checks. Record artifactReview with the exact bundle revision and concrete findings. Do not execute the proposed external actions. Do not read the other current reviewer's reports before saving your own judgment." : "Use a fresh independent Reviewer session and review-changes with OCR selection/rules plus Gortex repository evidence. Review the exact validated candidate. Save actual findings and complete OCR evidence. Do not read the other current reviewer's reports before saving your own judgment. Do not request a human code-review decision." :
+    next.stage === "validate" ? "Use validate-changes. Run the relevant permitted checks against the exact candidate and save real output, limitations and failures. For scripts/actions, inspect and use safe local checks or dry runs only; external mutations still need final authorization. Do not edit in this stage." :
+    next.stage === "fix" ? "Use fix-findings to repair only substantiated in-scope findings. Preserve all concerns from both reviews while combining exact duplicates. Save a new candidate checkpoint. Both validation and independent reviews must run again after a change." :
+    nonCode ? "Prepare the exact action/report bundle from the checked plan. Save scripts, precise targets and environments, preconditions, expected effects and recovery steps using submit-action-bundle. Do not perform external mutations or production actions. Record preparation evidence." : "Use execute-task to implement the independently checked plan. Inspect and reuse existing work. Save actual implementation evidence for the exact candidate.";
+  const reports = facts.checkpoints.filter(item => next.stage !== "review" || item.stage !== "review").slice(0, 6).map(item => ({ stage: item.stage, verdict: item.verdict, scope: item.scope, summary: item.summary, evidence: item.evidence.map(file => file.path) }));
+  return ["Mission Control — automatic checked workflow", `Task ${row.taskId}; host ${row.remoteServerId}; run ${facts.entry.run?.runId ?? "start the managed run"}; delivery ${row.deliveryKind}.`,
+    `This dispatch authorizes only ${next.stage}: ${next.message}`, instruction,
+    "Use the owning workspace and task-bound Development Flow skills. Preserve user changes. Use Gortex for indexed evidence, follow existing patterns and choose the smallest maintainable change. No speculative abstractions, unrelated cleanup or features outside the acceptance criteria.",
+    `Exact submitted plan: ${facts.planRevision ?? "not submitted"}; plan scope: ${facts.submittedPlan?.scopeRevision ?? "not submitted"}; candidate: ${JSON.stringify(next.stage === "plan-review" ? { head: null, tree: facts.planRevision } : facts.candidate)}.`,
+    `Relevant saved reports: ${JSON.stringify(reports)}`,
+    ...(facts.deliveryFeedback ? [`Explicit final change request ${facts.deliveryFeedback.id}: ${facts.deliveryFeedback.note}\nKeep this work within the existing checked scope. If the request changes scope or authority, save a specific question and stop. New implementation, validation and both reviews must address this request; prior evidence cannot clear it.`] : []),
+    "After plan-review/execute/fix/validate/review, save a unique evidence report and record a checkpoint using this managed assignment. Record pass only for actual verified results; repair means a concrete in-scope defect; blocked means a missing prerequisite, authority or unresolved question. A plan-review checkpoint uses the plan artifact candidate and planReview.scopeRevision.",
+    "Routine plan and code-review decisions are machine evidence, never fabricated human approvals. Ask the user only a concrete unresolved question, blocker or material scope decision. Commit, push, PR publication, tracker updates, merges, deployments and prepared external actions require separate exact final authorization.",
+    "Stop after this assigned stage. The controller will choose the next step from saved evidence; do not launch additional stages yourself.",
   ].join("\n\n");
 }
 export function createPipelineEngine(deps: Deps) {
@@ -84,6 +105,7 @@ export function createPipelineEngine(deps: Deps) {
       if (wakeups >= 24) { await set(row.id, { mode: "blocked", message: "The daily limit of 24 stage dispatches was reached. Inspect progress before resuming." }); continue; }
       const requestId = `mc-pipeline-${randomUUID()}`; const pending = { requestId, fingerprint, stage: next.stage, attemptedAt: new Date(now()).toISOString() };
       let worker: { agentId: string; runId: string } | null = null;
+      let delivery: void | { completed?: boolean; authorized?: boolean };
       const before = await deps.store.read();
       await deps.store.update(state => {
         const current = state.pipelines.find(item => item.id === row.id);
@@ -96,7 +118,7 @@ export function createPipelineEngine(deps: Deps) {
         if (latestState.paused || !latest || !active(latest) || latest.pending?.requestId !== requestId || !permitted(latest, fresh) || pipelineFingerprint(verified, nextPipelineStep(latest, verified)) !== fingerprint) {
           await deps.store.update(state => { const current = state.pipelines.find(item => item.id === row.id); if (current?.pending?.requestId === requestId) current.pending = null; }); continue;
         }
-        if (prepare) await deps.prepare(row.coordinatorId, row.taskId);
+        if (prepare) delivery = await deps.prepare(row.coordinatorId, row.taskId, row.deliveryKind);
         else if (verified.agentPolicy && deps.dispatch && (next.stage !== "review" || missingReviewRole(verified, verified.checkpoints.find(item => item.stage === "validate" && item.verdict === "pass")?.createdAt))) worker = await deps.dispatch(row, verified, fingerprint, requestId);
         else await deps.send(row.coordinatorId, pipelinePrompt(row, verified, next), requestId);
       } catch (error) {
@@ -107,8 +129,11 @@ export function createPipelineEngine(deps: Deps) {
         current.pending = null; current.lastDispatch = fingerprint; current.lastSentAt = new Date(now()).toISOString(); current.date = date; current.wakeups = wakeups + 1;
         if (worker) { current.lastWorker = worker; current.runId = worker.runId; }
         if (next.failureId) { current.repairIds.push(next.failureId); current.repairs++; }
+        if (next.planFailureId) { current.planRepairIds.push(next.planFailureId); current.planRepairs++; }
+        if (delivery?.completed) { current.mode = "done"; current.message = "The reviewed report and final receipt are saved."; }
+        else if (delivery?.authorized) { current.mode = "waiting"; current.message = "Exact action authorization is recorded. Waiting for actual execution results from the existing worker."; }
         current.updatedAt = new Date(now()).toISOString();
-        fleetEvent(state, { coordinatorId: row.coordinatorId, remoteServerId: row.remoteServerId, taskId: row.taskId, kind: "dispatch", message: prepare ? "Draft PR preview prepared. Waiting for exact publication approval." : `Run to draft PR: ${next.stage} stage dispatched.` });
+        fleetEvent(state, { coordinatorId: row.coordinatorId, remoteServerId: row.remoteServerId, taskId: row.taskId, kind: "dispatch", message: prepare ? delivery?.completed ? "Reviewed report completed." : row.deliveryKind === "code" ? "Draft PR preview prepared. Waiting for exact publication approval." : "Reviewed action bundle prepared. Waiting for exact action authorization." : `Managed workflow: ${next.stage} stage dispatched.` });
       });
       dispatched++; busyHosts.add(row.remoteServerId);
     }

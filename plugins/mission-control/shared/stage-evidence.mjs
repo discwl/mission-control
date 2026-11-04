@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export const executionSchema = z.object({
   assignmentId: z.string().uuid(), policyRevision: z.string().min(1),
-  role: z.enum(["planner", "builder", "validator", "reviewer", "reviewer2"]),
+  role: z.enum(["planner", "planReviewer", "builder", "validator", "reviewer", "reviewer2"]),
   profileId: z.string().min(1), profileName: z.string().min(1), provider: z.string().min(1), model: z.string().min(1),
 });
 export const coverageSchema = z.array(z.object({ path: z.string().min(1), status: z.string().min(1), outcome: z.enum(["reviewed", "skipped"]), reason: z.string().default("") })).max(5000);
@@ -11,6 +11,9 @@ export const ocrEvidenceSchema = z.object({
   manifest: z.string().min(1), coverage: coverageSchema, excluded: z.number().int().nonnegative(),
   findings: z.array(reviewFindingSchema).max(50),
 });
+
+export const planReviewEvidenceSchema = z.object({ scopeRevision: z.string().regex(/^[a-f0-9]{64}$/), findings: z.array(reviewFindingSchema).max(50) });
+export const artifactReviewEvidenceSchema = z.object({ revision: z.string().regex(/^[a-f0-9]{64}$/), findings: z.array(reviewFindingSchema).max(50) });
 
 export function verifyCoverage(files, coverage, passing) {
   const key = item => JSON.stringify([item.path, item.status]);
@@ -28,7 +31,7 @@ export function verifyCoverage(files, coverage, passing) {
 // Only exact duplicates collapse. Different explanations/severities remain visible; one model cannot erase another's concern.
 export function combineReviewFindings(reviews) {
   const found = new Map();
-  for (const review of reviews) for (const item of review.ocr?.findings ?? []) {
+  for (const review of reviews) for (const item of review.ocr?.findings ?? review.artifactReview?.findings ?? review.planReview?.findings ?? []) {
     const key = JSON.stringify([item.file, item.title.trim().toLowerCase(), item.detail.trim(), item.severity]);
     const prior = found.get(key);
     const author = { agentId: review.agentId, model: review.execution?.model ?? "unknown" };

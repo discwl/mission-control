@@ -149,6 +149,15 @@ export function registerReview(server: PluginServerContext, vaultRoot: string, o
   server.handle(saveReviewComment, async ({ serverId, workspaceId, ...input }) => { await localOnly(serverId); return { comments: await comments.save(workspaceId, input) }; });
   server.handle(updateReviewComment, async ({ serverId, workspaceId, commentId, action }) => { await localOnly(serverId); return { comments: await comments.update(workspaceId, commentId, action) }; });
   server.handle(sendReviewComments, async ({ serverId, workspaceId, ...input }, { paseo }) => { await localOnly(serverId); return comments.send(workspaceId, input, paseo); });
+  // Final feedback verifies the human's displayed comparison without reusing cached or already-running scans.
+  // The caller owns repository serialization; directorySnapshot itself does not acquire that lock.
+  async function freshSnapshot(paseo: PaseoApi, serverId: string, workspaceId: string) {
+    const stored = await marks.read(workspaceId);
+    const directory = await deps.directory(paseo, serverId, workspaceId);
+    const result = await within(deps.snapshot(directory, stored.from, stored.since), deps.snapshotWaitMs);
+    if (!result.done) throw new Error(reviewScanPendingMessage);
+    return result.value;
+  }
   // Shared with the task launcher so a new worktree's branch point goes through the same writer.
-  return { marks };
+  return { marks, freshSnapshot };
 }
