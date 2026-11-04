@@ -38,8 +38,8 @@ const find = (tree, label) => nodes(tree).find(node => node.props?.accessibility
 const plain = value => JSON.parse(JSON.stringify(value));
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-function namesFixture({ agentId, status = "online", local = "host-a", stale = false, tasks = [], agents } = {}) {
-  const calls = { rename: [], workspace: [], suggestions: [], invalidations: [] };
+function namesFixture({ agentId, status = "online", local = "host-a", stale = false, tasks = [], agents, workspaces } = {}) {
+  const calls = { rename: [], workspace: [], suggestions: [], invalidations: [], models: [] };
   const renameRpc = {};
   let workspaceTitle = "Workspace";
   const client = {
@@ -60,13 +60,27 @@ function namesFixture({ agentId, status = "online", local = "host-a", stale = fa
     "../shared/paseo-metadata": { DELIVERY_TEXT_ROLE: "delivery-text" },
     "../shared/subagents": { groupAgents: agents => agents.map(agent => ({ agent })), flattenAgentTree: node => [{ agent: node.agent, nested: !!node.agent.parentAgentId }] },
     "./name-suggestions": { NAMER_ROLE: "name-helper", SUGGESTION_BATCH: 8, contextAgents: (agents, ids) => agents.filter(agent => ids.has(agent.id)),
-      readUserMessages: async () => ["Implement the agent sidebar"], resolveNamingModel: async () => ({ label: "Configured naming model" }),
-      suggestNames: async (_client, workspaceId, _model, contexts) => { calls.suggestions.push(plain({ workspaceId, contexts })); return new Map(contexts.flatMap(context => [...(context.suggest ? [[context.id, { name: "Better Workspace", reason: "Uses the workspace goal" }]] : []), ...context.agents.filter(agent => agent.suggest).map(agent => [agent.id, { name: `Better ${agent.name}`, reason: "Uses the task's goal" }])])); } },
+      readUserMessages: async () => ["Implement the agent sidebar"], resolveNamingModel: async (_client, workspaceId) => { calls.models.push(workspaceId); return { label: "Configured naming model", provider: `claude/haiku-${workspaceId}` }; },
+      suggestNames: async (_client, workspaceId, _model, contexts) => { calls.suggestions.push(plain({ workspaceId, contexts, model: _model })); return new Map(contexts.flatMap(context => [...(context.suggest ? [[context.id, { name: "Better Workspace", reason: "Uses the workspace goal" }]] : []), ...context.agents.filter(agent => agent.suggest).map(agent => [agent.id, { name: `Better ${agent.name}`, reason: "Uses the task's goal" }])])); } },
   });
   const props = { host: { serverId: "host-a", label: "Personal", status }, taskHostId: local, workspace: { id: "workspace-a", name: "Workspace", projectName: "Project" },
-    agents: agents ?? [{ id: "a", name: "Alpha" }, { id: "b", name: "Beta", parentAgentId: "a" }, { id: "helper", name: "Temporary namer", role: "name-helper" }, { id: "delivery", name: "Temporary delivery", role: "delivery-text" }], colors: {}, agentId };
+    agents: agents ?? [{ id: "a", name: "Alpha" }, { id: "b", name: "Beta", parentAgentId: "a" }, { id: "helper", name: "Temporary namer", role: "name-helper" }, { id: "delivery", name: "Temporary delivery", role: "delivery-text" }], colors: {}, agentId, workspaces };
   return { calls, render: (name = "RenameAgents") => module.render(name, props, true) };
 }
+
+test("bulk naming resolves each batch's model in the workspace where its helper will run", async () => {
+  const workspaces = Array.from({ length: 9 }, (_, index) => ({ id: `workspace-${index}`, name: `Workspace ${index}`, projectName: "Project", agents: [] }));
+  const fixture = namesFixture({ workspaces });
+  find(fixture.render("RenameAll"), "Suggest names for 9 workspaces on Personal").props.onPress();
+  find(fixture.render("RenameAll"), "Suggest all names").props.onPress();
+  await flush();
+  assert.deepEqual(fixture.calls.models, ["workspace-0", "workspace-8"]);
+  assert.deepEqual(fixture.calls.suggestions.map(call => [call.workspaceId, call.model.provider]), [
+    ["workspace-0", "claude/haiku-workspace-0"], ["workspace-8", "claude/haiku-workspace-8"],
+  ]);
+  assert.deepEqual(fixture.calls.rename, []);
+  assert.deepEqual(fixture.calls.workspace, []);
+});
 
 // Daemon and model calls are recording doubles; no existing agent is renamed by these tests.
 test("one-agent rename edits only that agent; Apply and Undo retain exact identity and expected name", async () => {

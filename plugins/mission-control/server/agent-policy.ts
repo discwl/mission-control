@@ -16,17 +16,18 @@ export async function effectiveAgentPolicy(store: FleetStore, paseo: PaseoApi, p
   if (policy) policy.revision = createHash("sha256").update(policy.revision).digest("hex");
   return policy;
 }
-export async function verifyProfileAvailability(paseo: PaseoApi, policy: ResolvedPolicy) {
+export async function verifyProfileAvailability(paseo: PaseoApi, policy: ResolvedPolicy, cwd?: string) {
+  const options = cwd ? { cwd } : undefined;
   const available = await paseo.providers.listAvailable();
   for (const profile of policy.profiles) {
     if (!available.providers.some(entry => entry.provider === profile.provider && entry.available)) throw new Error(`${profile.name}: provider ${profile.provider} is unavailable on this host.`);
-    const catalog = await paseo.providers.listModels(profile.provider);
+    const catalog = await paseo.providers.listModels(profile.provider, options);
     if (catalog.error) throw new Error(`${profile.name}: ${catalog.error}`);
     const model = catalog.models?.find(item => item.id === profile.model);
     if (!model) throw new Error(`${profile.name}: model ${profile.model} is unavailable. Update the native Paseo profile.`);
     if (profile.thinkingOptionId && !model.thinkingOptions?.some(item => item.id === profile.thinkingOptionId)) throw new Error(`${profile.name}: its saved reasoning setting is unavailable for this model.`);
     if (profile.modeId) {
-      const modes = await paseo.providers.listModes(profile.provider);
+      const modes = await paseo.providers.listModes(profile.provider, options);
       if (modes.error || !modes.modes?.some(item => item.id === profile.modeId)) throw new Error(`${profile.name}: its saved permission mode is unavailable.`);
     }
   }

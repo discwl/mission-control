@@ -20,10 +20,19 @@ export function pickSmallModel(catalogs: { provider: string; models: CatalogMode
   return { provider: `${luna.provider}/${luna.id}`, label: `${luna.label}${low ? " (low)" : ""}`, ...(low ? { thinkingOptionId: low.id } : {}) };
 }
 
-export async function resolveSmallModel(paseo: PaseoApi): Promise<SmallModel> {
+async function workspaceDirectory(paseo: PaseoApi, workspaceId: string): Promise<string> {
+  const workspace = paseo.workspaces.ref(workspaceId);
+  const current = await workspace.refresh();
+  const cwd = workspace.directory;
+  if (!current || !cwd) throw new Error("The selected workspace is unavailable. Reopen it before choosing a model.");
+  return cwd;
+}
+
+export async function resolveSmallModel(paseo: PaseoApi, workspaceId?: string): Promise<SmallModel> {
+  const cwd = workspaceId ? await workspaceDirectory(paseo, workspaceId) : undefined;
   const catalogs = await Promise.all(["claude", "codex"].map(async provider => {
     try {
-      const result = await paseo.providers.listModels(provider);
+      const result = await paseo.providers.listModels(provider, cwd ? { cwd } : undefined);
       return { provider, models: result.error ? [] : result.models ?? [] };
     } catch {
       return { provider, models: [] };
@@ -45,9 +54,9 @@ export function extractJson(text: string): unknown {
   return JSON.parse(body.slice(start, end + 1));
 }
 
-async function modeFor(paseo: PaseoApi, provider: string): Promise<string | undefined> {
+async function modeFor(paseo: PaseoApi, provider: string, cwd: string): Promise<string | undefined> {
   try {
-    const ids = new Set((await paseo.providers.listModes(provider.split("/")[0])).modes?.map(mode => mode.id) ?? []);
+    const ids = new Set((await paseo.providers.listModes(provider.split("/")[0], { cwd })).modes?.map(mode => mode.id) ?? []);
     return ["read-only", "default"].find(id => ids.has(id));
   } catch {
     return undefined;
@@ -68,7 +77,8 @@ export type SmallModelRequest = {
 
 /** Runs one short-lived agent in `workspaceId`, returns its final answer's text, then archives it. */
 export async function askSmallModel(paseo: PaseoApi, workspaceId: string, model: SmallModel, request: SmallModelRequest): Promise<string> {
-  const modeId = await modeFor(paseo, model.provider);
+  const cwd = await workspaceDirectory(paseo, workspaceId);
+  const modeId = await modeFor(paseo, model.provider, cwd);
   // Mission Control's own ID, so an agent that Paseo 0.11 and older leave behind when create fails can still be
   // archived. Where there's no crypto.randomUUID (some app runtimes), Paseo picks the ID.
   const agentId = globalThis.crypto?.randomUUID?.();

@@ -30,11 +30,11 @@ export async function launchManagedStage(input: z.infer<typeof launchPipelineSta
   if (!source.folder) throw new Error("A task folder is required.");
   const policy = await effectiveAgentPolicy(store, paseo, source.task.projectId, source.task.taskId, input.row.workflowMode ?? "manual");
   if (!policy || policy.revision !== facts.agentPolicy?.revision) throw new Error("Choose native agent profiles on this host before launching a managed stage.");
-  await verifyProfileAvailability(paseo, policy);
   await requireLaunchParent(input.parent, paseo);
   const workspace = await paseo.workspaces.ref(input.workspaceId).refresh();
   if (!workspace?.workspaceDirectory || workspace.archivingAt || workspace.projectId !== source.task.projectId) throw new Error("Stage workspace is unavailable.");
   const cwd = await realpath(workspace.workspaceDirectory);
+  await verifyProfileAvailability(paseo, policy, cwd);
   const workflowMode = input.row.workflowMode ?? "manual"; const deliveryKind = input.row.deliveryKind ?? "code";
   const identity = facts.entry.run ? { taskId: source.task.taskId, runId: facts.entry.run.runId, serverId: input.serverId, workspaceId: input.workspaceId } : null;
   let submittedPlan = null;

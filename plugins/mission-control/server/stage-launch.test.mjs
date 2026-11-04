@@ -22,21 +22,22 @@ async function fixture(t, automatic = false) {
   const policy = resolveRolePolicy([{ projectId: null, taskId: null, updatedAt: "now", mapping: { planner: "planner", builder: "builder", validator: null, reviewer: "reviewer", reviewer2: "reviewer2", reviewCount: 2 } }], profiles, null, null, automatic ? "automatic" : "manual");
   const facts = { entry: { task, run: { runId, agentId: "old-worker", outcome: "completed" }, decisions: [], questions: [] }, candidate, planRevision, checkpoints: [], agentPolicy: policy, problem: null };
   const row = { workflowMode: automatic ? "automatic" : "manual", deliveryKind: "code", taskId: task.taskId, coordinatorId: "coordinator", remoteServerId: "remote", stage: "execute", repairs: 0, repairIds: [] };
-  const created = []; const sent = []; const calls = [];
+  const created = []; const sent = []; const calls = []; const catalogCalls = [];
   const paseo = { workspaces: { ref: () => ({ refresh: async () => ({ workspaceDirectory: root, projectId: "project" }), agents: { create: async input => { created.push(input); return { send: async (...args) => sent.push(args) }; } } }) } };
   t.mock.method(tasks, "assignedTask", async () => ({ task, folder: root }));
-  t.mock.method(policies, "effectiveAgentPolicy", async () => policy); t.mock.method(policies, "verifyProfileAvailability", async () => {});
+  t.mock.method(policies, "effectiveAgentPolicy", async () => policy); t.mock.method(policies, "verifyProfileAvailability", async (...args) => { catalogCalls.push(args); });
   t.mock.method(parent, "requireLaunchParent", async value => calls.push(value));
   t.mock.method(merge, "reviewCandidate", async () => candidate); t.mock.method(decisions, "profileKitRoot", async () => root); t.mock.method(runs, "taskAgentPrompt", async () => ({ prompt: "Exact task" }));
   t.mock.method(ocr, "executeOcr", async (_cwd, _base, _candidate, assignmentId) => ({ assignmentId, candidate, files: [], excluded: [], previews: [], rules: [], version: "test" }));
   t.mock.method(ocr, "resolveOcrScope", async () => ({ base: candidate.head, rootCommit: null, source: "task", from: null, since: candidate.head }));
   t.mock.method(require("./review-marks.ts"), "createReviewMarkStore", () => ({ read: async () => ({ from: null, since: null, branchBase: null }) }));
   const input = () => ({ serverId: "remote", workspaceId: "work", row, parent: { serverId: "personal", agentId: "coordinator" }, fingerprint: pipelineFingerprint(facts, nextPipelineStep(row, facts)), requestId: `mc-${randomUUID()}` });
-  return { root, runId, facts, row, paseo, input, created, sent, calls };
+  return { root, runId, facts, row, paseo, input, created, sent, calls, catalogCalls };
 }
 test("native stage launch copies the entire selected profile and keeps the original parent, task and run", async t => {
   const f = await fixture(t); const result = await launchManagedStage(f.input(), f.facts, f.paseo, {});
   assert.equal(result.runId, f.runId); assert.equal(f.created.length, 1);
+  assert.equal(f.catalogCalls.length, 1); assert.equal(f.catalogCalls[0][2], f.root);
   assert.deepEqual(f.created[0].config, { provider: "provider/model-1", modeId: "safe", thinkingOptionId: "high", featureValues: { fast: false } });
   assert.deepEqual(f.created[0].parent, { serverId: "personal", agentId: "coordinator" });
   assert.equal(f.created[0].labels["mission-control.task-id"], "task_a");
@@ -123,6 +124,14 @@ for (const kind of ["actions", "report"]) test(`a revised ${kind} plan can repla
   assert.equal(f.created.length, 3); assert.equal(f.sent.length, 3);
 });
 
+test("stage discovery rejects a missing or foreign workspace before consulting provider catalogs", async t => {
+  const f = await fixture(t);
+  for (const workspace of [null, { workspaceDirectory: f.root, projectId: "other" }, { workspaceDirectory: f.root, projectId: "project", archivingAt: "now" }]) {
+    f.paseo.workspaces.ref = () => ({ refresh: async () => workspace });
+    await assert.rejects(launchManagedStage(f.input(), f.facts, f.paseo, {}), /Stage workspace is unavailable/);
+  }
+  assert.equal(f.catalogCalls.length, 0); assert.equal(f.created.length, 0);
+});
 test("failed worker creation cannot leave a new run pointing to a nonexistent worker", async t => {
   const f = await fixture(t); f.facts.entry.run = null; f.facts.planRevision = null;
   f.paseo.workspaces.ref = () => ({ refresh: async () => ({ workspaceDirectory: f.root, projectId: "project" }), agents: { create: async () => { throw new Error("provider unavailable"); } } });

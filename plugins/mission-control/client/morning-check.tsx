@@ -55,10 +55,20 @@ export function MorningCheck({ ownServerId, host, workspace, colors, navigation,
     retry: false,
   });
   const paseo = own && online ? getPaseoClient(host.serverId) : null;
+  const discoveryWorkspace = useQuery({
+    queryKey: ["mission-control", "catalog-workspace", host.serverId, workspace.id],
+    queryFn: async () => {
+      const value = await getPaseoClient(host.serverId).workspaces.ref(workspace.id).refresh();
+      if (!value?.workspaceDirectory || value.archivingAt) throw new Error("The selected workspace is unavailable for model discovery.");
+      return value.workspaceDirectory;
+    },
+    enabled: Boolean(paseo), staleTime: 60_000, retry: false,
+  });
+  const cwd = discoveryWorkspace.data;
   const providers = useQuery({ queryKey: ["mission-control", "morning-providers", host.serverId], queryFn: () => paseo!.providers.listAvailable(), enabled: Boolean(paseo), staleTime: 60_000, retry: false });
   const available = providers.data?.providers.filter(entry => entry.available) ?? [];
   const chosenProvider = available.find(entry => entry.provider === provider)?.provider ?? available[0]?.provider;
-  const models = useQuery({ queryKey: ["mission-control", "morning-models", host.serverId, chosenProvider], queryFn: () => paseo!.providers.listModels(chosenProvider!), enabled: Boolean(paseo && chosenProvider), staleTime: 60_000, retry: false });
+  const models = useQuery({ queryKey: ["mission-control", "morning-models", host.serverId, workspace.id, cwd, chosenProvider], queryFn: () => paseo!.providers.listModels(chosenProvider!, { cwd: cwd! }), enabled: Boolean(paseo && chosenProvider && cwd) && !discoveryWorkspace.isError, staleTime: 60_000, retry: false });
   const choices = models.data?.models ?? [];
   const model = choices.find(entry => entry.isDefault) ?? choices[0];
   const status = query.data;
@@ -67,10 +77,11 @@ export function MorningCheck({ ownServerId, host, workspace, colors, navigation,
   const missing = status?.missing ?? [];
   const picked = selected.filter(identity => missing.some(item => ticketIdentity(item) === identity));
   const button = { minHeight: 44, paddingHorizontal: 12, borderRadius: 7, justifyContent: "center" as const, borderWidth: 1, borderColor: colors.border };
+  const catalogFailure = discoveryWorkspace.error || providers.error || models.error || providers.data?.error || models.data?.error;
   const failure = error ?? (query.error ? String(query.error instanceof Error ? query.error.message : query.error) : null);
 
   async function run() {
-    if (!chosenProvider || !model || busy || launchUnconfirmed || !status || query.isError) return;
+    if (!chosenProvider || !model || !cwd || catalogFailure || models.isFetching || busy || launchUnconfirmed || !status || query.isError) return;
     setBusy("start"); setError(null); setNotice(null);
     try {
       const input = { serverId: ownServerId, workspaceId: workspace.id, provider: `${chosenProvider}/${model.id}`, fixture };
@@ -122,15 +133,15 @@ export function MorningCheck({ ownServerId, host, workspace, colors, navigation,
       <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
         {available.map(entry => <Pressable key={entry.provider} accessibilityRole="button" accessibilityState={{ selected: chosenProvider === entry.provider }} disabled={busy !== null} onPress={() => setProvider(entry.provider)} style={{ ...button, borderColor: chosenProvider === entry.provider ? colors.accent : colors.border }}><Text style={{ color: colors.foreground, fontSize: 12 }}>{entry.provider}</Text></Pressable>)}
         {model ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Model: {model.label} (default)</Text> : null}
-        {providers.isPending || models.isFetching ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Loading models…</Text> : null}
-        {providers.error || models.error || providers.data?.error || models.data?.error ? <Text style={{ color: colors.statusDanger, fontSize: 12 }}>{String(providers.error ?? models.error ?? providers.data?.error ?? models.data?.error)}</Text> : null}
+        {discoveryWorkspace.isPending || providers.isPending || models.isFetching ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Loading models…</Text> : null}
+        {catalogFailure ? <Text style={{ color: colors.statusDanger, fontSize: 12 }}>{String(catalogFailure instanceof Error ? catalogFailure.message : catalogFailure)}</Text> : null}
         {!providers.isPending && !available.length ? <Text style={{ color: colors.statusWarning, fontSize: 12 }}>No available providers. Check this host's Paseo provider settings.</Text> : null}
       </View>
       <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
         <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: fixture }} disabled={busy !== null} onPress={() => setFixture(!fixture)} style={{ minHeight: 44, justifyContent: "center", paddingHorizontal: 4 }}>
           <Text style={{ color: fixture ? colors.accent : colors.foregroundMuted, fontSize: 12 }}>{fixture ? "☑" : "☐"} Use test fixture instead of Jira/Azure DevOps</Text>
         </Pressable>
-        <Pressable accessibilityRole="button" disabled={busy !== null || !model || !status || query.isError || launchUnconfirmed || status?.agent?.busy} onPress={() => void run()} style={{ ...button, backgroundColor: colors.accent, borderColor: colors.accent, opacity: busy !== null || !model || !status || query.isError || launchUnconfirmed || status?.agent?.busy ? 0.5 : 1 }}>
+        <Pressable accessibilityRole="button" disabled={busy !== null || !model || !cwd || Boolean(catalogFailure) || models.isFetching || !status || query.isError || launchUnconfirmed || status?.agent?.busy} onPress={() => void run()} style={{ ...button, backgroundColor: colors.accent, borderColor: colors.accent, opacity: busy !== null || !model || !cwd || Boolean(catalogFailure) || models.isFetching || !status || query.isError || launchUnconfirmed || status?.agent?.busy ? 0.5 : 1 }}>
           <Text style={{ color: colors.accentForeground, fontWeight: "600", fontSize: 13 }}>{busy === "start" ? "Starting…" : "Run Discovery"}</Text>
         </Pressable>
       </View>

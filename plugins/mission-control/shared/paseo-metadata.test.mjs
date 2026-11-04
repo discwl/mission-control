@@ -54,7 +54,7 @@ function fakePaseo(answer, { models = [{ id: "claude-haiku-4-5", label: "Haiku 4
       listModels: async provider => ({ models: provider === "claude" ? models : [] }),
       listModes: async () => ({ modes: [{ id: "default" }, { id: "read-only" }] }),
     },
-    workspaces: { ref: workspaceId => ({ agents: { create: async options => {
+    workspaces: { ref: workspaceId => ({ directory: `C:/work/${workspaceId}`, refresh: async () => ({ id: workspaceId }), agents: { create: async options => {
       seen.workspaceId = workspaceId; seen.created = options;
       if (createFails) throw new Error("Request timed out");
       return { waitForFinish: async () => ({ status, lastMessage: answer, error: null }), timeline: { refetch: async () => ({ entries: [] }) }, archive: async () => { seen.archived = true; } };

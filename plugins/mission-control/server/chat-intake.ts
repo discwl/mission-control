@@ -67,7 +67,11 @@ export async function manageIntakeChat(command: string, context: Context): Promi
       const requested = discover[2] ?? previous;
       const provider = requested ? available.find(p => p.provider === requested.split("/")[0]) : available.length === 1 ? available[0] : undefined;
       if (!provider) return { error: `Choose a provider: ${available.map(p => p.provider).join(", ") || "none available"}. Reply: discover ${workspace.id} using <provider>` };
-      const models = (await api.providers.listModels(provider.provider)).models ?? [];
+      const location = await api.workspaces.ref(workspace.id).refresh();
+      if (!location?.workspaceDirectory || location.archivingAt) return { error: "The selected workspace is unavailable. Refresh its records before starting Discovery." };
+      const catalog = await api.providers.listModels(provider.provider, { cwd: location.workspaceDirectory });
+      if (catalog.error) return { error: `Model discovery failed in the selected workspace: ${catalog.error}` };
+      const models = catalog.models ?? [];
       const modelId = requested?.includes("/") ? requested.slice(requested.indexOf("/") + 1) : undefined;
       const model = modelId ? models.find(m => m.id === modelId) : models.find(m => m.isDefault) ?? models[0];
       return model ? { provider: `${provider.provider}/${model.id}` } : { error: "The selected provider has no matching model. Check its settings or choose another provider." };

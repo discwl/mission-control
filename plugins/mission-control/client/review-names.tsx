@@ -156,14 +156,14 @@ function NamesDialog({ buttonLabel, buttonHint, title, host, taskHostId, workspa
     const current = () => runGeneration === generation.current;
     const reviewed = new Map(rows.map(row => [row.id, row.reviewed]));
     void run("suggest", async paseo => {
-      const model = await resolveNamingModel(paseo);
-      setModelLabel(model.label);
       const batches = batchTargets(targets, opened.current);
       for (const [index, batch] of batches.entries()) {
         if (stop.current) break;
         if (current()) setProgress(targets.length > 1 ? `Suggesting (batch ${index + 1} of ${batches.length})…` : "Reading the chat and suggesting a name…");
         const ids = batch.flatMap(group => [...(group.suggestWorkspace ? [group.workspace.id] : []), ...group.agentIds]);
         try {
+          const model = await resolveNamingModel(paseo, batch[0].workspace.id);
+          if (current()) setModelLabel(model.label);
           const contexts = await Promise.all(batch.map(group => workspaceContext(paseo, group, reviewed)));
           // The short-lived naming agent runs in the batch's first workspace and is archived afterwards.
           const suggestions = await suggestNames(paseo, batch[0].workspace.id, model, contexts);

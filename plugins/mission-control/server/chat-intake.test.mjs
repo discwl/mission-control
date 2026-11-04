@@ -10,7 +10,9 @@ function fixture() {
   const calls = [], now = new Date().toISOString();
   const host = { serverId: "remote", observedAt: now, complete: true, warnings: [], agents: [], tasks: [], stoppedAgentIds: [], workspaces: [{ id: "w1", name: "Main", projectName: "One", branch: null, status: "idle" }, { id: "w2", name: "Main", projectName: "Two", branch: null, status: "idle" }] };
   const status = { report: null, reportError: null, missing: [], imported: [], launch: null, agent: null };
-  const api = { providers: { listAvailable: async () => ({ providers: [{ provider: "codex", available: true }, { provider: "copilot", available: true }] }), listModels: async () => ({ models: [{ id: "model", label: "Model", isDefault: true }] }) }, dispose() {} };
+  const catalogCalls = [], workspaceCalls = [];
+  const locations = { w1: { workspaceDirectory: "C:/remote/one" }, w2: { workspaceDirectory: "C:/remote/two" } };
+  const api = { workspaces: { ref: id => ({ refresh: async () => { workspaceCalls.push(id); return locations[id]; } }) }, providers: { listAvailable: async () => ({ providers: [{ provider: "codex", available: true }, { provider: "copilot", available: true }] }), listModels: async (...args) => { catalogCalls.push(args); return { models: [{ id: "model", label: "Model", isDefault: true }] }; } }, dispose() {} };
   const invoke = async (serverId, method, input) => {
     calls.push({ serverId, method, input });
     if (method === "orchestrator.host.snapshot") return host;
@@ -22,7 +24,7 @@ function fixture() {
   };
   const module = { exports: {} };
   new Function("require", "module", "exports", compile(readFileSync(new URL("./chat-intake.ts", import.meta.url), "utf8")))(name => name === "@getpaseo/client" ? { createPaseoApi: () => api } : name === "./chat-transport" ? { invokeChatHost: invoke, withChatHost: async (server, action) => { assert.equal(server, "remote"); return action({}); } } : require(name), module, module.exports);
-  return { host, status, calls, api, command: (text, overrides) => module.exports.manageIntakeChat(text, { ...context, ...overrides }) };
+  return { host, status, calls, api, locations, catalogCalls, workspaceCalls, command: (text, overrides) => module.exports.manageIntakeChat(text, { ...context, ...overrides }) };
 }
 test("discovery asks for an exact workspace and provider instead of guessing", async () => {
   const f = fixture();
@@ -36,7 +38,26 @@ test("chat Discovery starts on the bound host with explicit workspace/provider a
   assert.match(result.text, /read-only tracker scan/);
   const start = f.calls.at(-1); assert.equal(start.serverId, "remote"); assert.equal(start.method, "morning.start");
   assert.deepEqual(start.input, { serverId: "remote", workspaceId: "w1", provider: "copilot/model", fixture: false });
+  assert.deepEqual(f.workspaceCalls, ["w1"]);
+  assert.deepEqual(f.catalogCalls, [["copilot", { cwd: "C:/remote/one" }]]);
   assert.ok(!f.calls.some(call => /import|capture|queue|pipeline/.test(call.method)));
+});
+test("Discovery follows the selected workspace without falling back to a default catalog", async () => {
+  const f = fixture();
+  await f.command("discover w2 using copilot");
+  assert.deepEqual(f.catalogCalls, [["copilot", { cwd: "C:/remote/two" }]]);
+  f.api.providers.listModels = async (provider, options) => { assert.equal(options.cwd, "C:/remote/one"); return { error: "location activation timed out", models: [{ id: "cached", isDefault: true }] }; };
+  const before = f.calls.filter(call => call.method === "morning.start").length;
+  assert.match((await f.command("discover w1 using copilot")).text, /Model discovery failed in the selected workspace: location activation timed out/);
+  assert.equal(f.calls.filter(call => call.method === "morning.start").length, before);
+});
+test("Discovery refuses a missing or archiving workspace before model discovery", async () => {
+  for (const location of [undefined, {}, { workspaceDirectory: "C:/remote/one", archivingAt: "now" }]) {
+    const f = fixture(); f.locations.w1 = location;
+    assert.match((await f.command("discover w1 using copilot")).text, /selected workspace is unavailable/);
+    assert.equal(f.catalogCalls.length, 0);
+    assert.ok(!f.calls.some(call => call.method === "morning.start"));
+  }
 });
 test("using-provider shorthand works when there is one workspace", async () => {
   const f = fixture(); f.host.workspaces.pop();

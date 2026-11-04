@@ -1,5 +1,5 @@
 import { CompactLink } from "./compact-link";
-import { useHosts, usePaseo, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { getPaseoClient, useHosts, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useRpc } from "./host-rpc";
 import { useQuery } from "@tanstack/react-query";
 import { useRef, useState } from "react";
@@ -20,7 +20,6 @@ const titles: Record<string, string> = { intake: "Intake", plan: "Plan", execute
 export function TaskLauncher({ binding, colors, navigation }: Props) {
   const readStatus = useRpc(getTaskLaunch);
   const dispatch = useRpc(launchTask);
-  const paseo = usePaseo();
   const pending = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,20 +41,30 @@ export function TaskLauncher({ binding, colors, navigation }: Props) {
   const roster = useRoster(binding.serverId, online && Boolean(status?.agent));
   const taskTitles = useTaskTitles(binding.serverId, binding.serverId);
   const parentAgentId = status?.agent && roster.data ? findAgent(roster.data, status.agent.id)?.parentAgentId ?? null : null;
-  const providers = useQuery({ queryKey: ["mission-control", "launch-providers", binding.serverId], queryFn: () => paseo.providers.listAvailable(), enabled: status?.action === "start", staleTime: 60_000, retry: false });
+  const workspace = useQuery({
+    queryKey: ["mission-control", "catalog-workspace", binding.serverId, binding.workspaceId],
+    queryFn: async () => {
+      const value = await getPaseoClient(binding.serverId).workspaces.ref(binding.workspaceId).refresh();
+      if (!value?.workspaceDirectory || value.archivingAt) throw new Error("The task workspace is unavailable for model discovery.");
+      return value.workspaceDirectory;
+    },
+    enabled: online && status?.action === "start", staleTime: 60_000, retry: false,
+  });
+  const cwd = workspace.data;
+  const providers = useQuery({ queryKey: ["mission-control", "launch-providers", binding.serverId], queryFn: () => getPaseoClient(binding.serverId).providers.listAvailable(), enabled: status?.action === "start", staleTime: 60_000, retry: false });
   const available = providers.data?.providers.filter(entry => entry.available) ?? [];
   const chosenProvider = available.find(entry => entry.provider === provider)?.provider ?? available.find(entry => entry.provider === "codex")?.provider ?? available[0]?.provider;
-  const models = useQuery({ queryKey: ["mission-control", "launch-models", binding.serverId, chosenProvider], queryFn: () => paseo.providers.listModels(chosenProvider!), enabled: status?.action === "start" && Boolean(chosenProvider), staleTime: 60_000, retry: false });
+  const models = useQuery({ queryKey: ["mission-control", "launch-models", binding.serverId, binding.workspaceId, cwd, chosenProvider], queryFn: () => getPaseoClient(binding.serverId).providers.listModels(chosenProvider!, { cwd: cwd! }), enabled: status?.action === "start" && Boolean(chosenProvider && cwd) && !workspace.isError, staleTime: 60_000, retry: false });
   const choices = models.data?.models ?? [];
   const chosenModel = choices.find(entry => entry.id === model) ?? choices.find(entry => entry.isDefault) ?? choices[0];
   const efforts = chosenModel?.thinkingOptions ?? [];
   const chosenEffort = efforts.find(entry => entry.id === effort) ?? efforts.find(entry => entry.id === chosenModel?.defaultThinkingOptionId) ?? efforts.find(entry => entry.isDefault);
-  const modes = useQuery({ queryKey: ["mission-control", "launch-modes", binding.serverId, chosenProvider], queryFn: () => paseo.providers.listModes(chosenProvider!), enabled: status?.action === "start" && Boolean(chosenProvider), staleTime: 60_000, retry: false });
+  const modes = useQuery({ queryKey: ["mission-control", "launch-modes", binding.serverId, binding.workspaceId, cwd, chosenProvider], queryFn: () => getPaseoClient(binding.serverId).providers.listModes(chosenProvider!, { cwd: cwd! }), enabled: status?.action === "start" && Boolean(chosenProvider && cwd) && !workspace.isError, staleTime: 60_000, retry: false });
   const permissionModes = modes.data?.modes ?? [];
   const chosenMode = permissionModes.find(entry => entry.id === mode) ?? null;
   const button = { minHeight: 44, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 7, justifyContent: "center" as const, borderWidth: 1, borderColor: colors.border };
   const failure = error || (query.error instanceof Error ? query.error.message : null);
-  const catalogFailure = providers.error || models.error || providers.data?.error || models.data?.error;
+  const catalogFailure = workspace.error || providers.error || models.error || modes.error || providers.data?.error || models.data?.error || modes.data?.error;
   const branch = status?.action === "start" && status.canIsolate && isolate ? status.branch : null;
   const branchOption = branch && branch.options.length > 1 ? branch.options.find(entry => entry.type === branchType) : branch?.options[0];
   const branchProblem = branch ? branch.problem ?? branchOption?.problem ?? (branchOption ? null : "The task's branch name is unknown. Refresh this task.") : null;
@@ -139,7 +148,7 @@ export function TaskLauncher({ binding, colors, navigation }: Props) {
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
           {available.map(entry => <Pressable key={entry.provider} accessibilityRole="button" accessibilityState={{ selected: chosenProvider === entry.provider }} disabled={busy} onPress={() => { setProvider(entry.provider); setModel(null); setEffort(null); setMode(null); setPickingModel(false); }} style={{ ...button, borderColor: chosenProvider === entry.provider ? colors.accent : colors.border }}><Text style={{ color: colors.foreground, fontSize: 12 }}>{entry.provider}</Text></Pressable>)}
         </View>
-        {providers.isPending || models.isFetching ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Loading available models…</Text> : null}
+        {workspace.isPending || providers.isPending || models.isFetching ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Loading available models…</Text> : null}
         {catalogFailure ? <Text style={{ color: colors.statusDanger, fontSize: 12 }}>{catalogFailure instanceof Error ? catalogFailure.message : String(catalogFailure)}</Text> : null}
         {!providers.isPending && !available.length ? <Text style={{ color: colors.statusWarning, fontSize: 12 }}>No available providers. Check this host's Paseo provider settings.</Text> : null}
         {chosenModel ? <Pressable accessibilityRole="button" accessibilityLabel="Choose task agent model" accessibilityState={{ expanded: pickingModel }} disabled={busy} onPress={() => setPickingModel(!pickingModel)} style={button}><Text style={{ color: colors.foreground, fontSize: 13 }}>Model: {chosenModel.label} ▾</Text></Pressable> : null}

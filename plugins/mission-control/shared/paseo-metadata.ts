@@ -187,7 +187,7 @@ export function finishGeneratedBody(body: string, task: FooterTask) {
  * the task's worktree workspace. It is given only the task's title, ticket key, handoff summary and the instructions.
  */
 export async function writeDeliveryText(paseo: PaseoApi, workspaceId: string, request: DeliveryTextRequest, task: FooterTask): Promise<{ model: string; text: DeliveryText }> {
-  const model = await resolveSmallModel(paseo);
+  const model = await resolveSmallModel(paseo, workspaceId);
   const answer = await askSmallModel(paseo, workspaceId, model, {
     title: "Commit and pull request text", role: DELIVERY_TEXT_ROLE, noun: "writing agent", timeoutMs: 90_000,
     systemPrompt: DELIVERY_TEXT_SYSTEM_PROMPT, prompt: buildDeliveryTextPrompt(request), outputSchema: deliveryTextOutputSchema(request),
