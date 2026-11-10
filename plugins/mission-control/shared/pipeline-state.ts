@@ -12,5 +12,8 @@ export const pipelineSchema = z.object({
   lastDispatch: z.string().nullable(), lastSentAt: z.string().nullable(), date: z.string(), wakeups: z.number().int().nonnegative(),
   pending: z.object({ requestId: z.string(), fingerprint: z.string(), stage: pipelineStageSchema, attemptedAt: z.string() }).nullable(),
   lastWorker: z.object({ agentId: z.string(), runId: z.string() }).nullable().default(null),
+  // Set when an existing manual task switched to the automatic workflow: the runner itself records ownership, and these
+  // earlier workers (builder, reviewers, helpers, including archived ones) no longer gate its stages.
+  retiredWorkerIds: z.array(z.string()).optional(),
 });
 export type Pipeline = z.infer<typeof pipelineSchema>;

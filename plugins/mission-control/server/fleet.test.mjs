@@ -8,7 +8,7 @@ import { test } from "node:test";
 const require = createRequire(import.meta.url);
 const ts = require("typescript");
 require.extensions[".ts"] = (module, file) => module._compile(ts.transpileModule(readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, file);
-const { coordinatorCandidates, managedWorkerIds, managedTasks, taskWorkers, taskWorkflow, chooseNextTask, taskFingerprint } = require("../shared/fleet-model.ts");
+const { coordinatorCandidates, managedWorkerIds, managedTasks, taskWorkers, taskWorkflow, chooseNextTask, taskFingerprint, fleetTargets } = require("../shared/fleet-model.ts");
 const { createFleetStore, fleetEvent } = require("./fleet-store.ts");
 const { createFleetSupervisor } = require("./fleet-supervisor.ts");
 const { supervisorEntrySchema } = require("../shared/fleet.ts");
@@ -181,4 +181,9 @@ test("a stopped supervisor never sends and event history is bounded", async t =>
   await f.change(state => { for (let index = 0; index < 600; index++) fleetEvent(state, { coordinatorId: null, remoteServerId: null, taskId: null, kind: "progress", message: String(index) }); });
   const state = await f.store.read(); assert.equal(state.events.length, 500); assert.equal(state.events[0].message, "599");
   assert.notEqual(taskFingerprint(task()), taskFingerprint(task({ run: run() })));
+});
+
+test("All work and Needs you cover bound hosts, or this computer's own work when it coordinates none", () => {
+  assert.deepEqual(fleetTargets([{ serverId: "a", label: "A" }, { serverId: "b", label: "B" }, { serverId: "a", label: "A" }], "coordinator"), [{ serverId: "a", label: "A", own: false }, { serverId: "b", label: "B", own: false }]);
+  assert.deepEqual(fleetTargets([], "standalone"), [{ serverId: "standalone", label: "This computer", own: true }]);
 });

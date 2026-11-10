@@ -26,7 +26,7 @@ export type DecisionActions = {
 };
 type Outcome = "approved" | "changes_requested" | "blocked";
 
-export const outcomeLabel = { approved: "Approved", changes_requested: "Changes requested", blocked: "Blocked", open: "Open" } as const;
+export const outcomeLabel = { approved: "Approved", changes_requested: "Changes requested", blocked: "Blocked", open: "Open", superseded: "Superseded by the automatic workflow (not approved)" } as const;
 
 function severityColor(severity: Finding["severity"], colors: Colors) {
   return severity === "high" ? colors.statusDanger : severity === "medium" ? colors.statusWarning : colors.foregroundMuted;

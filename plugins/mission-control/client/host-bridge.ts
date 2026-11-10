@@ -2,6 +2,8 @@ import type { PluginRpcContract } from "@getpaseo/plugin";
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import * as agentNames from "../shared/agent-names";
 import * as decisions from "../shared/decisions";
+import { readFleet } from "../shared/fleet";
+import { startPipeline } from "../shared/pipeline";
 import { readDecisionPlan } from "../shared/plan-approval";
 import * as launch from "../shared/launch";
 import * as merge from "../shared/merge";
@@ -66,6 +68,11 @@ export function findCopy(serverId: string): { copy: MissionControlCopy } | { mis
   return copy.protocol > BRIDGE_PROTOCOL ? { missing: "newer" } : { copy };
 }
 
+/** Every registered copy that speaks this bridge protocol. */
+export function listCopies(): MissionControlCopy[] {
+  return [...registry().copies.values()].filter(copy => copy.protocol === BRIDGE_PROTOCOL);
+}
+
 export function subscribeCopies(listener: () => void): () => void {
   const target = registry();
   target.listeners.add(listener);
@@ -82,10 +89,11 @@ const isContract = (value: unknown): value is PluginRpcContract => {
     && typeof candidate.input?.parse === "function" && typeof candidate.output?.parse === "function";
 };
 
-// What another host's view may ask this copy for: the Tasks, Docs, Review and Attention views' calls.
-// Setup, tools, settings, updates and cleanup stay with each host's own Mission Control.
+// What another host's view may ask this copy for: the Tasks, Docs, Review and Attention views' calls, plus reading the
+// fleet and starting a task runner, so a host's own Tasks view can start a new task in the automatic workflow through
+// the coordinating computer's orchestrator. Setup, tools, settings, updates and cleanup stay with each host's own copy.
 export const bridgeContracts: ReadonlyMap<string, PluginRpcContract> = new Map(
-  [tasks, taskSummary, runs, launch, decisions, { readDecisionPlan }, questions, merge, pullRequest, paseoMetadata, review, vault, subagents, agentNames]
+  [tasks, taskSummary, runs, launch, decisions, { readDecisionPlan }, questions, merge, pullRequest, paseoMetadata, review, vault, subagents, agentNames, { readFleet, startPipeline }]
     .flatMap(module => Object.values(module).filter(isContract).map(contract => [contract.name, contract] as const)),
 );
 

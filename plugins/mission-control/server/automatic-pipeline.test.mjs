@@ -155,6 +155,40 @@ test("fleet projection shows final authorization, action execution and verified 
   assert.equal(taskWorkflow(projected(), [{ pendingPermissions: 1 }]).stage, "Blocked");
 });
 
+test("a task switched to automatic shows its queued runner, not the old run's waiting decision or retired workers' errors", () => {
+  const { row, facts } = automaticFixture();
+  // The old manual run waits for a decision that the switch retired; an old reviewer errored long ago.
+  const entry = { ...facts.entry, run: { ...facts.entry.run, workflowMode: undefined, outcome: "waiting", nextAction: "Wait for the user's decision on the plan. Do not continue until it arrives." } };
+  const errored = { id: "old-reviewer", status: "error", attentionReason: "error", error: "Usage limit", labels: {}, updatedAt: "2026-11-03T10:00:09.000Z", activityAt: "2026-11-03T10:00:09.000Z", pendingPermissions: 0 };
+  const snapshot = { hosts: [{ serverId: "remote", snapshot: { tasks: [entry] } }], state: { pipelines: [] } };
+  const switched = { ...row, runId: null, stage: "plan", mode: "running", message: "Switched to the automatic workflow.", retiredWorkerIds: ["old-reviewer"] };
+  const before = withPipelineProjection(snapshot, { pipelines: [] }).hosts[0].snapshot.tasks[0];
+  assert.equal(taskWorkflow(before, []).actor, "you", "without a runner the old run still waits for the user");
+  const after = withPipelineProjection(snapshot, { pipelines: [switched] }).hosts[0].snapshot.tasks[0];
+  assert.equal(after.pipeline.runId, entry.run.runId); assert.deepEqual(after.pipeline.retiredWorkerIds, ["old-reviewer"]);
+  const workflow = taskWorkflow(after, [errored]);
+  assert.equal(workflow.stage, "Planning"); assert.equal(workflow.actor, "agent");
+  // A stopped switch no longer speaks for the task.
+  const stopped = withPipelineProjection(snapshot, { pipelines: [{ ...switched, mode: "stopped" }] }).hosts[0].snapshot.tasks[0];
+  assert.equal(stopped.pipeline, undefined);
+  // Once automatic stages have run, a blocker they record shows at once, even while the runner waits for its host.
+  const dispatched = { ...switched, runId: entry.run.runId, stage: "execute", lastSentAt: "2026-11-03T10:30:00.000Z", message: "Implementing" };
+  const blockedEntry = { ...entry, run: { ...entry.run, outcome: "blocked", nextAction: "Needs the staging database password." } };
+  const later = withPipelineProjection({ ...snapshot, hosts: [{ serverId: "remote", snapshot: { tasks: [blockedEntry] } }] }, { pipelines: [dispatched] }).hosts[0].snapshot.tasks[0];
+  assert.equal(later.pipeline.freshSwitch, false);
+  assert.deepEqual([taskWorkflow(later, []).stage, taskWorkflow(later, []).actor], ["Blocked", "you"]);
+});
+
+test("on the task's own host, a run whose latest request was retired by a switch waits for the runner, not for the user", () => {
+  const { facts } = automaticFixture();
+  const retired = { decision: { decisionId: "decision_a", kind: "plan", status: "superseded", runId: facts.entry.run.runId, requestedAt: "2026-11-03T10:00:08.000Z", resume: null } };
+  const entry = { ...facts.entry, run: { ...facts.entry.run, workflowMode: undefined, outcome: "waiting", nextAction: "Wait for the user's decision." }, decisions: [retired] };
+  assert.deepEqual([taskWorkflow(entry, []).stage, taskWorkflow(entry, []).actor], ["Ready", "agent"]);
+  // A real blocker, or an open request, still needs the user.
+  assert.equal(taskWorkflow({ ...entry, run: { ...entry.run, outcome: "blocked" } }, []).actor, "you");
+  assert.equal(taskWorkflow({ ...entry, decisions: [{ decision: { ...retired.decision, status: "open" } }] }, []).actor, "you");
+});
+
 test("failed authorized action execution becomes a visible blocker without resending or repairing", () => {
   const { row, facts } = automaticFixture("actions");
   row.stage = "delivery"; row.mode = "waiting";

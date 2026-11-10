@@ -69,6 +69,14 @@ test("automatic planner submits evidence and a different-model critic reviews th
   assert.equal(f.created.length, 2);
 });
 
+test("a new automatic code task never plans in a shared checkout: without its own worktree the launch refuses before any worker exists", async t => {
+  const f = await fixture(t, true);
+  Object.assign(f.facts, { workflowMode: "automatic", deliveryKind: "code", planRevision: null, candidate: null });
+  f.facts.entry.run = null;
+  await assert.rejects(launchManagedStage(f.input(), f.facts, f.paseo, {}), /no worktree of its own yet/);
+  assert.equal(f.created.length, 0); assert.equal(f.sent.length, 0);
+});
+
 for (const kind of ["actions", "report"]) test(`a revised ${kind} plan can replace an old bundle without allowing stale validation or review`, async t => {
   const f = await fixture(t, true);
   Object.assign(f.facts, { workflowMode: "automatic", deliveryKind: kind, planRevision: null, candidate: null, actionBundle: null });

@@ -335,3 +335,32 @@ test("altered snapshots and stale decision revisions never approve or resume wor
   await assert.rejects(f.store.resolve(f.input, f.paseo), /Saved plan changed/);
   assert.equal(f.sent.length, 0);
 });
+
+test("supersede retires only the listed open requests, records the note, never resumes the worker, and is idempotent", async t => {
+  const { store, sent, runFolder } = await fixture(t, { kind: "plan", findings: [] });
+  const note = "Retired when this task switched to the automatic workflow. Not approved.";
+  await assert.rejects(store.supersede({ serverId: ids.serverId, taskId: ids.taskId, decisionIds: ["decision_dddddddd-dddd-4ddd-dddd-dddddddddddd"], note }), /not a request of this task. Nothing was changed/);
+  const [entry] = await store.supersede({ serverId: ids.serverId, taskId: ids.taskId, decisionIds: [ids.decisionId], note });
+  assert.equal(entry.decision.status, "superseded");
+  assert.equal(entry.decision.note, note);
+  assert.equal(entry.decision.resume, null);
+  assert.ok(entry.decision.resolvedAt);
+  assert.equal(sent.length, 0, "the old worker is not woken");
+  const { open, recent } = await store.list(ids.serverId);
+  assert.equal(open.length, 0);
+  assert.equal(recent[0].decision.status, "superseded");
+  const onDisk = parseRecord(await readFile(join(runFolder, "decisions", `${ids.decisionId}.md`), "utf8")).fields;
+  assert.equal(onDisk.status, "superseded");
+  // A repeat leaves the record as it is; a pending-resume retry never picks it up.
+  const [again] = await store.supersede({ serverId: ids.serverId, taskId: ids.taskId, decisionIds: [ids.decisionId], note: "other" });
+  assert.equal(again.decision.note, note);
+  assert.deepEqual(await store.retryPending(ids.serverId, { agents: { ref: () => { throw new Error("must not contact the worker"); } } }), []);
+});
+
+test("supersede refuses a request that the user already decided, and changes nothing", async t => {
+  const { store, paseo } = await fixture(t, { kind: "plan", findings: [] });
+  const [entry] = (await store.list(ids.serverId)).open;
+  await store.resolve({ ...ids, expectedRevision: entry.revision, outcome: "blocked", note: "Stop.", submitFindingIds: [] }, paseo);
+  await assert.rejects(store.supersede({ serverId: ids.serverId, taskId: ids.taskId, decisionIds: [ids.decisionId], note: "switch" }), /already blocked. Nothing was changed/);
+  assert.equal((await store.list(ids.serverId)).recent[0].decision.status, "blocked");
+});

@@ -168,6 +168,8 @@ function automaticPipelineStep(pipeline: Pipeline, facts: PipelineInspection): P
   const readiness = automaticDeliveryReadiness(facts);
   return step("delivery", readiness.ready ? "ready" : "blocked", readiness.reason);
 }
+/** Automatic code work always happens in the task's own worktree: draft PRs are published from its branch. */
+export const sharedCheckoutMessage = "This task's run works in the shared project checkout, so it can't publish a draft PR from there. Finish it on the old flow, or close it and start a new automatic task.";
 export function nextPipelineStep(pipeline: Pipeline, facts: PipelineInspection): PipelineStep {
   return pipeline.workflowMode === "automatic" ? automaticPipelineStep(pipeline, facts) : manualPipelineStep(pipeline, facts);
 }

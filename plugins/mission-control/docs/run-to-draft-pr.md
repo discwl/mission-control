@@ -35,7 +35,17 @@ Telegram also receives current task decisions, blocking runner messages and read
 
 ## Heartbeat and recovery
 
-The daemon checks every 30 seconds, with at least five minutes between stage dispatches and at most 24 dispatches per runner per UTC day. At most two managed hosts can be active. One live runner owns a coordinator/host at a time. The general queue cannot dispatch competing work for a host owned by a runner. Starting a runner removes that task from the general queue.
+The daemon checks every 30 seconds. A runner's stages are dispatched at least five minutes apart, and at most 24 times per UTC day.
+
+A host can hold several automatic runners, one per task. They form a queue served in the order they were started.
+
+Each host runs one stage at a time. While a coordinator chat or any stage worker on that host is working, nothing else is dispatched there. Hosts run in parallel. A runner that dispatched in the last five minutes lets the next runner on its host go first.
+
+A manual runner drives its coordinator chat, so only one live manual runner may own a coordinator or host at a time. The general queue can't dispatch competing work for a task that a runner owns, and starting a runner removes that task from the general queue.
+
+An automatic code task gets its own worktree and branch before planning, created the way Start creates one. While the worktree is being created the runner shows "Creating the task's worktree". If creation fails, the runner is blocked with the reason, and resuming tries again. An automatic run that already lives in the shared project checkout is blocked, because a draft PR can only be published from the task's own branch.
+
+`automate pipeline <task ID>` switches a task's manual run to automatic checks in one step. The task's open plan and code-review requests are marked superseded, never approved, and no message goes to the old worker. Its earlier workers stop gating new stages, though anything still working in the task's worktree does. A run with your stop or change request, or one in the shared project checkout, can't be switched.
 
 Questions, permissions, worker errors, incomplete host data and manually stopped workers prevent automatic dispatch. The fleet pause and coordinator heartbeat pause also pause future runner stages. Pausing or stopping does not cancel an already running agent turn. Nothing catches up in a burst after downtime.
 

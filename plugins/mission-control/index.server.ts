@@ -20,6 +20,7 @@ import { agentsPanelSettings, claimAgentsPanelWorkspaces, listAgentRuns } from "
 import { getTaskSummary } from "./shared/task-summary";
 import { listTaskRuns, resolveTaskPrompt } from "./shared/runs";
 import { getTaskLaunch, launchTask, checkLaunchParent } from "./shared/launch";
+import { prepareTaskWorktree } from "./shared/pipeline";
 import { probeLaunchParent } from "./server/launch-parent";
 import { createTaskLauncher } from "./server/launch";
 import { projectRoot, registerProjectGit, resolveDefaultBranch } from "./server/project-git";
@@ -28,7 +29,7 @@ import { registerToolsInventory } from "./server/tools-inventory";
 import { ensureStableKit, localSetupHost, registerSetup } from "./server/setup";
 import { createTaskWorktree } from "./server/worktree";
 import { createDecisionStore, profileKitRoot } from "./server/decisions";
-import { listDecisions, readDecisionReview, resendDecision, resolveDecision } from "./shared/decisions";
+import { listDecisions, readDecisionReview, resendDecision, resolveDecision, supersedeDecisions } from "./shared/decisions";
 import { readDecisionPlan } from "./shared/plan-approval";
 import { createQuestionStore } from "./server/questions";
 import { createNeedsYouTimeline } from "./server/needs-you-timeline";
@@ -110,6 +111,8 @@ export default function contribute(context: PluginServerContext) {
   server.handle(getTaskLaunch, (input, { paseo }) => launcher.status(input, paseo));
   server.handle(checkLaunchParent, (input, { paseo }) => probeLaunchParent(input, paseo));
   server.handle(launchTask, (input, { paseo }) => launcher.dispatch(input, paseo));
+  // The automatic runner's first step for a code task: its own worktree, created like Start's.
+  server.handle(prepareTaskWorktree, (input, { paseo }) => launcher.prepareWorktree(input, paseo));
   const decisions = createDecisionStore({ sources: taskSources, kitRoot: source => profileKitRoot(defaultVaultPath, source.task.projectId) });
   // Task-message receipts v4: keep rejected review versions out of approval prompts.
   let deliveringDecisions = false;
@@ -134,6 +137,7 @@ export default function contribute(context: PluginServerContext) {
   server.handle(readDecisionReview, async (input, { paseo }) => decisions.reviewSnapshot(input, paseo, await localServerId()));
   server.handle(resolveDecision, (input, { paseo }) => decisions.resolve(input, paseo));
   server.handle(resendDecision, (input, { paseo }) => decisions.resend(input, paseo));
+  server.handle(supersedeDecisions, async input => ({ superseded: await decisions.supersede(input) }));
   // Questions agents recorded with dev-flow ask, shown in Attention as Waiting for you, and the user's replies.
   const questions = createQuestionStore({ sources: taskSources });
   const stopFleet = registerFleet(server, { decisions: id => decisions.list(id, Infinity), questions: id => questions.list(id) });

@@ -18,7 +18,11 @@ export type FleetAgent = z.infer<typeof fleetAgentSchema>;
 export const fleetTaskSchema = z.object({
   task: taskSchema, run: runSchema.nullable(), decisions: z.array(decisionEntrySchema),
   questions: z.array(questionEntrySchema), problem: z.string().nullable(),
-  pipeline: z.object({ runId: z.string(), workflowMode: z.literal("automatic"), deliveryKind: z.enum(["code", "actions", "report"]), stage: z.string(), mode: z.string(), message: z.string() }).optional(),
+  pipeline: z.object({ runId: z.string(), workflowMode: z.literal("automatic"), deliveryKind: z.enum(["code", "actions", "report"]), stage: z.string(), mode: z.string(), message: z.string(),
+    // A task switched from the manual flow: its earlier workers no longer decide what it is waiting for.
+    retiredWorkerIds: z.array(z.string()).optional(),
+    // Switched and not dispatched yet: the old run's waiting or blocked outcome belongs to the retired manual flow.
+    freshSwitch: z.boolean().optional() }).optional(),
 });
 export type FleetTask = z.infer<typeof fleetTaskSchema>;
 export const fleetHostSchema = z.object({

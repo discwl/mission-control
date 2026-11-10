@@ -1,6 +1,6 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { acknowledgeFleetDispatch, configureSupervisor, fleetSnapshotSchema, pauseFleet, readFleet, readFleetHost, reconcileFleet, setFleetQueue, supervisorEntrySchema, type FleetSnapshot } from "../shared/fleet";
-import { chooseNextTask, coordinatorCandidates, managedTasks, taskFingerprint, withPipelineProjection } from "../shared/fleet-model";
+import { chooseNextTask, coordinatorCandidates, fleetTargets, managedTasks, taskFingerprint, withPipelineProjection } from "../shared/fleet-model";
 import { hideSecrets } from "../shared/secret-mask";
 import { isQuiet } from "../shared/agent-tree";
 import { collectFleetHost, fleetDirectory, toFleetAgent, type FleetHostDeps } from "./fleet-host";
@@ -34,9 +34,9 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
           remoteServerId: binding.serverId, hostLabel: binding.label, agent: toFleetAgent(agent),
           links: await links.list({ serverId, agentId: agent.id, remoteServerId: binding.serverId }) };
       }));
-      const targets = new Map(Object.values(bindings.bindings).map(item => [item.serverId, item.label]));
-      const hosts = await Promise.all([...targets].map(async ([target, label]) => {
-        try { return { serverId: target, label, snapshot: await readRemoteFleet(client, target, { localServerId: serverId, coordinators: coordinators.filter(item => item.remoteServerId === target) }), error: null }; }
+      // A computer that coordinates no other host still shows its own work in All work and Needs you.
+      const hosts = await Promise.all(fleetTargets(Object.values(bindings.bindings), serverId).map(async ({ serverId: target, label, own }) => {
+        try { return { serverId: target, label, snapshot: own ? await collectFleetHost(paseo, serverId, hostDeps) : await readRemoteFleet(client, target, { localServerId: serverId, coordinators: coordinators.filter(item => item.remoteServerId === target) }), error: null }; }
         catch (error) { return { serverId: target, label, snapshot: null, error: hideSecrets(error instanceof Error ? error.message : String(error)).slice(0, 500) }; }
       }));
       const warnings = directory.complete ? [] : ["Coordinator roster is truncated. Automatic dispatch is disabled."];

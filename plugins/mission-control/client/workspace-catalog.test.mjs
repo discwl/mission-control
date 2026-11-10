@@ -7,7 +7,7 @@ const require = createRequire(import.meta.url), ts = require('typescript');
 const jsx = (type, props) => ({ type, props });
 const nodes = value => !value || typeof value !== 'object' ? [] : Array.isArray(value) ? value.flatMap(nodes) : [value, ...nodes(value.props?.children)];
 const text = value => value == null ? '' : typeof value === 'string' ? value : Array.isArray(value) ? value.map(text).join('') : text(value.props?.children);
-function harness(surface, { host = 'remote', workspace = 'w1', cwd = 'C:/work/one', workspaceError = null, resolved = true, archived = false } = {}) {
+function harness(surface, { host = 'remote', workspace = 'w1', cwd = 'C:/work/one', workspaceError = null, resolved = true, archived = false, coordinators = [], lookupError = null } = {}) {
   const queries = [], calls = [], exports = {};
   const api = serverId => ({
     workspaces: { ref: id => ({ refresh: async () => { calls.push({ kind: 'workspace', serverId, id }); return { workspaceDirectory: cwd, archivingAt: archived ? 'now' : null }; } }) },
@@ -25,11 +25,13 @@ function harness(surface, { host = 'remote', workspace = 'w1', cwd = 'C:/work/on
     if (name === './host-rpc') return { useRpc: () => async () => ({}) };
     if (name === '@tanstack/react-query') return { useQueryClient: () => ({ invalidateQueries() {} }), useQuery: query => {
       queries.push(query); const key = query.queryKey[1];
-      const result = { data: undefined, error: null, isError: false, isPending: false, isFetching: false, refetch() {} };
+      const result = { data: undefined, error: null, isError: false, isPending: false, isSuccess: true, isFetching: false, refetch() {} };
       if (key === 'catalog-workspace') return { ...result, data: resolved ? cwd : undefined, error: workspaceError, isError: Boolean(workspaceError), isPending: !resolved && !workspaceError };
       if (key.endsWith('-providers')) return { ...result, data: { providers: [{ provider: 'opencode', available: true }] } };
-      if (key.endsWith('-models')) return { ...result, data: query.enabled ? { models: [{ id: 'JCI/model', label: 'Model', thinkingOptions: [] }] } : undefined };
+      if (key.endsWith('-models')) return { ...result, data: query.enabled ? { models: [{ id: 'acme/model', label: 'Model', thinkingOptions: [] }] } : undefined };
       if (key.endsWith('-modes')) return { ...result, data: { modes: [] } };
+      // This computer's fleet: with no orchestrator managing the host, a new task starts in the manual workflow.
+      if (key === 'launch-fleet') return lookupError ? { ...result, isError: true, isSuccess: false, error: lookupError } : { ...result, data: { fleet: { serverId: 'this-computer', coordinators, state: { revision: 0, paused: false, pipelines: [] } }, copy: null, managed: coordinators.some(item => item.remoteServerId === host) } };
       return { ...result, data: key === 'launch' ? { action: 'start', message: 'Ready', canIsolate: false } : { missing: [] } };
     } };
     if (name === 'react-native') return { Pressable: 'Pressable', ScrollView: 'ScrollView', Text: 'Text', TextInput: 'TextInput', View: 'View' };
@@ -81,3 +83,20 @@ for (const surface of ['task-launcher', 'morning-check']) {
     }
   });
 }
+
+test('task-launcher: when an orchestrator manages the host, a new task offers only the automatic start and skips the model catalog', () => {
+  const h = harness('task-launcher', { coordinators: [{ agentId: 'chat-1', remoteServerId: 'remote', name: 'Remote orchestrator' }] });
+  for (const suffix of ['-providers', '-models', '-modes']) assert.equal(h.query(suffix).enabled, false, `${suffix} is not queried`);
+  assert.equal(h.query('catalog-workspace').enabled, false);
+  const labels = nodes(h.tree).filter(n => n.type === 'Pressable').map(text);
+  assert.ok(labels.includes('Start automatic workflow'));
+  assert.ok(!labels.includes('Start task'), 'no manual start while an orchestrator manages the host');
+});
+
+test('task-launcher: a failed orchestrator lookup offers no start at all, never the manual one', () => {
+  const h = harness('task-launcher', { lookupError: new Error("Couldn't check whether an orchestrator manages this host.") });
+  const labels = nodes(h.tree).filter(n => n.type === 'Pressable').map(text);
+  assert.ok(!labels.includes('Start task') && !labels.includes('Start automatic workflow'));
+  assert.match(text(h.tree), /Couldn't check whether an orchestrator manages this host/);
+  for (const suffix of ['-providers', '-models', '-modes']) assert.equal(h.query(suffix).enabled, false);
+});

@@ -96,7 +96,8 @@ export function registerChatWorkflow(server: PluginServerContext, deps: { decisi
           if (offer.target !== target) throw new Error("This chat's host changed. Show the proposal again.");
           if (offer.kind === "question") {
             const result = await call(replyToQuestion, { ...offer.input, text: consent.note });
-            return { text: `${label} · ${offer.title}\nAnswer ${result.question.status === "answered" ? "recorded" : "submitted"}.\nThe task's overall completion has not changed.`, context: { host: label, title: offer.title, taskId: typeof offer.input.taskId === "string" ? offer.input.taskId : undefined, type: "receipt" as const, status: result.question.status === "answered" ? "Answer recorded" : "Answer submitted", waitingOn: "Worker", observedAt: new Date().toISOString(), evidence: "saved_record" as const } };
+            const saved = result.savedForNextWorker === true;
+            return { text: `${label} · ${offer.title}\n${saved ? "Answer saved for the task's next worker. The agent that asked is no longer available, so nothing was sent." : `Answer ${result.question.status === "answered" ? "recorded" : "submitted"}.`}\nThe task's overall completion has not changed.`, context: { host: label, title: offer.title, taskId: typeof offer.input.taskId === "string" ? offer.input.taskId : undefined, type: "receipt" as const, status: saved ? "Answer saved for the next worker" : result.question.status === "answered" ? "Answer recorded" : "Answer submitted", waitingOn: saved ? "Next worker" : "Worker", observedAt: new Date().toISOString(), evidence: "saved_record" as const } };
           }
           if (offer.kind === "actions") {
             const result = await call(authorizeActionDelivery, { ...offer.input, actorId: owner });

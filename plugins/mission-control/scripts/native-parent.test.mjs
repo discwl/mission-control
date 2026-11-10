@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runCommand } from "./remote.mjs";
 const parent = { serverId: "origin", agentId: "this-chat" };
-const values = { workspace: "task-workspace", task: "task_aaaa", provider: "codex/model", parent };
+// The manual launcher still starts new tasks for this machine's own tasks (--local); another host's new tasks start
+// in the automatic workflow instead (covered in remote.test.mjs).
+const values = { workspace: "task-workspace", task: "task_aaaa", provider: "codex/model", parent, local: true };
 const status = { action: "start", revision: "exact-revision", canIsolate: false, message: "", launch: null, run: null, agent: null, worktree: null };
 function fixture(check = { supported: true }, failure) {
   const dispatched = [], probes = [];

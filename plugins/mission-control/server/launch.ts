@@ -175,6 +175,9 @@ type LauncherDeps = {
 };
 
 const lockKeyFor = (folder: string) => process.platform === "win32" ? folder.toLowerCase() : folder;
+// A worktree preparation that failed after its reply; the next call reports it once, then may try again.
+const worktreeFailures = new Map<string, string>();
+export type WorktreePreparation = { phase: "ready"; workspaceId: string; branch: string } | { phase: "creating" | "failed"; message: string };
 
 export function createTaskLauncher(overrides: Partial<LauncherDeps> = {}) {
   const deps: LauncherDeps = {
@@ -322,5 +325,49 @@ export function createTaskLauncher(overrides: Partial<LauncherDeps> = {}) {
       throw error;
     }
   }
-  return { status, dispatch };
+  /**
+   * Gives a task without a run its own worktree before its first automatic stage, the way Start does: the project's
+   * branch-name template (its feature option when the ticket type is unknown) off the freshly fetched default branch.
+   * Replies within replyWithinMs; a slower creation continues and a later call reports it. It shares the launch lock,
+   * so Start and this never run together for one task, and a repeated call never creates a second worktree.
+   */
+  async function prepareWorktree(input: TaskBinding, paseo: PaseoApi): Promise<WorktreePreparation> {
+    const replyBy = Date.now() + deps.replyWithinMs;
+    const { context, status: current } = await inspect(input, paseo);
+    if (context.task.worktree) return { phase: "ready", workspaceId: context.task.worktree.workspaceId, branch: context.task.worktree.branch };
+    const key = lockKeyFor(context.folder);
+    if (launchLocks.has(key)) return { phase: "creating", message: "The task's worktree is being created." };
+    const earlier = worktreeFailures.get(key);
+    if (earlier) { worktreeFailures.delete(key); return { phase: "failed", message: earlier }; }
+    if (current.action !== "start" || !current.canIsolate) {
+      return { phase: "failed", message: context.run ? "This task already has a run, so it keeps its current workspace." : `This task can't get its own worktree: ${current.action === "start" ? "its project needs a Git repository with at least one commit" : current.message}` };
+    }
+    const preview = current.branch;
+    const option = preview && !preview.problem ? (preview.options.length === 1 ? preview.options[0] : preview.options.find(entry => entry.type === "feature")) : undefined;
+    if (!preview || !option || preview.problem || option.problem) {
+      return { phase: "failed", message: `The task's branch name can't be used: ${preview?.problem ?? option?.problem ?? "no branch name was offered"} Change the branch name template in Settings → Plugins → Mission Control → Branch names.` };
+    }
+    launchLocks.add(key);
+    worktreeFailures.delete(key);
+    let replied = false;
+    const work = (async () => {
+      const created = await deps.createWorktree({ task: context.task, sourceCwd: context.cwd, ...(preview.source === "template" ? { branch: option.name } : {}) }, paseo);
+      await deps.attachWorktree({
+        serverId: input.serverId, taskId: input.taskId,
+        worktree: { workspaceId: created.workspaceId, branch: created.branch, baseCommit: created.baseCommit, sourceWorkspaceId: context.workspaceId, createdAt: new Date().toISOString() },
+      });
+      return created;
+    })().finally(() => { launchLocks.delete(key); launchEnds.count++; });
+    // After the reply, a failure can only reach the runner through the next call.
+    work.catch(error => { if (replied) worktreeFailures.set(key, error instanceof Error ? error.message : String(error)); });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<null>(done => { timer = setTimeout(() => { replied = true; done(null); }, Math.max(0, replyBy - Date.now())); });
+    try {
+      const created = await Promise.race([work, late]);
+      return created ? { phase: "ready", workspaceId: created.workspaceId, branch: created.branch } : { phase: "creating", message: "Creating the task's worktree. A large repository can take a minute." };
+    } catch (error) {
+      return { phase: "failed", message: error instanceof Error ? error.message : String(error) };
+    } finally { clearTimeout(timer); }
+  }
+  return { status, dispatch, prepareWorktree };
 }

@@ -65,7 +65,7 @@ export function createQuestionStore(deps: { sources: (serverId: string) => Promi
     return { questions, taskTitles: Object.fromEntries(sources.map(source => [source.task.taskId, source.task.title])) };
   }
 
-  async function reply(input: Ref & { text: string }, paseo: PaseoApi): Promise<{ question: Question }> {
+  async function reply(input: Ref & { text: string }, paseo: PaseoApi): Promise<{ question: Question; savedForNextWorker?: boolean }> {
     const source = (await deps.sources(input.serverId)).find(item => item.task.taskId === input.taskId);
     if (!source || !source.task.assignments.some(item => item.serverId === input.serverId && item.workspaceId === input.workspaceId)) {
       throw new Error("Task is not assigned to this workspace.");
@@ -76,15 +76,21 @@ export function createQuestionStore(deps: { sources: (serverId: string) => Promi
     const { question, file } = await reload();
     if (question.status !== "open") throw new Error("This question was already answered or replaced. Refresh Attention.");
     if (question.workspaceId !== input.workspaceId) throw new Error("This question belongs to another workspace.");
-    if (question.delivery) throw new Error("A previous reply's delivery is unconfirmed. Open the agent to check; do not resend from this card.");
     let agent;
     try { agent = (await paseo.agents.ref(question.agentId).refresh())?.agent ?? null; }
     catch (error) {
       if (!(error instanceof Error && error.message === `Agent not found: ${question.agentId}`)) throw error;
       agent = null;
     }
+    // The agent that asked is gone, so nothing can be delivered and an old reservation no longer matters. The answer is
+    // saved on the task's run, where `dev-flow context` shows it to the task's next worker.
+    if (!agent || agent.archivedAt) {
+      const saved: Question = { ...question, status: "answered", answeredAt: new Date().toISOString(), answer: input.text.trim(), delivery: null };
+      await atomicWrite(file, markdownRecord(saved, "# Question"));
+      return { question: saved, savedForNextWorker: true };
+    }
+    if (question.delivery) throw new Error("A previous reply's delivery is unconfirmed. Open the agent to check; do not resend from this card.");
     // A closed agent is resting (Paseo 0.14 releases idle agents); the reply resumes it.
-    if (!agent || agent.archivedAt) throw new Error("The agent that asked is unavailable or archived. Resume the task from its handoff.");
     if (agent.workspaceId !== question.workspaceId) throw new Error("The agent that asked moved to another workspace.");
     if (agent.lastUserMessageAt && Date.parse(agent.lastUserMessageAt) > Date.parse(question.askedAt)) throw new Error("This question already received a newer message in the agent chat. Refresh Needs you.");
     if (!isQuiet(agent) || agent.activeTurn || agent.pendingPermissions.length) throw new Error("The agent is busy or waiting on a permission. Open it to reply.");

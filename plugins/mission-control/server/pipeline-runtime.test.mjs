@@ -21,12 +21,12 @@ async function fixture(t) {
   const task = { task: { schemaVersion: 1, taskId, hostId: "remote", projectId: "project", title: "Example", acceptanceCriteria: "Works", status: "ready", source: "manual", assignments: [{ serverId: "remote", workspaceId: "work" }], createdAt: at, updatedAt: at }, run: null, decisions: [], questions: [], problem: null };
   const host = { serverId: "remote", observedAt: at, agents: [], workspaces: [{ id: "work", name: "Work", projectName: "Project", branch: null, labels: [], status: "idle" }], tasks: [task], warnings: [], complete: true, stoppedAgentIds: [] };
   const coordinator = { agentId: "coordinator", workspaceId: "folder", name: "Coordinator", remoteServerId: "remote", hostLabel: "Remote", agent: agent("coordinator", "folder"), links: [] };
-  const snapshot = async () => ({ serverId: "personal", observedAt: at, coordinators: [coordinator], hosts: [{ serverId: "remote", label: "Remote", snapshot: host, error: null }], state: await store.read(), warnings: [] });
+  const others = []; const snapshot = async () => ({ serverId: "personal", observedAt: at, coordinators: [coordinator, ...others], hosts: [{ serverId: "remote", label: "Remote", snapshot: host, error: null }], state: await store.read(), warnings: [] });
   const deps = { decisions: async () => ({ open: [], recent: [] }), questions: async () => ({ questions: [] }), stoppedAgents: async () => [] };
   const engine = registerPipelineRuntime({ handle: (contract, handler) => handlers.set(contract.name, handler) }, store, deps, snapshot, async (...args) => calls.push(args), () => {}); t.after(() => engine.stop());
   t.mock.method(names, "daemonServerId", async () => "personal");
   const invoke = async (method, input) => handlers.get(method)(input);
-  return { file, store, task, host, coordinator, snapshot, calls, invoke };
+  return { file, store, task, host, coordinator, others, snapshot, calls, invoke };
 }
 function bindExistingRun(f, extra = {}) {
   f.task.run = { schemaVersion: 1, runId: "run_11111111-0000-4000-8000-000000000002", taskId, hostId: "remote", projectId: "project", serverId: "remote", workspaceId: "work", stage: "execute", outcome: "completed", createdAt: at, updatedAt: at, nextAction: "Continue the approved scope", agentId: "worker", gitHead: null, gitDirty: false, gitChanges: [], omittedChanges: 0, ...extra };
@@ -40,7 +40,7 @@ test("starting an existing manual run cannot opt it into automatic or change its
   const original = structuredClone(f.task); const remote = [];
   t.mock.method(transport, "invokeChatHost", async (_host, method) => { remote.push(method); throw new Error("No capability lookup expected for refused transition"); });
   const input = { coordinatorId: "coordinator", remoteServerId: "remote", taskId, expectedRevision: 0 };
-  await assert.rejects(f.invoke("pipeline.start", { ...input, workflowMode: "automatic", deliveryKind: "code" }), /explicitly switch to automatic/);
+  await assert.rejects(f.invoke("pipeline.start", { ...input, workflowMode: "automatic", deliveryKind: "code" }), /switch a manual run to automatic checks in one step/);
   await assert.rejects(f.invoke("pipeline.start", { ...input, workflowMode: "automatic", deliveryKind: "actions" }), /existing workflow/);
   assert.equal((await f.store.read()).pipelines.length, 0); assert.deepEqual(f.task, original); assert.equal(remote.length, 0);
   const row = await f.invoke("pipeline.start", input);
@@ -66,7 +66,7 @@ test("chat starts preserve legacy manual runs and only default new tasks to auto
     const requests = [];
     t.mock.method(transport, "invokeChatHost", async (serverId, method, input) => {
       if (method === "orchestrator.fleet.read") return f.snapshot();
-      if (method === "pipeline.capabilities") return { serverId, version: 1, idempotentIntake: true, automaticWorkflow: true, actionBundles: true };
+      if (method === "pipeline.capabilities") return { serverId, version: 1, idempotentIntake: true, automaticWorkflow: true, actionBundles: true, taskWorktrees: true, supersedeDecisions: true };
       requests.push(input); return f.invoke(method, input);
     });
     const response = await managePipelineChat(`run to draft PR ${taskId}`, { local: "personal", target: "remote", agentId: "coordinator", label: "Remote", orchestrator: true });
@@ -129,26 +129,109 @@ test("automatic enrollment requires host support and manual non-code is rejected
   assert.equal((await f.store.read()).pipelines.length, 0);
 });
 
-test("legacy runner remains manual until explicit paused adoption and open decisions are preserved", async t => {
+const fullCapability = serverId => ({ serverId, version: 1, idempotentIntake: true, automaticWorkflow: true, actionBundles: true, taskWorktrees: true, supersedeDecisions: true });
+
+test("legacy runner remains manual until explicit paused adoption, which retires its open requests without approving them", async t => {
   const f = await fixture(t); const input = { coordinatorId: "coordinator", remoteServerId: "remote", taskId, expectedRevision: 0 };
   const row = await f.invoke("pipeline.start", input); assert.equal(row.workflowMode, "manual");
   const adopt = revision => f.invoke("pipeline.control", { id: row.id, action: "adopt-automatic", expectedRevision: revision });
   await assert.rejects(adopt(1), /Pause the manual/);
   await f.invoke("pipeline.control", { id: row.id, action: "pause", expectedRevision: 1 });
-  f.task.decisions = [{ decision: { decisionId: "open-plan", status: "open" } }];
-  await assert.rejects(adopt(2), /Resolve the existing human decisions/); assert.equal(f.task.decisions[0].decision.status, "open");
-  f.task.decisions = []; f.host.agents.push({ ...agent("busy", "work"), pendingPermissions: 1 });
+  f.host.agents.push({ ...agent("busy", "work"), pendingPermissions: 1 });
   await assert.rejects(adopt(2), /current worker or permission/); f.host.agents = [];
-  t.mock.method(transport, "invokeChatHost", async serverId => ({ serverId, version: 1, idempotentIntake: true, automaticWorkflow: true, actionBundles: true }));
+  const remote = [];
+  t.mock.method(transport, "invokeChatHost", async (serverId, method, body) => { remote.push([method, body]); return method === "decisions.supersede" ? { superseded: [] } : { serverId, version: 1, idempotentIntake: true, automaticWorkflow: true, actionBundles: true }; });
+  f.task.decisions = [{ decision: { decisionId: "decision_open-plan", kind: "plan", status: "open", runId: "run-x", requestedAt: at } }];
+  await assert.rejects(adopt(2), /Update this host/, "a host that can't retire requests is refused before anything changes");
+  assert.ok(!remote.some(([method]) => method === "decisions.supersede"));
+  remote.length = 0;
+  t.mock.method(transport, "invokeChatHost", async (serverId, method, body) => { remote.push([method, body]); return method === "decisions.supersede" ? { superseded: [] } : fullCapability(serverId); });
   await assert.rejects(adopt(1), /changed/);
   const automatic = await adopt(2); assert.equal(automatic.workflowMode, "automatic"); assert.equal(automatic.deliveryKind, "code"); assert.equal(automatic.stage, "plan"); assert.equal(automatic.lastDispatch, null);
-  assert.equal(f.calls.length, 0); assert.deepEqual(f.task.decisions, []);
+  const retire = remote.find(([method]) => method === "decisions.supersede");
+  assert.deepEqual(retire[1].decisionIds, ["decision_open-plan"]); assert.equal(retire[1].taskId, taskId); assert.match(retire[1].note, /Not approved/);
+  assert.ok(!remote.some(([method]) => method === "decisions.resolve"), "nothing is approved or resolved"); assert.equal(f.calls.length, 0);
+  assert.deepEqual(automatic.retiredWorkerIds, []);
+});
+
+test("one-step adoption switches a manual run without ever enrolling a manual runner", async t => {
+  const f = await fixture(t); bindExistingRun(f);
+  f.task.task.worktree = { workspaceId: "work", branch: "feature/example", baseCommit: "a".repeat(40), sourceWorkspaceId: "project", createdAt: at };
+  f.task.decisions = [{ decision: { decisionId: "decision_open-review", kind: "review", status: "open", runId: f.task.run.runId, requestedAt: at } }];
+  f.coordinator.links.push({ serverId: "personal", agentId: "coordinator", remoteServerId: "remote", remoteAgentId: "archived-reviewer", remoteWorkspaceId: "work", taskId, linkedAt: at });
+  const remote = [];
+  t.mock.method(transport, "invokeChatHost", async (serverId, method, body) => { remote.push([method, body]); return method === "decisions.supersede" ? { superseded: [] } : fullCapability(serverId); });
+  const input = { coordinatorId: "coordinator", remoteServerId: "remote", taskId, workflowMode: "automatic", deliveryKind: "code", adoptExisting: true };
+  await assert.rejects(f.invoke("pipeline.start", { ...input, expectedRevision: 5 }), /fleet changed/);
+  const row = await f.invoke("pipeline.start", { ...input, expectedRevision: 0 });
+  assert.equal(row.workflowMode, "automatic"); assert.equal(row.mode, "running"); assert.equal(row.runId, null);
+  assert.deepEqual(row.retiredWorkerIds, ["archived-reviewer", "worker"], "earlier workers, including a missing one, no longer gate stages");
+  assert.deepEqual(remote.find(([method]) => method === "decisions.supersede")[1].decisionIds, ["decision_open-review"]);
+  const state = await f.store.read(); assert.equal(state.pipelines.length, 1); assert.equal(state.pipelines[0].workflowMode, "automatic");
+  await assert.rejects(f.invoke("pipeline.start", { ...input, expectedRevision: state.revision }), /already owns this task/);
+});
+
+test("one-step adoption refuses a shared-checkout run, a missing worktree, a human stop and another coordinator's task before retiring anything", async t => {
+  const f = await fixture(t); bindExistingRun(f);
+  const remote = [];
+  t.mock.method(transport, "invokeChatHost", async (serverId, method, body) => { remote.push(method); return fullCapability(serverId); });
+  const input = { coordinatorId: "coordinator", remoteServerId: "remote", taskId, workflowMode: "automatic", deliveryKind: "code", adoptExisting: true, expectedRevision: 0 };
+  await assert.rejects(f.invoke("pipeline.start", input), /shared project checkout/);
+  f.task.task.worktree = { workspaceId: "gone", branch: "feature/example", baseCommit: "a".repeat(40), sourceWorkspaceId: "project", createdAt: at };
+  await assert.rejects(f.invoke("pipeline.start", input), /worktree workspace gone is missing/);
+  f.task.task.worktree = { workspaceId: "work", branch: "feature/example", baseCommit: "a".repeat(40), sourceWorkspaceId: "project", createdAt: at };
+  f.task.decisions = [{ decision: { decisionId: "decision_stop", kind: "plan", status: "blocked", runId: f.task.run.runId, requestedAt: at } }];
+  await assert.rejects(f.invoke("pipeline.start", input), /your stop or change request/);
+  f.task.decisions = [];
+  // Another orchestrator chat on the same host already manages the task through its own link.
+  f.others.push({ ...f.coordinator, agentId: "rival", agent: agent("rival", "folder"), links: [{ serverId: "personal", agentId: "rival", remoteServerId: "remote", remoteAgentId: "worker", remoteWorkspaceId: "work", taskId, linkedAt: at }] });
+  await assert.rejects(f.invoke("pipeline.start", input), /Another coordinator manages this task/);
+  assert.ok(!remote.includes("decisions.supersede"));
+  assert.equal((await f.store.read()).pipelines.length, 0);
+});
+
+test("switching a waiting manual runner pauses it first, then writes against the latest revision after retiring requests", async t => {
+  const f = await fixture(t); const row = await f.invoke("pipeline.start", { coordinatorId: "coordinator", remoteServerId: "remote", taskId, expectedRevision: 0 });
+  await f.store.update(state => { state.pipelines[0].mode = "waiting"; });
+  const before = await f.store.read();
+  const seen = [];
+  t.mock.method(transport, "invokeChatHost", async (serverId, method) => {
+    if (method === "decisions.supersede") {
+      // By the time requests are retired, the runner is paused, so the engine can't serve the manual flow meanwhile.
+      seen.push((await f.store.read()).pipelines[0].mode);
+      // Another fleet write lands between retiring the requests and switching the runner.
+      await f.store.update(state => { state.events = state.events ?? []; });
+      return { superseded: [] };
+    }
+    return fullCapability(serverId);
+  });
+  f.task.decisions = [{ decision: { decisionId: "decision_open", kind: "plan", status: "open", runId: "run-x", requestedAt: at } }];
+  const switched = await f.invoke("pipeline.control", { id: row.id, action: "adopt-automatic", expectedRevision: before.revision });
+  assert.deepEqual(seen, ["paused"]);
+  assert.equal(switched.workflowMode, "automatic"); assert.equal(switched.mode, "running");
+});
+
+test("several automatic runners can queue on one host; a task and a manual runner stay single", async t => {
+  const f = await fixture(t);
+  const second = structuredClone(f.task); second.task.taskId = "task_11111111-0000-4000-8000-000000000009"; second.task.title = "Second"; f.host.tasks.push(second);
+  t.mock.method(transport, "invokeChatHost", async serverId => fullCapability(serverId));
+  const first = await f.invoke("pipeline.start", { coordinatorId: "coordinator", remoteServerId: "remote", taskId, workflowMode: "automatic", deliveryKind: "code", expectedRevision: 0 });
+  const next = await f.invoke("pipeline.start", { coordinatorId: "coordinator", remoteServerId: "remote", taskId: second.task.taskId, workflowMode: "automatic", deliveryKind: "code", expectedRevision: 1 });
+  assert.equal(first.workflowMode, "automatic"); assert.equal(next.workflowMode, "automatic");
+  await assert.rejects(f.invoke("pipeline.start", { coordinatorId: "coordinator", remoteServerId: "remote", taskId, workflowMode: "automatic", deliveryKind: "code", expectedRevision: 2 }), /already owns this task/);
+  const third = structuredClone(f.task); third.task.taskId = "task_11111111-0000-4000-8000-00000000000a"; f.host.tasks.push(third);
+  const manual = await f.invoke("pipeline.start", { coordinatorId: "coordinator", remoteServerId: "remote", taskId: third.task.taskId, expectedRevision: 2 });
+  assert.equal(manual.workflowMode, "manual", "a manual runner may join automatic ones");
+  const fourth = structuredClone(f.task); fourth.task.taskId = "task_11111111-0000-4000-8000-00000000000b"; f.host.tasks.push(fourth);
+  await assert.rejects(f.invoke("pipeline.start", { coordinatorId: "coordinator", remoteServerId: "remote", taskId: fourth.task.taskId, expectedRevision: 3 }), /manual runner already owns/);
+  assert.equal((await f.store.read()).pipelines.length, 3);
 });
 
 test("adoption rejects unresolved current human stops and resets both budgets only on successful opt-in", async t => {
   const f = await fixture(t); const row = await f.invoke("pipeline.start", { coordinatorId: "coordinator", remoteServerId: "remote", taskId, expectedRevision: 0 });
   await f.store.update(state => { Object.assign(state.pipelines[0], { mode: "paused", repairs: 2, repairIds: ["manual-one", "manual-two"], planRepairs: 1, planRepairIds: ["old-plan"] }); });
   f.task.run = { runId: "run-current" };
+  f.task.task.worktree = { workspaceId: "work", branch: "feature/example", baseCommit: "a".repeat(40), sourceWorkspaceId: "project", createdAt: at };
   const adopt = () => f.invoke("pipeline.control", { id: row.id, action: "adopt-automatic", expectedRevision: 2 });
   for (const status of ["changes_requested", "blocked"]) {
     f.task.decisions = [{ decision: { kind: "plan", status, runId: "run-current", requestedAt: "2026-11-03T00:00:01Z" } }];
@@ -156,9 +239,29 @@ test("adoption rejects unresolved current human stops and resets both budgets on
   }
   f.task.decisions.push({ decision: { kind: "plan", status: "approved", runId: "run-current", requestedAt: "2026-11-03T00:00:02Z" } });
   f.task.decisions.push({ decision: { kind: "review", status: "changes_requested", runId: "older-run", requestedAt: "2026-11-03T00:00:03Z" } });
-  t.mock.method(transport, "invokeChatHost", async serverId => ({ serverId, version: 1, idempotentIntake: true, automaticWorkflow: true, actionBundles: true }));
+  t.mock.method(transport, "invokeChatHost", async serverId => fullCapability(serverId));
   const automatic = await adopt(); assert.equal(automatic.repairs, 0); assert.deepEqual(automatic.repairIds, []); assert.equal(automatic.planRepairs, 0); assert.deepEqual(automatic.planRepairIds, []);
   assert.equal(f.task.decisions.length, 3); assert.equal(f.task.decisions[0].decision.status, "blocked", "historical decision remains intact");
+});
+
+test("automate pipeline switches an unenrolled manual run in one step, and points a run-less task to run to draft PR", async t => {
+  const f = await fixture(t);
+  const remote = [];
+  t.mock.method(transport, "invokeChatHost", async (serverId, method, body) => {
+    if (method === "orchestrator.fleet.read") return f.snapshot();
+    if (method === "pipeline.capabilities") return fullCapability(serverId);
+    if (method === "decisions.supersede") { remote.push(body); return { superseded: [] }; }
+    return f.invoke(method, body);
+  });
+  const context = { local: "personal", target: "remote", agentId: "coordinator", label: "Remote", orchestrator: true };
+  const runless = await managePipelineChat(`automate pipeline ${taskId}`, context);
+  assert.match(runless.text, /no run yet\. Use run to draft PR/); assert.equal((await f.store.read()).pipelines.length, 0);
+  bindExistingRun(f); f.task.task.worktree = { workspaceId: "work", branch: "feature/example", baseCommit: "a".repeat(40), sourceWorkspaceId: "project", createdAt: at };
+  // Retiring open requests is covered above; the chat path itself must switch in one step.
+  const switched = await managePipelineChat(`automate pipeline ${taskId}`, context);
+  assert.match(switched.text, /Switched to the automatic workflow/); assert.match(switched.text, /retired without approval/);
+  const [row] = (await f.store.read()).pipelines; assert.equal(row.workflowMode, "automatic"); assert.equal(row.mode, "running");
+  assert.deepEqual(remote, [], "no open requests, so nothing to retire");
 });
 
 test("chat status and controls never select another coordinator or host", async t => {

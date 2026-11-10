@@ -1,16 +1,20 @@
 import { randomUUID } from "node:crypto";
-import type { FleetSnapshot } from "../shared/fleet";
+import type { FleetSnapshot, FleetTask } from "../shared/fleet";
 import type { Pipeline } from "../shared/pipeline-state";
 import { isQuiet } from "../shared/agent-tree";
 import type { PipelineInspection } from "../shared/pipeline";
-import { nextPipelineStep, pipelineFingerprint, missingReviewRole, type PipelineStep } from "../shared/pipeline-model";
+import { nextPipelineStep, pipelineFingerprint, missingReviewRole, sharedCheckoutMessage, type PipelineStep } from "../shared/pipeline-model";
 import { managedTasks, managedWorkerIds, taskWorkers } from "../shared/fleet-model";
 import { fleetEvent, type FleetStore } from "./fleet-store";
 
 type Deps = { store: FleetStore; snapshot(): Promise<FleetSnapshot>; inspect(row: Pipeline, snapshot: FleetSnapshot): Promise<PipelineInspection>;
   dispatch?(row: Pipeline, facts: PipelineInspection, fingerprint: string, requestId: string): Promise<{ agentId: string; runId: string }>;
-  send(id: string, prompt: string, requestId: string): Promise<void>; prepare(id: string, taskId: string, deliveryKind: Pipeline["deliveryKind"]): Promise<void | { completed?: boolean; authorized?: boolean }>; now?: () => number };
+  send(id: string, prompt: string, requestId: string): Promise<void>; prepare(id: string, taskId: string, deliveryKind: Pipeline["deliveryKind"]): Promise<void | { completed?: boolean; authorized?: boolean }>;
+  // Creates the task's own worktree before its first automatic code stage (pipeline.worktree.prepare on its host).
+  prepareWorktree?(row: Pipeline, facts: PipelineInspection): Promise<{ phase: "ready"; workspaceId: string; branch: string } | { phase: "creating" | "failed"; message: string }>; now?: () => number };
 const active = (row: Pipeline) => ["running", "waiting", "ready"].includes(row.mode);
+/** An automatic code task that has no run yet first gets its own worktree; until then nothing runs in its project checkout. */
+const needsWorktree = (row: Pipeline, task: FleetTask | undefined) => row.workflowMode === "automatic" && row.deliveryKind === "code" && !task?.run && !task?.task.worktree;
 export function pipelinePrompt(row: Pipeline, facts: PipelineInspection, next: PipelineStep): string {
   if (row.workflowMode === "automatic") return automaticPipelinePrompt(row, facts, next);
   const readyForHuman = next.stage === "review" && Boolean(facts.agentPolicy) && !missingReviewRole(facts, facts.checkpoints.find(item => item.stage === "validate" && item.verdict === "pass")?.createdAt);
@@ -62,16 +66,21 @@ export function createPipelineEngine(deps: Deps) {
     if (snapshot.state.paused || snapshot.warnings.length || !coordinator || !host?.complete || host.serverId !== row.remoteServerId || host.warnings.length || now() - Date.parse(host.observedAt) > 90_000) return false;
     if (snapshot.state.stoppedAgentIds.includes(coordinator.agentId) || !isQuiet(coordinator.agent) || coordinator.agent.pendingPermissions || coordinator.agent.error || coordinator.agent.archivedAt || (coordinator.agent.attention && coordinator.agent.attentionReason !== "finished")) return false;
     const selected = host.tasks.find(item => item.task.taskId === row.taskId);
-    if (!selected || (selected.run && !managedTasks(snapshot.serverId, coordinator, host).some(item => item.task.taskId === row.taskId))) return false;
+    // A task switched from the manual flow: the runner is the ownership record, and its earlier workers (even archived
+    // or errored ones) no longer gate new stages. Anything running in the task's workspace still does.
+    const adopted = row.workflowMode === "automatic" && row.retiredWorkerIds !== undefined;
+    const retired = new Set(adopted ? row.retiredWorkerIds : []);
+    if (!selected || (selected.run && !adopted && !managedTasks(snapshot.serverId, coordinator, host).some(item => item.task.taskId === row.taskId))) return false;
     const ids = managedWorkerIds(snapshot.serverId, coordinator, host.agents);
     if (host.agents.some(agent => ids.has(agent.id) && ["running", "initializing"].includes(agent.status))) return false;
-    if (coordinator.links.some(link => link.taskId === row.taskId && !host.agents.some(agent => agent.id === link.remoteAgentId))) return false;
-    if (taskWorkers(selected, host, ids, coordinator.links).some(agent => agent.status === "error" || agent.pendingPermissions || agent.error || agent.archivedAt || host.stoppedAgentIds.includes(agent.id) || (agent.attention && agent.attentionReason !== "finished"))) return false;
-    const task = host.tasks.find(item => item.task.taskId === row.taskId);
-    const workspaceId = task?.run?.workspaceId ?? task?.task.worktree?.workspaceId ?? task?.task.assignments.find(item => item.serverId === row.remoteServerId)?.workspaceId;
+    if (coordinator.links.some(link => link.taskId === row.taskId && !retired.has(link.remoteAgentId) && !host.agents.some(agent => agent.id === link.remoteAgentId))) return false;
+    if (taskWorkers(selected, host, ids, coordinator.links).some(agent => !retired.has(agent.id) && (agent.status === "error" || agent.pendingPermissions || agent.error || agent.archivedAt || host.stoppedAgentIds.includes(agent.id) || (agent.attention && agent.attentionReason !== "finished")))) return false;
+    const workspaceId = selected.run?.workspaceId ?? selected.task.worktree?.workspaceId ?? selected.task.assignments.find(item => item.serverId === row.remoteServerId)?.workspaceId;
     const workspace = host.workspaces.find(item => item.id === workspaceId);
-    return !!workspace && !["archiving", "archived", "failed"].includes(workspace.status) && !workspace.labels.some(label => ["paused", "done"].includes(label.toLowerCase())) &&
-      !host.agents.some(agent => agent.workspaceId === workspaceId && (["running", "initializing"].includes(agent.status) || agent.pendingPermissions));
+    if (!workspace || ["archiving", "archived", "failed"].includes(workspace.status) || workspace.labels.some(label => ["paused", "done"].includes(label.toLowerCase()))) return false;
+    // Creating the task's worktree only reads its project checkout, so agents working there don't hold it back.
+    if (needsWorktree(row, selected)) return true;
+    return !host.agents.some(agent => agent.workspaceId === workspaceId && (["running", "initializing"].includes(agent.status) || agent.pendingPermissions));
   }
   async function cycle() {
     const snapshot = await deps.snapshot();
@@ -82,19 +91,31 @@ export function createPipelineEngine(deps: Deps) {
       const ids = managedWorkerIds(snapshot.serverId, coordinator, host.agents);
       return host.agents.some(agent => ids.has(agent.id) && ["running", "initializing"].includes(agent.status));
     }).map(coordinator => coordinator.remoteServerId));
-    let dispatched = 0;
+    // Runners are served in enrollment order. Each host runs one stage at a time; hosts run in parallel.
     for (const initial of snapshot.state.pipelines) {
-      if (stopped || dispatched >= 2) return;
+      if (stopped) return;
       let row = (await deps.store.read()).pipelines.find(item => item.id === initial.id)!;
       if (!row || !active(row) || row.intake?.phase === "pending") continue;
       if (row.pending) { await set(row.id, { mode: "blocked", message: "A dispatch has no confirmed receipt. Inspect its remote stage worker under Reviewers and evidence or native Subagents; legacy messages and draft PR previews go to the coordinator. It will not be replayed." }); continue; }
-      if (busyHosts.size >= 2 || !permitted(row, snapshot)) continue;
+      if (busyHosts.has(row.remoteServerId) || !permitted(row, snapshot)) continue;
       let facts: PipelineInspection;
       try { facts = await deps.inspect(row, snapshot); }
       catch (error) { await set(row.id, { mode: "blocked", message: `Cannot verify stage evidence: ${error instanceof Error ? error.message : String(error)}` }); continue; }
       if (row.runId && row.runId !== facts.entry.run?.runId) { await set(row.id, { mode: "blocked", message: "The task's active run changed. Inspect it and explicitly resume to adopt the current run." }); continue; }
       const next = nextPipelineStep(row, facts); const fingerprint = pipelineFingerprint(facts, next);
       const prepare = next.mode === "ready" && row.lastDispatch !== fingerprint;
+      // Automatic code work happens only in the task's own worktree. Decided here, before any dispatch is reserved.
+      if (row.workflowMode === "automatic" && row.deliveryKind === "code" && !facts.entry.task.worktree && (next.dispatch || prepare)) {
+        if (facts.entry.run) { await set(row.id, { mode: "blocked", message: sharedCheckoutMessage }); continue; }
+        busyHosts.add(row.remoteServerId);
+        if (!deps.prepareWorktree) { await set(row.id, { mode: "blocked", message: "This Mission Control can't create task worktrees. Update it, then resume." }); continue; }
+        try {
+          const result = await deps.prepareWorktree(row, facts);
+          if (result.phase === "failed") await set(row.id, { mode: "blocked", stage: next.stage, message: `The task's own worktree couldn't be created: ${result.message} Resume to try again.` });
+          else await set(row.id, { stage: next.stage, message: result.phase === "ready" ? `The task's worktree is ready on branch ${result.branch}. Planning starts next.` : result.message });
+        } catch (error) { await set(row.id, { mode: "blocked", stage: next.stage, message: `The task's own worktree couldn't be prepared: ${error instanceof Error ? error.message : String(error)} Resume to try again.` }); }
+        continue;
+      }
       if (row.stage !== next.stage || row.mode !== next.mode || row.message !== next.message || row.runId !== (facts.entry.run?.runId ?? null)) await set(row.id, { stage: next.stage, mode: next.mode, message: next.message, runId: facts.entry.run?.runId ?? null });
       if (!next.dispatch && !prepare) continue;
       if (row.lastSentAt && now() - Date.parse(row.lastSentAt) < 5 * 60_000) continue;
@@ -122,6 +143,8 @@ export function createPipelineEngine(deps: Deps) {
         else if (verified.agentPolicy && deps.dispatch && (next.stage !== "review" || missingReviewRole(verified, verified.checkpoints.find(item => item.stage === "validate" && item.verdict === "pass")?.createdAt))) worker = await deps.dispatch(row, verified, fingerprint, requestId);
         else await deps.send(row.coordinatorId, pipelinePrompt(row, verified, next), requestId);
       } catch (error) {
+        // The stage may have started on the host before the error, so nothing else is dispatched there this cycle.
+        busyHosts.add(row.remoteServerId);
         await set(row.id, { mode: "blocked", message: `Dispatch outcome is unconfirmed; it will not be replayed. Check its remote stage worker and coordinator before acknowledging delivery: ${error instanceof Error ? error.message : String(error)}` }); continue;
       }
       await deps.store.update(state => {
@@ -135,7 +158,7 @@ export function createPipelineEngine(deps: Deps) {
         current.updatedAt = new Date(now()).toISOString();
         fleetEvent(state, { coordinatorId: row.coordinatorId, remoteServerId: row.remoteServerId, taskId: row.taskId, kind: "dispatch", message: prepare ? delivery?.completed ? "Reviewed report completed." : row.deliveryKind === "code" ? "Draft PR preview prepared. Waiting for exact publication approval." : "Reviewed action bundle prepared. Waiting for exact action authorization." : `Managed workflow: ${next.stage} stage dispatched.` });
       });
-      dispatched++; busyHosts.add(row.remoteServerId);
+      busyHosts.add(row.remoteServerId);
     }
   }
   return { async tick() { if (running || stopped) return; running = true; try { await cycle(); } finally { running = false; } }, stop() { stopped = true; } };

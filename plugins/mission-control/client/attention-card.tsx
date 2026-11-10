@@ -4,7 +4,7 @@ import { useRpc } from "./host-rpc";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
-import { listWaiting, replyToQuestion, waitingKey } from "../shared/questions";
+import { listWaiting, replyToQuestion, waitingKey, type Question } from "../shared/questions";
 import { conversationSteps, errorCard, latestAgentQuote, questionCard, sendReply, timelineKey, timelineQueryOptions, waitingCardReadsChat, type CardModel, type TaskLine, type TimelineItem, type WaitingCard, type Where } from "./attention-model";
 import { formatDateTime } from "./date-time";
 
@@ -102,6 +102,26 @@ export function CardFooter({ serverId, agentId, openAgent, colors, version, extr
           </Text>) : <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>No messages yet.</Text>}
     </View> : null}
   </View>;
+}
+
+/**
+ * An open question whose worker isn't on screen (archived, gone, or not matched). The host decides: a present worker gets
+ * the answer as usual; when the worker is gone, the answer is saved on the task for its next worker.
+ */
+export function RecordedQuestionReply({ question, colors, onAnswered }: { question: Question; colors: Colors; onAnswered?: () => void }) {
+  const queryClient = useQueryClient();
+  const reply = useRpc(replyToQuestion);
+  const [result, setResult] = useState<string | null>(null);
+  async function send(text: string) {
+    try {
+      const { serverId, workspaceId, taskId, runId, questionId } = question;
+      const answered = await reply({ serverId, workspaceId, taskId, runId, questionId, text });
+      setResult(answered.savedForNextWorker ? "Saved for the task's next worker. The worker that asked is no longer available, so nothing was sent." : "Answer sent to the worker that asked.");
+      onAnswered?.();
+    } finally { void queryClient.invalidateQueries({ queryKey: ["mission-control"] }); }
+  }
+  if (result) return <Text accessibilityRole="alert" style={{ color: colors.foreground, fontSize: 13 }}>{result}</Text>;
+  return <ReplyBox onSend={send} colors={colors} label="Answer this recorded question" placeholder="Your answer, or why it no longer matters" />;
 }
 
 /** A Reply box that sends the text to the agent; the caller decides where it goes. */

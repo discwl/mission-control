@@ -343,5 +343,49 @@ export function createDecisionStore(deps: { sources: (serverId: string) => Promi
     return delivered;
   }
 
-  return { list, plan, reviewSnapshot, resolve, resend, retryPending };
+  /**
+   * Retires a task's open plan/review requests when the user switches it to the automatic workflow. Each request is
+   * marked `superseded` with the note; nothing is approved and nothing is sent to the old worker (no resume).
+   * Every listed request is checked first, so a refusal changes nothing. Already superseded requests are left as they are.
+   */
+  async function supersede(input: { serverId: string; taskId: string; decisionIds: string[]; note: string }): Promise<DecisionEntry[]> {
+    const source = (await deps.sources(input.serverId)).find(item => item.task.taskId === input.taskId);
+    if (!source?.folder) throw new Error("Task not found on this host. Nothing was changed.");
+    const wanted = new Set(input.decisionIds);
+    const found = new Map<string, { runFolder: string; runId: string }>();
+    let runNames: string[] = [];
+    try { runNames = await readdir(join(source.folder, "runs")); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    for (const runId of runNames.filter(name => runIdPattern.test(name))) {
+      const runFolder = await runFolderOf(source, runId);
+      let names: string[];
+      try { names = await readdir(join(runFolder, "decisions")); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+      for (const name of names.filter(value => decisionFilePattern.test(value))) {
+        const id = name.slice(0, -".md".length);
+        if (wanted.has(id)) found.set(id, { runFolder, runId });
+      }
+    }
+    const missing = [...wanted].filter(id => !found.has(id));
+    if (missing.length) throw new Error(`${missing.join(", ")} ${missing.length === 1 ? "is not a request" : "are not requests"} of this task. Nothing was changed.`);
+    for (const [id, { runFolder, runId }] of found) {
+      const { decision } = await load(source, runFolder, runId, `${id}.md`);
+      if (decision.serverId !== input.serverId) throw new Error(`${id} belongs to another host. Nothing was changed.`);
+      if (decision.status !== "open" && decision.status !== "superseded") throw new Error(`${id} was already ${decision.status.replaceAll("_", " ")}. Nothing was changed.`);
+    }
+    const note = input.note.trim();
+    const now = new Date().toISOString();
+    const entries: DecisionEntry[] = [];
+    for (const [id, { runFolder, runId }] of found) {
+      entries.push(await withRunLock(runFolder, async () => {
+        const loaded = await load(source, runFolder, runId, `${id}.md`);
+        if (loaded.decision.status === "open") await writeDecision(loaded, { ...loaded.decision, status: "superseded", resolvedAt: now, note, resume: null });
+        else if (loaded.decision.status !== "superseded") throw new Error(`${id} changed to ${loaded.decision.status.replaceAll("_", " ")} while it was being retired. Refresh before continuing.`);
+        return toEntry(await load(source, runFolder, runId, `${id}.md`));
+      }));
+    }
+    return entries;
+  }
+
+  return { list, plan, reviewSnapshot, resolve, resend, retryPending, supersede };
 }

@@ -1,6 +1,6 @@
 # Automatic task workflow
 
-New tasks started from Mission Control's task runner use automatic plan checking and two independent reviews. The planner still writes a readable, versioned plan; a fresh agent using a different model checks that plan against the task's requirements, existing implementation and scope. A passing check enables implementation without a human plan decision. It is recorded as machine acceptance, never as human approval.
+New tasks use automatic plan checking and two independent reviews whenever an orchestrator chat manages the task's host. This applies however the task starts: a task's **Start automatic workflow** button, an orchestrator's `start` command, the chat command `run to draft PR <task ID>`, or Orchestrator → Run a task. The manual workflow remains only where no orchestrator manages the host, such as the coordinating computer's own tasks. The planner still writes a readable, versioned plan; a fresh agent using a different model checks that plan against the task's requirements, existing implementation and scope. A passing check enables implementation without a human plan decision. It is recorded as machine acceptance, never as human approval.
 
 ```mermaid
 flowchart LR
@@ -13,6 +13,12 @@ flowchart LR
 ```
 
 The checker should accept a sufficient, maintainable plan. Repairs need concrete missing requirements, incorrect assumptions or unnecessary complexity; extra features and speculative abstractions are not a reason to keep iterating. Gortex remains required for indexed repository evidence. Existing patterns, user changes, acceptance criteria and non-goals remain binding.
+
+## Queue and worktrees
+
+Each host keeps a queue of automatic tasks in the order they were started, so start the most urgent work first. Each host runs one stage at a time, and different hosts run in parallel. A task's stages are at least five minutes apart, so another task on the same host can take a free slot in between.
+
+Before planning, a code task gets its own worktree and branch, created the way Start creates one. The branch follows the project's branch-name template, using its feature option when the ticket type is unknown. Its changes never mix with other tasks' work in the project checkout, and its draft PR is published from that branch. If the worktree can't be created, the task is blocked with the reason until you resume it.
 
 ## Reviews and validation
 
@@ -37,6 +43,8 @@ OCR's code-diff coverage applies to code changes. Non-code reviewers inspect the
 
 **Needs you** replaces the old Mission Control v2 preview. It groups questions, work ready to publish, actions ready to execute and problems that need intervention. Older tasks that still require manual approvals are labelled separately. Each task appears once with its host, a plain explanation and a next action. Unavailable or incomplete hosts are visibly unconfirmed, never reported as clear of work.
 
+On the coordinating computer, Needs you and All work cover every host its orchestrator folders bind. On a computer that coordinates no other host, for example a remote host's own Paseo app, they show that computer's own Mission Control work as "This computer".
+
 **All work** keeps four board columns: Up next, Working, Needs you and Done. Planning, plan checks, implementation, validation and independent reviews belong to Working until there is a real question or final decision for you.
 
 **Ready to publish** opens the existing code browser and comment tools. You can inspect changes and save file or line comments before opening the separate publication preview. If fixes are needed, use **Request fixes before continuing**. You can copy open workspace comments into the request, review the wording, then send it. An explicit request blocks publication and returns the task to its remaining repair attempts; it requires fresh implementation, validation and both reviews. Saved draft comments alone do not create a repair request. The request records the exact work, plan and displayed code comparison, so an outdated screen cannot silently request fixes against a different version.
@@ -47,6 +55,20 @@ OCR's code-diff coverage applies to code changes. Non-code reviewers inspect the
 
 Automatic mode uses the host/project/task profile mapping. It requires two different review models even if the saved manual setting requests only one reviewer. Unless a separate plan-check profile is selected, it derives the plan checker from a mapped reviewer with a different model from the planner. Models and reasoning settings are not changed by enabling the workflow.
 
-Existing records without a workflow mode remain manual, retaining their approval history and policy identity. To adopt the automatic flow for an existing task, use **Switch to automatic plan check and two reviews** on an eligible paused or waiting runner. The server requires a complete fresh host view, no active worker or unresolved dispatch and no open human decision; adoption restarts planning and does not manufacture approval of an old plan.
+Existing records without a workflow mode remain manual, retaining their approval history and policy identity. You can switch an existing task to the automatic flow in three ways:
+
+- **Switch to automatic (retires open approvals)** in Orchestrator → Run a task;
+- the chat command `automate pipeline <task ID>`;
+- `start --adopt` from the orchestrator's command line.
+
+The switch is one guarded step. It requires a complete fresh host view and nothing working or waiting for permission on the task.
+
+- The task's open plan and code-review requests are marked **superseded**. They are never approved, and no message goes to the old worker. Each keeps a note saying it was retired by the switch.
+- Planning restarts with a fresh independent plan check, followed by validation and both reviews.
+- The task's earlier workers no longer hold up new stages, even when they are archived or errored. Anything still working in the task's worktree does.
+
+The switch never overrides your own stop or change request. It also refuses a code run that works in the shared project checkout, because a draft PR can only be published from the task's own branch. Finish such tasks on the old flow, or start a new automatic task.
+
+An open question whose worker has since been archived can still be answered. The answer is saved on the task for its next worker, which reads it through `dev-flow context`. To close a question that no longer matters, answer with the reason.
 
 Questions and final authorization remain visible in Mission Control. Host heartbeats and provider permissions retain their current settings. The task runner operates while its host and Paseo are awake; it cannot guarantee progress through disconnections, provider limits or unavailable tooling.

@@ -60,6 +60,61 @@ test("start dispatches with the status's revision and reports the new run", asyn
   assert.deepEqual(result.run, { runId: "run_1", stage: "intake", outcome: "in_progress", nextAction: "Plan", updatedAt: "t" });
 });
 
+function fakeLocal({ coordinators = [{ agentId: "chat-1", remoteServerId: "srv_x" }], tasks = [], revision = 7 } = {}) {
+  const calls = [];
+  const localRpc = async (method, input) => {
+    calls.push([method, input]);
+    if (method === "orchestrator.fleet.read") return { coordinators, state: { revision }, hosts: [{ serverId: "srv_x", snapshot: { tasks } }] };
+    if (method === "pipeline.start") return { id: "row-1", workflowMode: input.workflowMode, deliveryKind: input.deliveryKind, stage: "plan", mode: "running", message: "Enrolled." };
+    if (method === "chat.native-command") return { text: `ran: ${input.text}` };
+    throw new Error(`unexpected local ${method}`);
+  };
+  return { calls, localRpc };
+}
+
+test("start on another host's new task enrolls an automatic runner owned by the originating chat", async () => {
+  const host = fakeHost({ "tasks.launch.status": status() });
+  const local = fakeLocal();
+  const result = await runCommand("start", { workspace: "wks_a", task: "task_1", "orchestrator-agent": "chat-1", kind: "report" }, host.rpc, local.localRpc);
+  assert.deepEqual(local.calls.at(-1), ["pipeline.start", { coordinatorId: "chat-1", remoteServerId: "srv_x", taskId: "task_1", workflowMode: "automatic", deliveryKind: "report", expectedRevision: 7 }]);
+  assert.equal(result.started, true); assert.equal(result.runner.workflow, "automatic"); assert.equal(result.runner.deliverable, "report");
+  assert.ok(!host.calls.some(([method]) => method === "tasks.launch.dispatch"), "the manual launcher is not used for a new task on another host");
+});
+
+test("start of a new task refuses manual launch settings, a missing chat and a chat that doesn't manage the host", async () => {
+  const host = fakeHost({ "tasks.launch.status": status() });
+  for (const flags of [{ provider: "codex/x" }, { thinking: "max" }, { mode: "full-access" }, { branch: "feature/x" }, { "no-isolate": true }]) {
+    await assert.rejects(runCommand("start", { workspace: "wks_a", task: "task_1", "orchestrator-agent": "chat-1", ...flags }, host.rpc, fakeLocal().localRpc), /automatic workflow.*Remove --provider/);
+  }
+  const previous = process.env.PASEO_AGENT_ID; delete process.env.PASEO_AGENT_ID;
+  try { await assert.rejects(runCommand("start", { workspace: "wks_a", task: "task_1" }, host.rpc, fakeLocal().localRpc), /orchestrator chat/); }
+  finally { if (previous !== undefined) process.env.PASEO_AGENT_ID = previous; }
+  await assert.rejects(runCommand("start", { workspace: "wks_a", task: "task_1", "orchestrator-agent": "someone-else" }, host.rpc, fakeLocal().localRpc), /doesn't manage srv_x/);
+  await assert.rejects(runCommand("start", { workspace: "wks_a", task: "task_1", "orchestrator-agent": "chat-1", kind: "patch" }, host.rpc, fakeLocal().localRpc), /--kind/);
+  assert.ok(!host.calls.some(([method]) => method === "tasks.launch.dispatch"));
+});
+
+test("start --adopt switches a manual run in one step with the run's deliverable; a run-less task is refused", async () => {
+  const host = fakeHost({ "tasks.launch.status": status({ action: "resume" }) });
+  const local = fakeLocal({ tasks: [{ task: { taskId: "task_1" }, run: { runId: "run_1", deliveryKind: "actions" } }] });
+  const result = await runCommand("start", { workspace: "wks_a", task: "task_1", adopt: true, "orchestrator-agent": "chat-1" }, host.rpc, local.localRpc);
+  assert.deepEqual(local.calls.at(-1)[1], { coordinatorId: "chat-1", remoteServerId: "srv_x", taskId: "task_1", workflowMode: "automatic", deliveryKind: "actions", expectedRevision: 7, adoptExisting: true });
+  assert.equal(result.switched, true);
+  await assert.rejects(runCommand("start", { workspace: "wks_a", task: "task_1", adopt: true, "orchestrator-agent": "chat-1" }, host.rpc, fakeLocal().localRpc), /no run to switch/);
+  assert.ok(!host.calls.some(([method]) => method === "tasks.launch.dispatch"));
+});
+
+test("runner maps its actions to the orchestrator chat's commands", async () => {
+  const host = fakeHost({});
+  const local = fakeLocal();
+  assert.deepEqual(await runCommand("runner", { task: "task_1", "orchestrator-agent": "chat-1" }, host.rpc, local.localRpc), { text: "ran: pipeline task_1" });
+  for (const [action, text] of [["pause", "pause pipeline"], ["resume", "resume pipeline"], ["stop", "stop pipeline"], ["automate", "automate pipeline"]]) {
+    await runCommand("runner", { task: "task_1", action, "orchestrator-agent": "chat-1" }, host.rpc, local.localRpc);
+    assert.deepEqual(local.calls.at(-1), ["chat.native-command", { agentId: "chat-1", text: `${text} task_1` }]);
+  }
+  await assert.rejects(runCommand("runner", { task: "task_1", action: "approve", "orchestrator-agent": "chat-1" }, host.rpc, local.localRpc), /--action must be/);
+});
+
 test("status exposes the reserved configuration without launching or suggesting a nonexistent worker can be updated", async () => {
   const launch = { launchId: "old", agentId: "reserved", creatingAgent: true, phase: "preparing", provider: "opencode/bedrock/old", modeId: "build", thinkingOptionId: "high", parent: { serverId: "personal", agentId: "coordinator" } };
   const current = status({ action: "recover", launch });

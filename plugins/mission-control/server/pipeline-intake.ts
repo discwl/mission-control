@@ -8,7 +8,7 @@ import { daemonServerId } from "./agent-names";
 import { fleetEvent, type FleetStore } from "./fleet-store";
 
 export function registerPipelineIntake(server: PluginServerContext, store: FleetStore, snapshot: () => Promise<FleetSnapshot>, invalidate: () => void) {
-  server.handle(pipelineCapabilities, async ({ serverId }) => { if (serverId !== await daemonServerId()) throw new Error("Wrong host."); return { serverId, version: 1 as const, idempotentIntake: true as const, automaticWorkflow: true as const, actionBundles: true as const }; });
+  server.handle(pipelineCapabilities, async ({ serverId }) => { if (serverId !== await daemonServerId()) throw new Error("Wrong host."); return { serverId, version: 1 as const, idempotentIntake: true as const, automaticWorkflow: true as const, actionBundles: true as const, taskWorktrees: true as const, supersedeDecisions: true as const }; });
   async function verify(row: Pipeline) {
     if (row.deliveryKind !== "code" && row.workflowMode !== "automatic") throw new Error("Non-code delivery requires the automatic workflow.");
     const current = await snapshot();
@@ -17,7 +17,7 @@ export function registerPipelineIntake(server: PluginServerContext, store: Fleet
     const workspace = host?.workspaces.find(item => item.id === row.intake?.workspaceId);
     if (!host?.complete || host.warnings.length || !workspace || ["archiving", "archived", "failed"].includes(workspace.status)) throw new Error("Choose an available project workspace on a connected, fully updated host.");
     const capability = pipelineCapabilities.output.parse(await invokeChatHost(row.remoteServerId, pipelineCapabilities.name, { serverId: row.remoteServerId }));
-    if (capability.serverId !== row.remoteServerId || !capability.idempotentIntake || row.workflowMode === "automatic" && (!capability.automaticWorkflow || row.deliveryKind !== "code" && !capability.actionBundles)) throw new Error("Update this host's Mission Control before creating this task runner.");
+    if (capability.serverId !== row.remoteServerId || !capability.idempotentIntake || row.workflowMode === "automatic" && (!capability.automaticWorkflow || row.deliveryKind !== "code" && !capability.actionBundles || row.deliveryKind === "code" && !capability.taskWorktrees)) throw new Error("Update this host's Mission Control before creating this task runner.");
   }
   async function finish(row: Pipeline): Promise<Pipeline> {
     if (!row.intake || row.intake.phase !== "pending") return row;
@@ -52,7 +52,8 @@ export function registerPipelineIntake(server: PluginServerContext, store: Fleet
     await verify(row);
     await store.update(current => {
       if (current.paused) throw new Error("Resume fleet wake-ups before starting a task runner.");
-      if (current.pipelines.some(item => !["done", "stopped"].includes(item.mode) && (item.remoteServerId === row.remoteServerId || item.coordinatorId === row.coordinatorId))) throw new Error("A task runner already owns this coordinator or host.");
+      // Automatic runners queue per host. A manual runner drives the coordinator chat, so it stays alone.
+      if (row.workflowMode !== "automatic" && current.pipelines.some(item => !["done", "stopped"].includes(item.mode) && item.workflowMode !== "automatic" && (item.remoteServerId === row.remoteServerId || item.coordinatorId === row.coordinatorId))) throw new Error("A manual task runner already owns this coordinator or host.");
       current.pipelines.push(row); fleetEvent(current, { coordinatorId: row.coordinatorId, remoteServerId: row.remoteServerId, taskId: row.taskId, kind: "settings", message: "New task intake requested. Publishing remains separately gated." });
     }, input.expectedRevision);
     return finish(row);

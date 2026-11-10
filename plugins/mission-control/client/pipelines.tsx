@@ -24,7 +24,9 @@ export function PipelineBoard({ snapshot, coordinators, colors, busy, act, openA
   const coordinator = ordered.find(item => item.agentId === coordinatorId) ?? ordered[0];
   const host = snapshot.hosts.find(item => item.serverId === coordinator?.remoteServerId)?.snapshot;
   const owned = coordinator && host ? new Set(managedTasks(snapshot.serverId, coordinator, host).map(item => item.task.taskId)) : new Set<string>();
-  const candidates = host?.tasks.filter(item => !["closed", "delivered"].includes(item.task.status) && !item.task.pullRequest && (!item.run || owned.has(item.task.taskId)) && item.task.title.toLowerCase().includes(search.toLowerCase())) ?? [];
+  // Another coordinator's tasks stay with it. An unowned older task can still switch to automatic from here.
+  const ownedElsewhere = coordinator && host ? new Set(coordinators.filter(item => item.remoteServerId === coordinator.remoteServerId && item.agentId !== coordinator.agentId).flatMap(item => managedTasks(snapshot.serverId, item, host).map(entry => entry.task.taskId))) : new Set<string>();
+  const candidates = host?.tasks.filter(item => !["closed", "delivered"].includes(item.task.status) && !item.task.pullRequest && (!item.run || owned.has(item.task.taskId) || !ownedElsewhere.has(item.task.taskId)) && item.task.title.toLowerCase().includes(search.toLowerCase())) ?? [];
   const rows = snapshot.state.pipelines.filter(row => coordinators.some(item => item.agentId === row.coordinatorId));
   const card = { backgroundColor: colors.surface1, borderColor: colors.border, borderWidth: 1, borderRadius: 9, padding: 16, gap: 10 };
   const buttonRow = { flexDirection: "row", flexWrap: "wrap", gap: 8 } as const;
@@ -34,7 +36,7 @@ export function PipelineBoard({ snapshot, coordinators, colors, busy, act, openA
       <Text accessibilityRole="header" style={{ color: colors.foreground, fontWeight: "700", fontSize: 20 }}>Run a task</Text>
       <Text style={{ color: colors.foreground }}>A second model checks the plan, then two independent models review the validated result. You answer unresolved questions and authorize the final publication or prepared actions.</Text>
       <Text style={{ color: colors.foregroundMuted }}>Plan → Plan check → Build → Validate → Review A → Review B → Ready for you</Text>
-      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Runs while this computer and Paseo are awake, including weekends. Checks every 30 seconds; stage dispatches at least 5 minutes apart, up to 24 per day. Up to two plan repairs and two implementation repairs. Existing tasks keep their plans, history, workspaces and PRs.</Text>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Runs while this computer and Paseo are awake, including weekends. Tasks wait in their host's queue in the order you start them: each host runs one stage at a time, and hosts run in parallel. Checks every 30 seconds; a task's stages are dispatched at least 5 minutes apart, up to 24 per day. Up to two plan repairs and two implementation repairs. A code task gets its own worktree and branch before planning. Existing tasks keep their plans, history, workspaces and PRs.</Text>
     </View>
     {!rows.length ? <Text style={{ color: colors.foregroundMuted }}>No task runners yet. Start with one task below.</Text> : null}
     {rows.map(row => {
@@ -79,12 +81,23 @@ export function PipelineBoard({ snapshot, coordinators, colors, busy, act, openA
       <PipelineIntakeForm snapshot={snapshot} coordinator={coordinator} colors={colors} busy={busy} act={act} workflowMode={workflowMode} deliveryKind={deliveryKind} />
       {coordinator ? <AgentPolicyEditor key={coordinator.remoteServerId} serverId={coordinator.remoteServerId} label={coordinator.hostLabel} colors={colors} /> : null}
       <TextInput accessibilityLabel="Find a task for Run to draft PR" value={search} onChangeText={setSearch} placeholder="Find an existing task" placeholderTextColor={colors.foregroundMuted} style={{ padding: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 6, color: colors.foreground }} />
-      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>For older work, first use “adopt &lt;task ID&gt;” in this coordinator's chat, or link its worker under Supervisor. Starting an existing run preserves its workflow and deliverable; the choices above apply to tasks without a run. To switch a manual run, enroll it, pause its runner, then choose “Switch to automatic plan check and two reviews”.</Text>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>The choices above apply to tasks without a run. An older task's manual run can switch in one step: “Switch to automatic” retires its open plan or review requests without approving them, then reruns the plan check, validation and both reviews. A run that works in the shared project checkout can't switch; finish it on the old flow or start a new task. Continuing with human approvals needs this coordinator to manage the task (“adopt &lt;task ID&gt;” in its chat).</Text>
       {!host ? <Text style={{ color: colors.statusWarning }}>Connect the selected host to choose a task.</Text> : null}
-      {candidates.slice(0, 12).map(item => <View key={item.task.taskId} style={{ gap: 6, paddingVertical: 8, borderTopColor: colors.border, borderTopWidth: 1 }}>
-        <Text style={{ color: colors.foreground }}>{item.task.title}</Text>
-        <CompactLink label={item.run ? (item.run.workflowMode ?? "manual") === "manual" ? "Continue with human approvals" : "Continue existing automatic workflow" : deliveryKind === "code" ? "Run this task to draft PR" : deliveryKind === "actions" ? "Prepare reviewed actions" : "Prepare reviewed report"} colors={colors} disabled={busy || snapshot.state.paused || !host?.complete || rows.some(row => row.remoteServerId === coordinator?.remoteServerId && !["stopped", "done"].includes(row.mode))} onPress={() => act(item.task.taskId, () => start({ coordinatorId: coordinator!.agentId, remoteServerId: coordinator!.remoteServerId, taskId: item.task.taskId, workflowMode: item.run ? item.run.workflowMode ?? "manual" : workflowMode, deliveryKind: item.run ? item.run.deliveryKind ?? "code" : deliveryKind, expectedRevision: snapshot.state.revision }))} />
-      </View>)}
+      {candidates.slice(0, 12).map(item => {
+        const running = rows.some(row => row.taskId === item.task.taskId && !["stopped", "done"].includes(row.mode));
+        const manualRun = Boolean(item.run) && (item.run!.workflowMode ?? "manual") === "manual";
+        // Automatic runners queue per host; a manual runner drives the coordinator chat, so only one at a time.
+        const manualBusy = rows.some(row => row.remoteServerId === coordinator?.remoteServerId && row.workflowMode !== "automatic" && !["stopped", "done"].includes(row.mode));
+        const blocked = busy || snapshot.state.paused || !host?.complete || running;
+        return <View key={item.task.taskId} style={{ gap: 6, paddingVertical: 8, borderTopColor: colors.border, borderTopWidth: 1 }}>
+          <Text style={{ color: colors.foreground }}>{item.task.title}</Text>
+          <View style={buttonRow}>
+            {manualRun ? <CompactLink label="Switch to automatic (retires open approvals)" colors={colors} disabled={blocked} onPress={() => act(item.task.taskId, () => start({ coordinatorId: coordinator!.agentId, remoteServerId: coordinator!.remoteServerId, taskId: item.task.taskId, workflowMode: "automatic", deliveryKind: item.run!.deliveryKind ?? "code", expectedRevision: snapshot.state.revision, adoptExisting: true }))} /> : null}
+            <CompactLink label={item.run ? manualRun ? "Continue with human approvals" : "Continue existing automatic workflow" : deliveryKind === "code" ? "Run this task to draft PR" : deliveryKind === "actions" ? "Prepare reviewed actions" : "Prepare reviewed report"} colors={colors} disabled={blocked || (manualRun || (!item.run && workflowMode === "manual")) && manualBusy || Boolean(item.run) && !owned.has(item.task.taskId)} onPress={() => act(item.task.taskId, () => start({ coordinatorId: coordinator!.agentId, remoteServerId: coordinator!.remoteServerId, taskId: item.task.taskId, workflowMode: item.run ? item.run.workflowMode ?? "manual" : workflowMode, deliveryKind: item.run ? item.run.deliveryKind ?? "code" : deliveryKind, expectedRevision: snapshot.state.revision }))} />
+          </View>
+          {running ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>This task already has a runner above.</Text> : null}
+        </View>;
+      })}
       {host && !candidates.length ? <Text style={{ color: colors.foregroundMuted }}>No matching tasks. Create the task in Mission Control first, or adopt its existing worker.</Text> : null}
       {candidates.length > 12 ? <Text style={{ color: colors.foregroundMuted }}>Showing 12 of {candidates.length} tasks. Narrow your search.</Text> : null}
     </View>

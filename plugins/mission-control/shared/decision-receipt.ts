@@ -5,10 +5,12 @@ import type { ChatMessageContext } from "./chat-message";
 export function decisionReceipt(entry: DecisionEntry, host: string, records: DecisionEntry[] = []) {
   const d = entry.decision, phase = d.resume?.phase;
   const newer = records.filter(row => row.decision.taskId === d.taskId && row.decision.requestedAt > d.requestedAt).sort((a, b) => b.decision.requestedAt.localeCompare(a.decision.requestedAt))[0];
-  const status = d.status === "approved" ? (d.kind === "plan" ? "Approved plan" : "Accepted code") : d.status === "changes_requested" ? "Changes requested" : "Stop requested";
+  const status = d.status === "approved" ? (d.kind === "plan" ? "Approved plan" : "Accepted code") : d.status === "changes_requested" ? "Changes requested"
+    : d.status === "superseded" ? "Retired when the task switched to the automatic workflow (not approved)" : "Stop requested";
   const delivery = phase === "sent" ? "Sent to worker" : phase === "sending" ? "Delivery unconfirmed" : phase === "pending" ? "Saved; waiting for worker" : "Saved; delivery not requested";
   const waitingOn = newer ? (newer.decision.status === "open" ? "You — a newer request is waiting" : "The newer saved decision") : phase === "sent" ? "Worker" : phase === "pending" ? "Worker availability" : "Delivery inspection";
   const nextStep = newer ? `Open the latest ${newer.decision.kind} for this task. This receipt records only your earlier choice; it does not approve the newer request`
+    : d.status === "superseded" ? "The automatic workflow replaces this request with a fresh independent plan check, validation and two reviews"
     : phase === "sending" ? "Inspect the worker before retrying; this request is not automatically resent"
     : phase === "pending" ? "Delivery requires an idle worker and passing saved-version checks; no repeat approval is needed"
     : d.status === "changes_requested" ? (d.kind === "plan" ? "Worker revises the plan for fresh approval" : "Worker addresses your note, then validates and gets a fresh review")

@@ -54,11 +54,12 @@ export const listWaiting = defineRpc({
   output: z.object({ questions: z.array(questionEntrySchema), taskTitles: z.record(z.string(), z.string()) }),
 });
 
-// Sends the user's reply to the question's agent on this host, then records it as the answer.
+// Sends the user's reply to the question's agent on this host, then records it as the answer. When that agent is
+// archived or gone, the answer is only saved (savedForNextWorker) for the task's next worker to read.
 export const replyToQuestion = defineRpc({
   name: "attention.questions.reply",
   input: questionRefSchema.extend({ text: z.string().trim().min(1).max(questionLimits.answer) }),
-  output: z.object({ question: questionSchema }),
+  output: z.object({ question: questionSchema, savedForNextWorker: z.boolean().optional() }),
 });
 
 export const waitingKey = (serverId: string) => ["mission-control", "waiting", serverId] as const;

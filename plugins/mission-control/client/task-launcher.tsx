@@ -1,6 +1,10 @@
 import { CompactLink } from "./compact-link";
-import { getPaseoClient, useHosts, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { getPaseoClient, useHosts, useRpc as useLocalRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { useRpc } from "./host-rpc";
+import { readFleet } from "../shared/fleet";
+import { startPipeline } from "../shared/pipeline";
+import { findCoordinatingFleet } from "./coordinating-fleet";
+import { listCopies } from "./host-bridge";
 import { useQuery } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
@@ -36,6 +40,24 @@ export function TaskLauncher({ binding, colors, navigation }: Props) {
   const [modelSearch, setModelSearch] = useState("");
   const query = useQuery({ queryKey: ["mission-control", "launch", binding.serverId, binding.workspaceId, binding.taskId], queryFn: () => readStatus(binding), refetchInterval: busy ? false : 5_000, retry: false });
   const status = query.data;
+  // A new task on a host that an orchestrator chat manages starts in the automatic workflow, through the task runner of
+  // the Mission Control copy that owns that orchestrator. This view may be drawn by the task's own host, so the lookup
+  // also asks the app's other copies (the bridge). The manual Start stays only where no orchestrator manages the host.
+  const readLocalFleet = useLocalRpc(readFleet);
+  const startRunner = useLocalRpc(startPipeline);
+  const fleet = useQuery({ queryKey: ["mission-control", "launch-fleet", binding.serverId], queryFn: () => findCoordinatingFleet(binding.serverId, () => readLocalFleet({}), listCopies()),
+    enabled: status?.action === "start", staleTime: 15_000, refetchInterval: 15_000, retry: false });
+  const coordinators = fleet.data?.managed ? fleet.data.fleet.coordinators.filter(item => item.remoteServerId === binding.serverId) : [];
+  const runner = fleet.data?.fleet.state.pipelines.find(row => row.remoteServerId === binding.serverId && row.taskId === binding.taskId && !["stopped", "done"].includes(row.mode));
+  const automaticStart = status?.action === "start" && fleet.isSuccess && (coordinators.length > 0 || Boolean(runner));
+  const checkingStart = status?.action === "start" && fleet.isPending;
+  // A failed lookup offers no start at all; it never falls back to the manual workflow.
+  const lookupFailure = status?.action === "start" && fleet.isError ? (fleet.error instanceof Error ? fleet.error.message : String(fleet.error)) : null;
+  // The manual launcher's model and permission pickers load only when this task really starts manually.
+  const manualStart = status?.action === "start" && fleet.isSuccess && !automaticStart;
+  const [deliveryKind, setDeliveryKind] = useState<"code" | "actions" | "report">("code");
+  const [coordinatorId, setCoordinatorId] = useState<string | null>(null);
+  const coordinator = coordinators.find(item => item.agentId === coordinatorId) ?? coordinators[0];
   // A task agent that another agent started says whose it is.
   const online = useHosts().some(candidate => candidate.serverId === binding.serverId && candidate.status === "online");
   const roster = useRoster(binding.serverId, online && Boolean(status?.agent));
@@ -48,18 +70,18 @@ export function TaskLauncher({ binding, colors, navigation }: Props) {
       if (!value?.workspaceDirectory || value.archivingAt) throw new Error("The task workspace is unavailable for model discovery.");
       return value.workspaceDirectory;
     },
-    enabled: online && status?.action === "start", staleTime: 60_000, retry: false,
+    enabled: online && manualStart, staleTime: 60_000, retry: false,
   });
   const cwd = workspace.data;
-  const providers = useQuery({ queryKey: ["mission-control", "launch-providers", binding.serverId], queryFn: () => getPaseoClient(binding.serverId).providers.listAvailable(), enabled: status?.action === "start", staleTime: 60_000, retry: false });
+  const providers = useQuery({ queryKey: ["mission-control", "launch-providers", binding.serverId], queryFn: () => getPaseoClient(binding.serverId).providers.listAvailable(), enabled: manualStart, staleTime: 60_000, retry: false });
   const available = providers.data?.providers.filter(entry => entry.available) ?? [];
   const chosenProvider = available.find(entry => entry.provider === provider)?.provider ?? available.find(entry => entry.provider === "codex")?.provider ?? available[0]?.provider;
-  const models = useQuery({ queryKey: ["mission-control", "launch-models", binding.serverId, binding.workspaceId, cwd, chosenProvider], queryFn: () => getPaseoClient(binding.serverId).providers.listModels(chosenProvider!, { cwd: cwd! }), enabled: status?.action === "start" && Boolean(chosenProvider && cwd) && !workspace.isError, staleTime: 60_000, retry: false });
+  const models = useQuery({ queryKey: ["mission-control", "launch-models", binding.serverId, binding.workspaceId, cwd, chosenProvider], queryFn: () => getPaseoClient(binding.serverId).providers.listModels(chosenProvider!, { cwd: cwd! }), enabled: manualStart && Boolean(chosenProvider && cwd) && !workspace.isError, staleTime: 60_000, retry: false });
   const choices = models.data?.models ?? [];
   const chosenModel = choices.find(entry => entry.id === model) ?? choices.find(entry => entry.isDefault) ?? choices[0];
   const efforts = chosenModel?.thinkingOptions ?? [];
   const chosenEffort = efforts.find(entry => entry.id === effort) ?? efforts.find(entry => entry.id === chosenModel?.defaultThinkingOptionId) ?? efforts.find(entry => entry.isDefault);
-  const modes = useQuery({ queryKey: ["mission-control", "launch-modes", binding.serverId, binding.workspaceId, cwd, chosenProvider], queryFn: () => getPaseoClient(binding.serverId).providers.listModes(chosenProvider!, { cwd: cwd! }), enabled: status?.action === "start" && Boolean(chosenProvider && cwd) && !workspace.isError, staleTime: 60_000, retry: false });
+  const modes = useQuery({ queryKey: ["mission-control", "launch-modes", binding.serverId, binding.workspaceId, cwd, chosenProvider], queryFn: () => getPaseoClient(binding.serverId).providers.listModes(chosenProvider!, { cwd: cwd! }), enabled: manualStart && Boolean(chosenProvider && cwd) && !workspace.isError, staleTime: 60_000, retry: false });
   const permissionModes = modes.data?.modes ?? [];
   const chosenMode = permissionModes.find(entry => entry.id === mode) ?? null;
   const button = { minHeight: 44, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 7, justifyContent: "center" as const, borderWidth: 1, borderColor: colors.border };
@@ -68,6 +90,17 @@ export function TaskLauncher({ binding, colors, navigation }: Props) {
   const branch = status?.action === "start" && status.canIsolate && isolate ? status.branch : null;
   const branchOption = branch && branch.options.length > 1 ? branch.options.find(entry => entry.type === branchType) : branch?.options[0];
   const branchProblem = branch ? branch.problem ?? branchOption?.problem ?? (branchOption ? null : "The task's branch name is unknown. Refresh this task.") : null;
+  async function startAutomatic() {
+    if (!coordinator || !fleet.data || pending.current) return;
+    pending.current = true; setBusy(true); setError(null);
+    try {
+      const input = { coordinatorId: coordinator.agentId, remoteServerId: binding.serverId, taskId: binding.taskId, workflowMode: "automatic" as const, deliveryKind, expectedRevision: fleet.data.fleet.state.revision };
+      // The runner belongs to the copy whose orchestrator manages this host: this one, or the coordinating computer's.
+      if (fleet.data.copy) await fleet.data.copy.rpc(startPipeline.name, input);
+      else await startRunner(input);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { pending.current = false; setBusy(false); void fleet.refetch(); void query.refetch(); }
+  }
 
   async function launch() {
     if (!status || pending.current || query.isError) return;
@@ -127,7 +160,26 @@ export function TaskLauncher({ binding, colors, navigation }: Props) {
       </View> : null}
       {parentAgentId && roster.data ? <SubagentContextLink parentAgentId={parentAgentId} roster={roster.data} taskTitles={taskTitles} colors={colors} canNavigate={Boolean(navigation)}
         openAgent={agentId => { try { const target = { serverId: binding.serverId, agentId, focusHost: true }; navigation?.openAgent(target); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } }} /> : null}
-      {status.action === "start" ? <View style={{ gap: 9 }}>
+      {checkingStart ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Checking how this task starts…</Text> : null}
+      {lookupFailure ? <Text accessibilityRole="alert" style={{ color: colors.statusDanger, fontSize: 12, lineHeight: 17 }}>{lookupFailure}</Text> : null}
+      {automaticStart ? <View style={{ gap: 9 }}>
+        <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}>Automatic workflow</Text>
+        {runner ? <>
+          <Text style={{ color: colors.foreground, fontSize: 13 }}>Started · {runner.stage} · {runner.mode}</Text>
+          <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>{runner.message}</Text>
+          <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>Follow it in Orchestrator → Run a task. Questions and the final publishing decision come to you there and in Needs you.</Text>
+        </> : <>
+          <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>Plan → independent plan check by a second model → build → validation → two independent reviews → your final authorization. A code task first gets its own worktree and branch. The host's phase profiles choose the models; tasks wait in the host's queue in the order they start.</Text>
+          {coordinators.length > 1 ? <ChoiceRow label="Orchestrator" choices={coordinators.map(item => ({ id: item.agentId, label: item.name.length > 40 ? `${item.name.slice(0, 40)}…` : item.name }))} selected={coordinator?.agentId ?? null} onSelect={setCoordinatorId} disabled={busy} colors={colors} button={button} /> : null}
+          <ChoiceRow label="Deliverable" choices={[{ id: "code", label: "Code and draft PR" }, { id: "actions", label: "Scripts or actions" }, { id: "report", label: "Read-only report" }]} selected={deliveryKind} onSelect={id => setDeliveryKind(id === "actions" ? "actions" : id === "report" ? "report" : "code")} disabled={busy} colors={colors} button={button} />
+          <Pressable accessibilityRole="button" disabled={busy || query.isError || !coordinator || fleet.data?.fleet.state.paused} onPress={() => void startAutomatic()} style={{ ...button, alignSelf: "flex-start", backgroundColor: colors.accent, opacity: busy || query.isError || !coordinator || fleet.data?.fleet.state.paused ? 0.5 : 1 }}>
+            <Text style={{ color: colors.accentForeground, fontWeight: "600" }}>{busy ? "Starting…" : "Start automatic workflow"}</Text>
+          </Pressable>
+          {fleet.data?.fleet.state.paused ? <Text style={{ color: colors.statusWarning, fontSize: 12 }}>Fleet wake-ups are paused. Resume them in Orchestrator before starting.</Text> : null}
+        </>}
+      </View> : null}
+      {manualStart ? <View style={{ gap: 9 }}>
+        <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>No orchestrator in this Paseo app manages this host, so this task starts in the manual workflow: you approve its plan and code review. If an orchestrator on your coordinating computer manages this host, start the task there (Mission Control or the orchestrator's chat) to use the automatic workflow.</Text>
         {status.canIsolate ? <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: isolate }} accessibilityLabel="Work in its own worktree" disabled={busy} onPress={() => setIsolate(!isolate)}
           style={{ flexDirection: "row", alignItems: "flex-start", gap: 9, minHeight: 44, paddingVertical: 4 }}>
           <View style={{ width: 18, height: 18, marginTop: 2, borderRadius: 4, borderWidth: 1, borderColor: isolate ? colors.accent : colors.border, backgroundColor: isolate ? colors.accent : "transparent", alignItems: "center", justifyContent: "center" }}>
@@ -162,7 +214,7 @@ export function TaskLauncher({ binding, colors, navigation }: Props) {
         {permissionModes.length ? <ChoiceRow label="Permissions" hint={chosenMode ? chosenMode.description : "Provider default unless you pick one."} choices={permissionModes.map(entry => ({ ...entry, warn: entry.colorTier === "dangerous" }))} selected={chosenMode?.id ?? null} onSelect={id => setMode(id === chosenMode?.id ? null : id)} disabled={busy} colors={colors} button={button} /> : null}
       </View> : null}
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-        {["start", "resume", "recover"].includes(status.action) ? <Pressable accessibilityRole="button" disabled={busy || query.isError || (status.action === "start" && (!chosenModel || Boolean(catalogFailure) || models.isFetching || Boolean(branchProblem)))} onPress={() => void launch()} style={{ ...button, backgroundColor: colors.accent, opacity: busy || query.isError || (status.action === "start" && (!chosenModel || Boolean(catalogFailure) || models.isFetching || Boolean(branchProblem))) ? 0.5 : 1 }}><Text style={{ color: colors.accentForeground, fontWeight: "600" }}>{busy ? "Starting…" : status.action === "start" ? "Start task" : status.action === "resume" ? "Resume task" : "Continue launch"}</Text></Pressable> : null}
+        {["resume", "recover"].includes(status.action) || manualStart ? <Pressable accessibilityRole="button" disabled={busy || query.isError || (status.action === "start" && (!chosenModel || Boolean(catalogFailure) || models.isFetching || Boolean(branchProblem)))} onPress={() => void launch()} style={{ ...button, backgroundColor: colors.accent, opacity: busy || query.isError || (status.action === "start" && (!chosenModel || Boolean(catalogFailure) || models.isFetching || Boolean(branchProblem))) ? 0.5 : 1 }}><Text style={{ color: colors.accentForeground, fontWeight: "600" }}>{busy ? "Starting…" : status.action === "start" ? "Start task" : status.action === "resume" ? "Resume task" : "Continue launch"}</Text></Pressable> : null}
         {(status.agent || status.launch) && navigation ? <CompactLink colors={colors} label={status.agent ? `Open workflow agent: ${status.agent.name}` : "Open launch agent"} accessibilityRole="button" onPress={openAgent} /> : null}
       </View>
       {status.launch ? <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{status.launch.phase === "sent" ? "Prompt accepted" : status.launch.phase === "sending" ? "Delivery unconfirmed" : "Preparing launch"} · {formatDateTime(status.launch.updatedAt)}</Text> : null}

@@ -66,7 +66,8 @@ export const decisionSchema = z.object({
   workspaceId: z.string().min(1),
   agentId: z.string().nullable(),
   kind: z.enum(["plan", "review"]),
-  status: z.enum(["open", "approved", "changes_requested", "blocked"]),
+  // superseded: an open request the user retired by switching the task to the automatic workflow. Never an approval.
+  status: z.enum(["open", "approved", "changes_requested", "blocked", "superseded"]),
   question: z.string().min(1).max(500),
   requestedAt: z.string(),
   gitHead: z.string().nullable(),
@@ -132,6 +133,14 @@ export const resendDecision = defineRpc({
   name: "decisions.resend",
   input: decisionRefSchema.extend({ expectedRevision: z.string() }),
   output: decisionEntrySchema,
+});
+
+// Switching a manual task to the automatic workflow retires its open plan/review requests. Nothing is approved or
+// sent to the old worker; the automatic plan check, validation and both reviews replace them.
+export const supersedeDecisions = defineRpc({
+  name: "decisions.supersede",
+  input: z.object({ serverId: z.string().min(1), taskId, decisionIds: z.array(decisionId).min(1).max(50), note: z.string().trim().min(1).max(2000) }),
+  output: z.object({ superseded: z.array(decisionEntrySchema) }),
 });
 
 export const decisionsKey = (serverId: string) => ["mission-control", "decisions", serverId] as const;

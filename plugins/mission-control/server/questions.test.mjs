@@ -81,9 +81,35 @@ test("a reply reaches an agent that Paseo 0.14 released after an idle hour (clos
   assert.equal(sent.length, 1, "sending resumes the closed agent");
 });
 
+test("an answer to a question whose agent is archived or gone is saved for the task's next worker, and nothing is sent", async t => {
+  for (const gone of ["archived", "missing"]) {
+    const { store, paseo, sent, file } = await fixture(t, { agent: { archivedAt: "2026-09-28T11:00:00Z" } });
+    if (gone === "missing") paseo.agents.ref = id => ({ refresh: async () => { throw new Error(`Agent not found: ${id}`); }, send: async () => { throw new Error("must not send"); } });
+    const result = await store.reply({ ...ids, text: "  With the task.  " }, paseo);
+    assert.equal(result.savedForNextWorker, true);
+    assert.equal(result.question.status, "answered");
+    assert.equal(result.question.answer, "With the task.");
+    assert.equal(sent.length, 0);
+    assert.match(await readFile(file, "utf8"), /^status: "answered"$/m);
+    assert.deepEqual((await store.list(ids.serverId)).questions, []);
+  }
+});
+
+test("a reserved reply whose agent is now archived is saved instead of staying stuck", async t => {
+  const { store, paseo, sent, file } = await fixture(t);
+  const original = paseo.agents.ref;
+  paseo.agents.ref = id => ({ ...original(id), send: async (text, options) => { await original(id).send(text, options); throw new Error("ack lost"); } });
+  await assert.rejects(store.reply({ ...ids, text: "FIRST" }, paseo), /delivery is unconfirmed/);
+  paseo.agents.ref = id => ({ refresh: async () => ({ agent: { id, workspaceId: ids.workspaceId, status: "idle", activeTurn: null, pendingPermissions: [], archivedAt: "2026-09-28T12:00:00Z" } }), send: async () => { throw new Error("must not send"); } });
+  const result = await store.reply({ ...ids, text: "Closed: no longer needed." }, paseo);
+  assert.equal(result.savedForNextWorker, true);
+  assert.equal(result.question.delivery, null);
+  assert.equal(sent.length, 1, "only the original attempt was ever sent");
+  assert.match(await readFile(file, "utf8"), /^answer: "Closed: no longer needed\."$/m);
+});
+
 test("a reply is refused, and nothing is sent, when the agent can't take it", async t => {
   for (const [agent, pattern] of [
-    [{ archivedAt: "2026-09-28T11:00:00Z" }, /unavailable or archived/],
     [{ workspaceId: "wks_elsewhere" }, /moved to another workspace/],
     [{ status: "running" }, /busy/],
     [{ lastUserMessageAt: "2026-09-28T11:00:00Z" }, /newer message/],

@@ -778,7 +778,8 @@ function guardWorkspaceStatus(bound, tasks, label) {
   if (label === "Blocked" && selected.status !== "blocked" && bound.latestRun?.outcome !== "blocked") throw new Error("Blocked requires a recorded blocker; waiting is not blocked.");
   if (label === "Ready") {
     const run = bound.latestRun;
-    const latestPlan = bound.decisions.filter(item => item.kind === "plan").sort((a, b) => b.requestedAt.localeCompare(a.requestedAt))[0];
+    // A plan request retired when the task switched to the automatic workflow is neither an approval nor a change request.
+    const latestPlan = bound.decisions.filter(item => item.kind === "plan" && item.status !== "superseded").sort((a, b) => b.requestedAt.localeCompare(a.requestedAt))[0];
     const approvedPlan = run?.stage === "plan" && run.outcome === "completed" && latestPlan?.status === "approved"
       && latestPlan.runId === run.runId && latestPlan.taskId === selected.taskId && latestPlan.serverId === bound.host.serverId && latestPlan.workspaceId === bound.workspaceId;
     if (finishedTask(selected) || bound.decisions.some(item => item.status === "open") || (latestPlan && latestPlan.status !== "approved") || (selected.status !== "ready" && !approvedPlan)) throw new Error("Ready requires recorded readiness or an approved plan, an active task, and no open decision.");

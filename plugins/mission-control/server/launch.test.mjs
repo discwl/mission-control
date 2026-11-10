@@ -586,6 +586,53 @@ test("saving a launch record gives up after the last retry, and other errors are
   assert.equal(attempts, 1);
 });
 
+// The automatic runner's first step for a code task: its own worktree, created like Start's, before any agent exists.
+async function preparingLauncher(t, { preview = choosable, createWorktree, replyWithinMs = 2_000, canIsolate = true } = {}) {
+  const f = await fixture(t);
+  const created = []; const attached = [];
+  const launcher = createTaskLauncher({
+    ...f.deps, replyWithinMs,
+    loadContext: async binding => ({ ...(await f.deps.loadContext({ serverId: binding.serverId, workspaceId: binding.workspaceId, taskId: binding.taskId })), workspaceId: binding.workspaceId, canIsolate }),
+    branchPreview: async () => preview,
+    createWorktree: createWorktree ?? (async input => { created.push(input); return { workspaceId: "worktree-1", branch: input.branch ?? "task/aaaaaaaa-launch-proof", baseCommit: "f".repeat(40), directory: "C:\\worktrees\\one" }; }),
+    attachWorktree: async input => { attached.push(input); f.task.worktree = input.worktree; },
+  });
+  return { f, launcher, created, attached };
+}
+
+test("prepareWorktree creates the feature branch of a two-type template and attaches it, without creating an agent", async t => {
+  const { f, launcher, created, attached } = await preparingLauncher(t);
+  const result = await launcher.prepareWorktree(f.input, f.paseo);
+  assert.deepEqual(result, { phase: "ready", workspaceId: "worktree-1", branch: "feature/ABC-123-add-login-retry" });
+  assert.deepEqual(created.map(item => item.branch), ["feature/ABC-123-add-login-retry"]);
+  assert.equal(attached[0].worktree.sourceWorkspaceId, f.input.workspaceId);
+  // The shared attach step (the one Start uses) records the branch point as the review base.
+  assert.deepEqual([attached[0].worktree.workspaceId, attached[0].worktree.branch, attached[0].worktree.baseCommit], ["worktree-1", "feature/ABC-123-add-login-retry", "f".repeat(40)]);
+  assert.equal(f.state.createCalls, 0); assert.equal(f.state.sends, 0);
+  assert.deepEqual(await launcher.prepareWorktree(f.input, f.paseo), result, "a repeat reports the attached worktree");
+  assert.equal(created.length, 1, "no second worktree");
+});
+
+test("prepareWorktree replies while a slow creation continues, holds the launch lock, and reports a late failure once", async t => {
+  let finish; const gate = new Promise((resolve, reject) => { finish = { resolve, reject }; });
+  const { f, launcher } = await preparingLauncher(t, { replyWithinMs: 20, createWorktree: async () => gate });
+  assert.deepEqual(await launcher.prepareWorktree(f.input, f.paseo), { phase: "creating", message: "Creating the task's worktree. A large repository can take a minute." });
+  assert.equal((await launcher.prepareWorktree(f.input, f.paseo)).phase, "creating", "a repeat while creating starts nothing new");
+  assert.equal((await launcher.status(f.input, f.paseo)).action, "starting", "Start sees the same lock");
+  finish.reject(new Error("git fetch failed"));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(await launcher.prepareWorktree(f.input, f.paseo), { phase: "failed", message: "git fetch failed" });
+});
+
+test("prepareWorktree refuses a project without Git history or a branch-name problem, and changes nothing", async t => {
+  const plain = await preparingLauncher(t, { canIsolate: false });
+  assert.match((await plain.launcher.prepareWorktree(plain.f.input, plain.f.paseo)).message, /Git repository with at least one commit/);
+  const broken = await preparingLauncher(t, { preview: { source: "template", note: null, problem: "The template has no ticket key.", options: [] } });
+  const result = await broken.launcher.prepareWorktree(broken.f.input, broken.f.paseo);
+  assert.equal(result.phase, "failed"); assert.match(result.message, /branch name can't be used: The template has no ticket key\./);
+  assert.equal(plain.created.length + broken.created.length, 0);
+});
+
 test("the task prompt tells the agent to record its questions for Attention", () => {
   const prompt = taskPromptText({ serverId: "srv_test", workspaceId: "wks_test", taskId: "task_aaaa", title: "24 · Cards", projectId: "prj_test", file: "C:\\dev-vault\\Tasks\\task_aaaa\\task.md" });
   assert.match(prompt, /^Work on Mission Control task task_aaaa: 24 · Cards\.\nThis task belongs to server srv_test, workspace wks_test, and project prj_test\./);

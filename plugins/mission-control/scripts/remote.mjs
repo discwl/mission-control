@@ -36,10 +36,19 @@ Commands:
   create --workspace <id> --title <title> --criteria-file <file>
                                              A task without a ticket.
   status --workspace <id> --task <id>        What Start would do, the agent, the latest run and its stage.
-  start --workspace <id> --task <id> [--provider <provider/model>] [--thinking <id>] [--mode <id>]
-      [--no-isolate] [--branch <name>] [--branch-type <feature|bugfix>] [--orchestrator-agent <local chat id>]
-                                             Links the worker to PASEO_AGENT_ID (or --orchestrator-agent) on this machine.
-                                             Starts, resumes or recovers the task's agent, as the Start button does.
+  start --workspace <id> --task <id> [--kind <code|actions|report>] [--orchestrator-agent <local chat id>]
+                                             A task without a run starts in the automatic workflow, owned by the
+                                             originating orchestrator chat (PASEO_AGENT_ID or --orchestrator-agent): plan,
+                                             independent plan check, build, validation, two reviews, then your final
+                                             authorization. The host's phase profiles choose models; a code task gets its
+                                             own worktree. Tasks queue per host. An existing manual run resumes or recovers
+                                             as the Start button does (--provider/--thinking/--mode/--branch/--branch-type/
+                                             --no-isolate apply only with --local, for this machine's own tasks).
+  start --workspace <id> --task <id> --adopt [--orchestrator-agent <local chat id>]
+                                             Switches the task's manual run to the automatic workflow in one step. Its
+                                             open plan/review requests are retired without approval.
+  runner --workspace <id> --task <id> [--action <status|pause|resume|stop|automate>] [--orchestrator-agent <id>]
+                                             The task runner's stage and next action, or a control, as the chat command.
   set-status --workspace <id> --task <id> --to <inbox|ready|in_progress|blocked|in_review|delivered|closed>
   due --workspace <id> --task <id> (--date <YYYY-MM-DD> | --clear)
   runs --workspace <id> --task <id>          The task's run records (stage, outcome, next action).
@@ -60,6 +69,7 @@ const options = {
   to: { type: "string" }, date: { type: "string" }, clear: { type: "boolean" }, name: { type: "string" },
   report: { type: "string" }, item: { type: "string", multiple: true },
   "orchestrator-agent": { type: "string" },
+  kind: { type: "string" }, adopt: { type: "boolean" }, action: { type: "string" },
 };
 
 const need = (values, ...names) => {
@@ -109,9 +119,26 @@ export function launchInput(binding, status, values) {
   return input;
 }
 
-/** Runs one command. `rpc(method, input)` calls the host's Mission Control. */
-export async function runCommand(command, values, rpc) {
+const runnerCommands = { status: "pipeline", pause: "pause pipeline", resume: "resume pipeline", stop: "stop pipeline", automate: "automate pipeline" };
+const runnerSummary = row => ({ id: row.id, workflow: row.workflowMode, deliverable: row.deliveryKind, stage: row.stage, mode: row.mode, message: row.message });
+
+/**
+ * Runs one command. `rpc(method, input)` calls the host's Mission Control; `localRpc` calls this machine's, which owns
+ * the automatic task runners and their orchestrator chats.
+ */
+export async function runCommand(command, values, rpc, localRpc) {
   const { serverId } = await rpc("host.identity", {});
+  const originChat = () => {
+    const chat = values["orchestrator-agent"]?.trim() || process.env.PASEO_AGENT_ID?.trim();
+    if (!chat) throw new Error("Run this from the host's orchestrator chat (it sets PASEO_AGENT_ID) or pass --orchestrator-agent <chat id>. Automatic task runners belong to an orchestrator chat.");
+    if (!localRpc) throw new Error("This machine's Mission Control is needed for the automatic workflow.");
+    return chat;
+  };
+  const coordinatorFleet = async chat => {
+    const fleet = await localRpc("orchestrator.fleet.read", { refresh: true });
+    if (!fleet.coordinators.some(item => item.agentId === chat && item.remoteServerId === serverId)) throw new Error(`Chat ${chat} doesn't manage ${serverId}. Run this from the orchestrator chat whose folder's host.json points at that host.`);
+    return fleet;
+  };
   const workspace = () => { need(values, "workspace"); return { serverId, workspaceId: values.workspace }; };
   const binding = () => { need(values, "workspace", "task"); return { serverId, workspaceId: values.workspace, taskId: values.task }; };
   const task = async () => {
@@ -145,6 +172,27 @@ export async function runCommand(command, values, rpc) {
     case "start": {
       const target = binding();
       const status = await rpc("tasks.launch.status", target);
+      if (values.adopt) {
+        // One guarded step, so no manual stage can start in between; open plan/review requests are retired, never approved.
+        const chat = originChat();
+        const fleet = await coordinatorFleet(chat);
+        const entry = fleet.hosts.find(host => host.serverId === serverId)?.snapshot?.tasks.find(item => item.task.taskId === values.task);
+        if (!entry?.run) throw new Error("This task has no run to switch. Use start without --adopt to begin it in the automatic workflow.");
+        const row = await localRpc("pipeline.start", { coordinatorId: chat, remoteServerId: serverId, taskId: values.task, workflowMode: "automatic", deliveryKind: entry.run.deliveryKind ?? "code", expectedRevision: fleet.state.revision, adoptExisting: true });
+        return { started: true, switched: true, runner: runnerSummary(row) };
+      }
+      if (status.action === "start" && !values.local) {
+        // A new task on another host starts in the automatic workflow, owned by the originating orchestrator chat.
+        if (values.provider || values.thinking || values.mode || values.branch || values["branch-type"] || values["no-isolate"]) {
+          throw new Error("New tasks start in the automatic workflow: the host's phase profiles choose models and permissions, and a code task gets its own worktree. Remove --provider, --thinking, --mode, --branch, --branch-type and --no-isolate.");
+        }
+        const kind = values.kind ?? "code";
+        if (!["code", "actions", "report"].includes(kind)) throw new Error("--kind must be code, actions or report.");
+        const chat = originChat();
+        const fleet = await coordinatorFleet(chat);
+        const row = await localRpc("pipeline.start", { coordinatorId: chat, remoteServerId: serverId, taskId: values.task, workflowMode: "automatic", deliveryKind: kind, expectedRevision: fleet.state.revision });
+        return { started: true, runner: runnerSummary(row), next: `Follow it with: runner --workspace ${values.workspace} --task ${values.task}` };
+      }
       if (!["start", "resume", "recover"].includes(status.action)) return { started: false, ...describeLaunch(status), ...((values.provider || values.thinking || values.mode) ? { configurationApplied: false, configurationMessage: "No launch occurred. Requested model, reasoning and permission settings were not applied to the existing worker." } : {}) };
       const input = launchInput(target, status, values);
       let nativeParent = { linked: false, reason: status.action === "start" ? "Originating chat or native host connection is unavailable." : "Existing workers keep their original parent." };
@@ -158,6 +206,15 @@ export async function runCommand(command, values, rpc) {
       // Never retry a dispatch whose response is lost. Status reconciles its existing launch receipt.
       const next = await rpc("tasks.launch.dispatch", input);
       return { started: true, ...describeLaunch(next), ...(values.parent ? { nativeParent: { ...nativeParent, linked: Boolean(next.launch?.parent), requested: Boolean(input.parent) } } : {}) };
+    }
+    case "runner": {
+      need(values, "task");
+      const action = values.action ?? "status";
+      if (!runnerCommands[action]) throw new Error("--action must be status, pause, resume, stop or automate.");
+      const chat = originChat();
+      // The same command the orchestrator chat accepts; its receipt also appears in that chat.
+      const reply = await localRpc("chat.native-command", { agentId: chat, text: `${runnerCommands[action]} ${values.task}` });
+      return { text: reply.text };
     }
     case "set-status": {
       need(values, "to");
@@ -300,6 +357,14 @@ async function main() {
       } catch { /* Task launch still works without native parent routing. */ }
     }
     let remoteServerId;
+    let localClient;
+    // This machine's Mission Control owns the automatic runners; connect only when a command needs it.
+    const localRpc = async (method, input) => {
+      localClient ??= await connect({ local: true });
+      try { return await localClient.invokePluginRpc(PLUGIN_ID, method, input); }
+      catch (error) { throw new Error(`${method} (this machine): ${error instanceof Error ? error.message : String(error)}`); }
+    };
+    try {
     const result = await runCommand(positionals[0], values, async (method, input) => {
       try {
         const response = await client.invokePluginRpc(PLUGIN_ID, method, input);
@@ -318,8 +383,9 @@ async function main() {
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(/unknown|not found|no handler/i.test(message) ? `${method}: ${message} (is Mission Control installed and up to date on that host?)` : `${method}: ${message}`);
       }
-    });
-    if (positionals[0] === "start") {
+    }, localRpc);
+    // An automatic runner records its own ownership; only a manual launch links its worker to the chat.
+    if (positionals[0] === "start" && !result.runner) {
       const agentId = values["orchestrator-agent"]?.trim() || process.env.PASEO_AGENT_ID?.trim();
       if (!agentId) result.orchestrator = { linked: false, warning: "No originating chat identity. Use --orchestrator-agent or Link workers in Review." };
       else {
@@ -336,6 +402,7 @@ async function main() {
       }
     }
     console.log(JSON.stringify(result, null, 2));
+    } finally { await localClient?.close().catch(() => {}); }
   } finally {
     await parentClient?.close().catch(() => {});
     await client.close().catch(() => {});

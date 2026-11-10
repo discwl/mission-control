@@ -50,12 +50,25 @@ export function taskWorkers(entry: FleetTask, host: FleetHost, allowed: Readonly
   return host.agents.filter(agent => allowed.has(agent.id) && linked.has(agent.id));
 }
 
+/**
+ * The hosts All work and Needs you show: every host an orchestrator folder binds, or, on a computer that coordinates
+ * no other host (each remote host's own Paseo), that computer's own Mission Control work.
+ */
+export function fleetTargets(bound: readonly { serverId: string; label: string }[], ownServerId: string): { serverId: string; label: string; own: boolean }[] {
+  const targets = new Map(bound.map(item => [item.serverId, item.label]));
+  if (!targets.size) return [{ serverId: ownServerId, label: "This computer", own: true }];
+  return [...targets].map(([serverId, label]) => ({ serverId, label, own: false }));
+}
+
 /** Presentation only. Final delivery always rechecks evidence separately. */
 export function withPipelineProjection(snapshot: FleetSnapshot, state = snapshot.state): FleetSnapshot {
   return { ...snapshot, state, hosts: snapshot.hosts.map(host => ({ ...host, snapshot: host.snapshot ? { ...host.snapshot, tasks: host.snapshot.tasks.map(entry => {
     const { pipeline: _prior, ...clean } = entry;
-    const row = [...state.pipelines].filter(row => row.workflowMode === "automatic" && row.remoteServerId === host.serverId && row.taskId === entry.task.taskId && entry.run && row.runId === entry.run.runId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
-    return row?.runId ? { ...clean, pipeline: { runId: row.runId, workflowMode: "automatic" as const, deliveryKind: row.deliveryKind, stage: row.stage, mode: row.mode, message: row.message } } : clean;
+    // A just-switched task's runner has no run of its own until its first automatic stage, which continues the task's run.
+    const owns = (row: typeof state.pipelines[number]) => Boolean(entry.run) && (row.runId === entry.run!.runId || row.runId === null && row.retiredWorkerIds !== undefined && !["done", "stopped"].includes(row.mode));
+    const row = [...state.pipelines].filter(row => row.workflowMode === "automatic" && row.remoteServerId === host.serverId && row.taskId === entry.task.taskId && owns(row)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    return row && entry.run ? { ...clean, pipeline: { runId: entry.run.runId, workflowMode: "automatic" as const, deliveryKind: row.deliveryKind, stage: row.stage, mode: row.mode, message: row.message,
+      ...(row.retiredWorkerIds ? { retiredWorkerIds: row.retiredWorkerIds, freshSwitch: row.lastSentAt === null } : {}) } } : clean;
   }) } : null })) };
 }
 export function taskWorkflow(entry: FleetTask, agents: readonly FleetAgent[]): Workflow {
@@ -75,7 +88,11 @@ export function taskWorkflow(entry: FleetTask, agents: readonly FleetAgent[]): W
   if (plan?.decision.status === "approved" && plan.decision.resume && plan.decision.resume.phase !== "sent") return result("Blocked", "you", plan.decision.resume.error || "Plan approval is saved but delivery to the worker is not confirmed. Check the decision in Attention before continuing.");
   const stops = run?.workflowMode === "automatic" ? [plan, review] : current;
   if (stops.some(entry => entry?.decision.status === "blocked")) return result("Blocked", "you", "Resolve the blocked decision");
-  const blockingError = agents.some(agent => {
+  // An automatic runner owns this run's next step. For a task switched from the manual flow, its earlier workers and
+  // the old run's waiting outcome no longer decide what the task is waiting for.
+  const pipeline = entry.pipeline?.workflowMode === "automatic" && entry.pipeline.runId === run?.runId ? entry.pipeline : null;
+  const retired = new Set(pipeline?.retiredWorkerIds ?? []);
+  const blockingError = agents.filter(agent => !retired.has(agent.id)).some(agent => {
     if (!(agent.status === "error" || agent.attentionReason === "error" || agent.error)) return false;
     // Managed stage workers may have only a task label; do not assume run.agentId owns every stage.
     const labelledRun = agent.labels["mission-control.run-id"];
@@ -88,8 +105,14 @@ export function taskWorkflow(entry: FleetTask, agents: readonly FleetAgent[]): W
   if (blockingError) return result("Blocked", "you", "Inspect the worker error before retrying");
   // A later blocked handoff supersedes an older acceptance; a newer real decision stays authoritative.
   const acceptedAfterRun = review?.decision.status === "approved" && Boolean(review.decision.resolvedAt && run && review.decision.resolvedAt >= run.updatedAt);
-  if (task.status === "blocked" || (!acceptedAfterRun && (run?.outcome === "blocked" || run?.outcome === "waiting"))) return result("Blocked", "you", run?.nextAction || "Resolve the recorded blocker");
-  const pipeline = entry.pipeline?.workflowMode === "automatic" && entry.pipeline.runId === run?.runId ? entry.pipeline : null;
+  // Only a just-switched runner that hasn't dispatched yet overrides the old run's outcome; once automatic stages run,
+  // a blocker they record shows at once, even while the runner waits for its busy host.
+  if (task.status === "blocked" || (!pipeline?.freshSwitch && !acceptedAfterRun && (run?.outcome === "blocked" || run?.outcome === "waiting"))) {
+    // On the task's own host there is no runner record, but a retired latest request shows the switch happened.
+    const switchedHere = !pipeline && task.status !== "blocked" && run?.outcome === "waiting" && current[0]?.decision.status === "superseded";
+    if (switchedHere) return result("Ready", "agent", "Switched to the automatic workflow. The coordinating computer's runner plans it again with an independent check.");
+    return result("Blocked", "you", run?.nextAction || "Resolve the recorded blocker");
+  }
   if (pipeline) {
     if (pipeline.mode === "done") return result("Delivered", "done", pipeline.message);
     if (["blocked", "paused", "stopped"].includes(pipeline.mode)) return result("Blocked", "you", pipeline.message);

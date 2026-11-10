@@ -36,6 +36,8 @@ export async function launchManagedStage(input: z.infer<typeof launchPipelineSta
   const cwd = await realpath(workspace.workspaceDirectory);
   await verifyProfileAvailability(paseo, policy, cwd);
   const workflowMode = input.row.workflowMode ?? "manual"; const deliveryKind = input.row.deliveryKind ?? "code";
+  // The runner creates the task's own worktree before planning; never plan a new automatic code task in a shared checkout.
+  if (workflowMode === "automatic" && deliveryKind === "code" && !facts.entry.run && !source.task.worktree) throw new Error("This automatic code task has no worktree of its own yet. The runner creates it before planning.");
   const identity = facts.entry.run ? { taskId: source.task.taskId, runId: facts.entry.run.runId, serverId: input.serverId, workspaceId: input.workspaceId } : null;
   let submittedPlan = null;
   if (workflowMode === "automatic" && next.stage !== "plan") {
