@@ -67,10 +67,10 @@ function fakePaseo(answer, { models = [{ id: "claude-haiku-4-5", label: "Haiku 4
 test("writing the text runs one read-only small-model agent in the task's workspace, given only the allowed facts", async () => {
   const ticket = { key: "ABC-7", url: "https://example.atlassian.net/browse/ABC-7" };
   const { paseo, seen } = fakePaseo('{"commitMessage":"feat: add greeting","title":"feat: add greeting","body":"## Why\\n\\nGreets."}');
-  const written = await writeDeliveryText(paseo, "wks_task", request, { taskId, ticket });
+  const written = await writeDeliveryText(paseo, "wks_task", request, { ticket });
   assert.deepEqual(written, {
     model: "Haiku 4.5",
-    text: { commitMessage: "feat: add greeting", title: "ABC-7: feat: add greeting", body: `## Why\n\nGreets.\n\nTicket: [ABC-7](${ticket.url})\n\nOpened as a draft by Mission Control for task ${taskId}.` },
+    text: { commitMessage: "feat: add greeting", title: "ABC-7: feat: add greeting", body: `## Why\n\nGreets.\n\nTicket: [ABC-7](${ticket.url})` },
   });
   assert.equal(seen.workspaceId, "wks_task");
   assert.equal(seen.created.config.provider, "claude/claude-haiku-4-5");
@@ -143,12 +143,13 @@ test("a pull request title keeps the ticket key", () => {
   assert.equal(withTicketKey("x".repeat(250), "ABC-7").length, 200);
 });
 
-test("a generated body ends with the ticket link and Mission Control's line, without repeating a link it has", () => {
+test("a generated body ends with the ticket link only, without repeating a link it has", () => {
   const ticket = { key: "ABC-7", url: "https://example.atlassian.net/browse/ABC-7" };
-  assert.deepEqual(pullRequestFooter({ taskId, ticket }), [`Ticket: [ABC-7](${ticket.url})`, `Opened as a draft by Mission Control for task ${taskId}.`]);
-  assert.equal(finishGeneratedBody("## Why\n\nGreets.\n", { taskId, ticket }), `## Why\n\nGreets.\n\nTicket: [ABC-7](${ticket.url})\n\nOpened as a draft by Mission Control for task ${taskId}.`);
-  assert.equal(finishGeneratedBody(`Fixes ${ticket.url}`, { taskId, ticket }), `Fixes ${ticket.url}\n\nOpened as a draft by Mission Control for task ${taskId}.`);
-  assert.equal(finishGeneratedBody("Body", { taskId, ticket: null }), `Body\n\nOpened as a draft by Mission Control for task ${taskId}.`);
+  assert.deepEqual(pullRequestFooter({ ticket }), [`Ticket: [ABC-7](${ticket.url})`]);
+  assert.deepEqual(pullRequestFooter({ ticket: null }), []);
+  assert.equal(finishGeneratedBody("## Why\n\nGreets.\n", { ticket }), `## Why\n\nGreets.\n\nTicket: [ABC-7](${ticket.url})`);
+  assert.equal(finishGeneratedBody(`Fixes ${ticket.url}`, { ticket }), `Fixes ${ticket.url}`);
+  assert.equal(finishGeneratedBody("Body", { ticket: null }), "Body");
 });
 
 test("instructions come from paseo.json's metadataGeneration, trimmed", () => {

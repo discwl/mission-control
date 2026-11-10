@@ -214,7 +214,8 @@ test("the plan lists the commit, the push and the draft pull request, and a dry 
   assert.deepEqual(plan.uncommittedFiles, ["greeting.txt"]);
   assert.equal(plan.pushCommit, null);
   assert.equal(plan.body, pullRequestBody({ template: "## What changed\n\n## How to test", summary: "Adds a greeting file.\nCheck greeting.txt.", task: { taskId, ticket } }));
-  assert.match(plan.body, /^## What changed[\s\S]*## Summary\n\nAdds a greeting file\.[\s\S]*Ticket: \[ABC-7\]\(https:\/\/example\.atlassian\.net\/browse\/ABC-7\)/);
+  // The description ends with the ticket link; Mission Control adds no line of its own.
+  assert.match(plan.body, /^## What changed[\s\S]*## Summary\n\nAdds a greeting file\.[\s\S]*Ticket: \[ABC-7\]\(https:\/\/example\.atlassian\.net\/browse\/ABC-7\)$/);
   assert.deepEqual(plan.commands.map(item => item.step), ["Commit", "Commit", "Push", "Draft pull request"]);
   assert.ok(plan.commands[2].text.endsWith(`push --porcelain --no-follow-tags --recurse-submodules=no origin "<the new commit>:refs/heads/${branch}"`), plan.commands[2].text);
   assert.ok(!plan.commands.some(item => /--force|-f\b|\+refs/.test(item.text)), "never forced");
@@ -275,7 +276,7 @@ test("the commit message, title and body confirmed in the dialog are what the dr
   await writeFile(join(s.worktree, "greeting.txt"), "hello\n");
   await s.review();
   const status = await s.check();
-  const text = { commitMessage: "feat(greeting): add a greeting file\n\nWritten from paseo.json.", title: "ABC-7 feat: add a greeting", body: "## Why\n\nPeople like greetings.\n\nOpened as a draft by Mission Control." };
+  const text = { commitMessage: "feat(greeting): add a greeting file\n\nWritten from paseo.json.", title: "ABC-7 feat: add a greeting", body: "## Why\n\nPeople like greetings." };
 
   const dry = await s.start(status.plan.fingerprint, true, text);
   assert.equal(dry.outcome, "dry-run", JSON.stringify(dry));
@@ -570,7 +571,9 @@ test("workItemOf reads an Azure DevOps ticket's number, and the body works witho
   assert.equal(workItemOf({ ticket: { system: "azure-devops", key: "#88", url: "https://dev.azure.com/c/p/_workitems/edit/88" } }), "88");
   assert.equal(workItemOf({ ticket: { system: "azure-devops", key: "Bug 88", url: "https://dev.azure.com/c/p/_workitems/edit/88" } }), "88");
   assert.equal(workItemOf({ ticket: { system: "jira", key: "ABC-1", url: "https://x/browse/ABC-1" } }), null);
-  assert.equal(pullRequestBody({ template: null, summary: null, task: { taskId } }), `Opened as a draft by Mission Control for task ${taskId}.`);
+  assert.equal(pullRequestBody({ template: null, summary: null, task: {} }), "");
+  const ticket = { system: "jira", key: "ABC-1", url: "https://x/browse/ABC-1" };
+  assert.equal(pullRequestBody({ template: null, summary: "Adds a greeting.", task: { ticket } }), `## Summary\n\nAdds a greeting.\n\nTicket: [ABC-1](${ticket.url})`);
 });
 
 test("unreadable Delivery settings make Open PR step aside for Merge, and Merge keeps working with a warning", async t => {

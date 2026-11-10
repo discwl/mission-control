@@ -40,7 +40,7 @@ export function useDeliveryText({ serverId, taskId, workspaceId, planKey, needs,
       const request = textRequest(info, needs, template);
       if (next.phase !== "writing" || !request) return;
       try {
-        const written = await writeDeliveryText(getPaseoClient(serverId), workspaceId, request, { taskId, ticket: info.ticket });
+        const written = await writeDeliveryText(getPaseoClient(serverId), workspaceId, request, { ticket: info.ticket });
         if (live()) setState({ phase: "written", path: next.path, model: written.model, text: written.text });
       } catch (cause) { if (live()) setState({ phase: "failed", path: next.path, error: message(cause) }); }
     })();

@@ -10,8 +10,8 @@ new Function("require", "exports", "module", code)(() => new Proxy({}, { get: (_
 const { filterKanban, kanbanCounts } = module.exports;
 
 function task(id, options = {}) {
-  const { serverId = "cns", projectId = "one", state = "Ready", limited = false, needsYou = true, running = 0, lane = "attention", tab = "Workers", decisions = [], workers = [] } = options;
-  return { needsYou, running, lane, tab, label: id, row: { key: `${serverId}:${id}`, serverId, hostLabel: serverId, state, limited, staleReview: false, priority: 0, updatedAt: "2026-11-04T08:00:00Z", next: "Check this task", workers, entry: { task: { taskId: id, title: id, projectId }, decisions } } };
+  const { serverId = "cns", projectId = "one", state = "Ready", limited = false, needsYou = true, running = 0, lane = "attention", tab = "Workers", decisions = [], workers = [], priority = 0, updatedAt = "2026-11-04T08:00:00Z" } = options;
+  return { needsYou, running, lane, tab, label: id, row: { key: `${serverId}:${id}`, serverId, hostLabel: serverId, state, limited, staleReview: false, priority, updatedAt, next: "Check this task", workers, entry: { task: { taskId: id, title: id, projectId }, decisions } } };
 }
 const decision = kind => ({ decision: { kind, status: "open" } });
 
@@ -46,4 +46,18 @@ test("filter counts respect the same scoped and searched task set supplied by th
   assert.deepEqual(scoped.map(item => item.row.key), ["cns:selected-task"]);
   assert.equal(kanbanCounts(scoped).needsYou, 1);
   assert.equal(kanbanCounts(scoped).running, 1);
+});
+
+test("Done lists the most recently updated work first; the other lanes keep priority, then the longest waiting", () => {
+  const items = [
+    task("done-oldest", { lane: "done", needsYou: false, updatedAt: "2026-10-20T23:44:00.000Z" }),
+    task("queued-newest", { lane: "queue", needsYou: false, updatedAt: "2026-11-02T08:00:00.000Z" }),
+    task("done-newest", { lane: "done", needsYou: false, updatedAt: "2026-10-28T15:22:00.000Z" }),
+    task("queued-oldest", { lane: "queue", needsYou: false, updatedAt: "2026-11-01T08:00:00.000Z" }),
+    task("done-middle", { lane: "done", needsYou: false, updatedAt: "2026-10-27T16:54:00.000Z", priority: 5 }),
+    task("queued-urgent", { lane: "queue", needsYou: false, updatedAt: "2026-11-03T08:00:00.000Z", priority: 9 }),
+  ];
+  const lane = id => filterKanban(items, "all", "all", "", "All work").filter(item => item.lane === id).map(item => item.row.entry.task.taskId);
+  assert.deepEqual(lane("done"), ["done-newest", "done-middle", "done-oldest"]);
+  assert.deepEqual(lane("queue"), ["queued-urgent", "queued-oldest", "queued-newest"]);
 });

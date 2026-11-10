@@ -107,7 +107,15 @@ export function filterKanban(tasks: KanbanTask[], host: string, project: string,
     && (focus !== "Running" || item.running > 0)
     && (!needle || [item.row.hostLabel, item.row.entry.task.title, item.row.entry.task.ticket?.key, item.row.entry.task.taskId,
       item.row.entry.task.projectId, item.row.next, item.label, ...item.row.workers.map(agent => agent.name)].join(" ").toLowerCase().includes(needle)))
-    .sort((a, b) => b.row.priority - a.row.priority || a.row.updatedAt.localeCompare(b.row.updatedAt) || a.row.key.localeCompare(b.row.key));
+    .sort(kanbanOrder);
+}
+
+/** Done shows the most recently updated work first; the other lanes go by queue priority, then the longest waiting. */
+function kanbanOrder(a: KanbanTask, b: KanbanTask): number {
+  const done = Number(a.lane === "done") - Number(b.lane === "done");
+  if (done) return done;
+  if (a.lane === "done") return b.row.updatedAt.localeCompare(a.row.updatedAt) || a.row.key.localeCompare(b.row.key);
+  return b.row.priority - a.row.priority || a.row.updatedAt.localeCompare(b.row.updatedAt) || a.row.key.localeCompare(b.row.key);
 }
 
 export function kanbanCounts(tasks: KanbanTask[]) {

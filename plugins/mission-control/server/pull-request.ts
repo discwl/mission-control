@@ -101,7 +101,7 @@ export function workItemOf(task: Pick<TaskRecord, "ticket">): string | null {
  * The body when paseo.json has no pull request instructions (or writing from them failed): the repository's
  * template if any, the handoff summary, and the ticket link.
  */
-export function pullRequestBody(parts: { template: string | null; summary: string | null; task: Pick<TaskRecord, "taskId" | "ticket"> }) {
+export function pullRequestBody(parts: { template: string | null; summary: string | null; task: Pick<TaskRecord, "ticket"> }) {
   const { template, summary, task } = parts;
   return [template, summary ? `## Summary\n\n${summary}` : null, ...pullRequestFooter(task)].filter(Boolean).join("\n\n");
 }

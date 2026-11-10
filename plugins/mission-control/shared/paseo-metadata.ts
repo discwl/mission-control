@@ -167,18 +167,15 @@ export function withTicketKey(title: string, ticketKey: string | null) {
   return oneLine(`${key}: ${title}`);
 }
 
-/** The lines every Mission Control pull request body ends with: the ticket link and where it came from. */
-type FooterTask = { taskId: string; ticket?: { key: string; url: string } | null };
+/** What a Mission Control pull request body ends with: the task's ticket link, when it has one. */
+type FooterTask = { ticket?: { key: string; url: string } | null };
 export function pullRequestFooter(task: FooterTask): string[] {
-  return [
-    ...(task.ticket ? [`Ticket: [${task.ticket.key}](${task.ticket.url})`] : []),
-    `Opened as a draft by Mission Control for task ${task.taskId}.`,
-  ];
+  return task.ticket ? [`Ticket: [${task.ticket.key}](${task.ticket.url})`] : [];
 }
 
-/** A generated body with Mission Control's footer, leaving out a ticket link the text already has. */
+/** A generated body followed by the ticket link, unless the text already has it. */
 export function finishGeneratedBody(body: string, task: FooterTask) {
-  const footer = pullRequestFooter(task).filter(line => !(line.startsWith("Ticket: ") && task.ticket && body.includes(task.ticket.url)));
+  const footer = task.ticket && body.includes(task.ticket.url) ? [] : pullRequestFooter(task);
   return [body.trim(), ...footer].filter(Boolean).join("\n\n");
 }
 
