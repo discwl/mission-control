@@ -27,7 +27,8 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
       const directory = await fleetDirectory(paseo, serverId);
       const candidateIds = new Set(coordinatorCandidates(directory.agents.map(toFleetAgent)).map(agent => agent.id));
       const roots = directory.agents.filter(agent => candidateIds.has(agent.id));
-      const bindings = await readOrchestratorBindings(paseo, directory.workspaces.map(workspace => workspace.id), { localServerId: async () => serverId });
+      // The listing already has every workspace's folder, so the bindings read no directory again.
+      const bindings = await readOrchestratorBindings(paseo, directory.workspaces, { localServerId: async () => serverId });
       const coordinators = await Promise.all(roots.filter(agent => bindings.bindings[agent.workspaceId!]).map(async agent => {
         const binding = bindings.bindings[agent.workspaceId!];
         return { agentId: agent.id, workspaceId: agent.workspaceId!, name: toFleetAgent(agent).name,

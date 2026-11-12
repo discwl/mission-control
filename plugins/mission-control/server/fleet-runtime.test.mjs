@@ -29,7 +29,8 @@ test("fleet RPCs discover setup-created coordinators and empty host folders; enr
   let complete = true;
   t.mock.method(transport, "readRemoteFleet", async (_client, serverId) => ({ ...remote(), serverId, complete }));
   t.mock.method(directory, "fleetDirectory", async () => ({ agents: [raw("setup", "development"), raw("coordinator", "folder", { "paseo.parent-agent-id": "setup" }), raw("helper", "folder", { "paseo.parent-agent-id": "coordinator" })], workspaces: [{ id: "folder" }, { id: "empty-folder" }, { id: "development" }], complete: true }));
-  t.mock.method(bindings, "readOrchestratorBindings", async (_api, ids) => { assert.ok(ids.includes("empty-folder")); return { bindings: { folder: { serverId: "remote", label: "Remote" }, "empty-folder": { serverId: "empty", label: "Empty" } }, problems: {} }; });
+  // The check hands over the workspace records it already listed, so nothing is looked up again.
+  t.mock.method(bindings, "readOrchestratorBindings", async (_api, workspaces) => { assert.ok(workspaces.some(item => typeof item !== "string" && item.id === "empty-folder")); return { bindings: { folder: { serverId: "remote", label: "Remote" }, "empty-folder": { serverId: "empty", label: "Empty" } }, problems: {} }; });
   const handlers = new Map(); const hooks = new Map();
   const stop = registerFleet({ handle: (contract, handler) => handlers.set(contract.name, handler), on: (name, handler) => hooks.set(name, handler) }, { decisions: async () => ({ open: [], recent: [] }), questions: async () => ({ questions: [] }) }); t.after(stop);
   let snapshot = await handlers.get("orchestrator.fleet.read")({ refresh: true });
