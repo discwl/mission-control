@@ -9,7 +9,7 @@ import { test } from "node:test";
 const require = createRequire(import.meta.url);
 const ts = require("typescript");
 require.extensions[".ts"] = (module, file) => module._compile(ts.transpileModule(readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, file);
-const { daemonServerId, daemonWsUrl, listenUrl, renameAgentRecord } = require("./agent-names.ts");
+const { daemonServerId, daemonWsUrl, listenUrl, PaseoStartingError, renameAgentRecord } = require("./agent-names.ts");
 
 function fixture(title) {
   const state = { title, renamed: [] };
@@ -82,10 +82,27 @@ test("the daemon URL follows the running daemon, then --listen, PASEO_LISTEN, co
     assert.equal(await daemonWsUrl({ home: configured, env: {}, argv: ["node", "daemon", "--listen=127.0.0.1:7850"] }), "ws://127.0.0.1:7850/ws");
     assert.equal(await daemonWsUrl({ home: configured, env: { PASEO_LISTEN: "7900" }, argv: [] }), "ws://127.0.0.1:7900/ws");
     assert.equal(await daemonWsUrl({ home: configured, env: {}, argv: [] }), "ws://127.0.0.1:7000/ws");
-    assert.equal(await daemonWsUrl({ home: stopped, env: { PORT: "8000" }, argv: [] }), "ws://127.0.0.1:8000/ws");
+    // A lock left by a supervisor that is no longer running is stale.
+    assert.equal(await daemonWsUrl({ home: stopped, env: { PORT: "8000" }, argv: [], alive: () => false }), "ws://127.0.0.1:8000/ws");
     assert.equal(await daemonWsUrl({ home: join(stopped, "missing"), env: {}, argv: [] }), "ws://127.0.0.1:6767/ws");
   } finally {
     for (const dir of [running, configured, stopped]) await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("while Paseo's supervisor hasn't published a listen address, the daemon is still starting and gets no URL", async () => {
+  // This process stands in for the supervisor, so the lock's owner is alive.
+  const home = await paseoHome({ "paseo.pid": { pid: process.pid, listen: null, serverId: null }, "config.json": { daemon: { listen: "127.0.0.1:7000" } }, "server-id": "srv_saved\n" });
+  try {
+    // Every fallback would point at a daemon that refuses connections until all its plugins have loaded.
+    await assert.rejects(daemonWsUrl({ home, env: { PASEO_LISTEN: "7900" }, argv: ["node", "daemon", "--listen", "7800"] }),
+      error => error instanceof PaseoStartingError && /Paseo is still starting.*every plugin has loaded/.test(error.message));
+    assert.equal(await daemonServerId(home), "srv_saved", "the server ID doesn't wait for the daemon");
+    // Once the supervisor records the worker's address, that address is used.
+    await writeFile(join(home, "paseo.pid"), JSON.stringify({ pid: process.pid, listen: "127.0.0.1:6767", serverId: "srv_daemon" }));
+    assert.equal(await daemonWsUrl({ home, env: { PASEO_LISTEN: "7900" }, argv: [] }), "ws://127.0.0.1:6767/ws");
+  } finally {
+    await rm(home, { recursive: true, force: true });
   }
 });
 

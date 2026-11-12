@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -10,7 +11,7 @@ const require = createRequire(import.meta.url);
 const ts = require("typescript");
 require.extensions[".ts"] = (module, file) => module._compile(ts.transpileModule(readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, file);
 const { desiredWorkspaceStatuses, parseWorkspaceStatus, statusForTask, workspaceStatusChanges } = require("../shared/workspace-status.ts");
-const { createWorkspaceLabelSync, hostLabelReads, readAppliedStatuses, writeAppliedStatuses } = require("./workspace-labels.ts");
+const { createWorkspaceLabelSync, hostLabelReads, readAppliedStatuses, startWorkspaceLabelSync, writeAppliedStatuses } = require("./workspace-labels.ts");
 
 const serverId = "srv_here";
 const task = (taskId, status, extra = {}) => ({
@@ -181,4 +182,30 @@ test("applied statuses round-trip through the plugin data file and ignore unknow
     await writeAppliedStatuses(raw.workspaces, file);
     assert.deepEqual(await readAppliedStatuses(file), { a: "review", b: null });
   } finally { await rm(folder, { recursive: true, force: true }); }
+});
+
+test("while Paseo is still starting, the label sync doesn't connect and says so once", async t => {
+  const home = await mkdtemp(join(tmpdir(), "mc-labels-starting-"));
+  const previous = { home: process.env.PASEO_HOME, listen: process.env.PASEO_LISTEN };
+  // Counts connection attempts at the address the sync would otherwise fall back to.
+  let attempts = 0;
+  const server = createServer(socket => { attempts++; socket.destroy(); });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  process.env.PASEO_HOME = home; process.env.PASEO_LISTEN = String(server.address().port);
+  t.after(async () => {
+    for (const [name, value] of [["PASEO_HOME", previous.home], ["PASEO_LISTEN", previous.listen]]) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    await new Promise(resolve => server.close(resolve));
+    await rm(home, { recursive: true, force: true });
+  });
+  // Paseo's supervisor (this process stands in for it) holds the lock but hasn't published the daemon's address yet.
+  await writeFile(join(home, "paseo.pid"), JSON.stringify({ pid: process.pid, listen: null, serverId: null }));
+  const warnings = [];
+  t.mock.method(console, "warn", message => { warnings.push(String(message)); });
+  const sync = startWorkspaceLabelSync(async () => []);
+  t.after(() => sync.stop());
+  const settled = async count => { for (let waited = 0; warnings.length < count && waited < 2000; waited += 20) await new Promise(resolve => setTimeout(resolve, 20)); };
+  sync.poke(); await settled(1);
+  sync.poke(); await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(attempts, 0, "nothing dials a daemon that refuses connections");
+  assert.deepEqual(warnings, ["[mission-control] Workspace status labels: Paseo is still starting (its daemon accepts connections once every plugin has loaded)."]);
 });

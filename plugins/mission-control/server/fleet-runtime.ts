@@ -9,7 +9,7 @@ import { createFleetSupervisor } from "./fleet-supervisor";
 import { readRemoteFleet, withFleetConnection } from "./fleet-transport";
 import { readOrchestratorBindings } from "./orchestrator";
 import { createOrchestratorWorkStore } from "./orchestrator-work";
-import { daemonServerId } from "./agent-names";
+import { daemonServerId, PaseoStartingError } from "./agent-names";
 
 import { registerPipelineRuntime } from "./pipeline-runtime";
 
@@ -91,10 +91,20 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
       await paseo.agents.ref(id).send(prompt, { messageId: requestId, activeTurnBehavior: "steer" });
     }),
   });
+  // While Paseo is still starting, the check waits: it says so when the wait starts and when it ends. Every other
+  // failure is reported on every check.
+  let waitingSince: number | null = null;
   async function check() {
     if (disposed) return;
-    try { await pipeline.tick(); await supervisor.tick(); heartbeat = { checkedAt: new Date().toISOString(), error: null }; }
-    catch (error) { heartbeat = { checkedAt: new Date().toISOString(), error: hideSecrets(error instanceof Error ? error.message : String(error)) }; console.warn(`[mission-control] orchestrator check stopped: ${heartbeat.error}`); }
+    try {
+      await pipeline.tick(); await supervisor.tick(); heartbeat = { checkedAt: new Date().toISOString(), error: null };
+      if (waitingSince !== null) console.warn(`[mission-control] orchestrator check resumed: Paseo finished starting (waited ${Math.round((Date.now() - waitingSince) / 1000)} s).`);
+      waitingSince = null;
+    } catch (error) {
+      heartbeat = { checkedAt: new Date().toISOString(), error: hideSecrets(error instanceof Error ? error.message : String(error)) };
+      if (!(error instanceof PaseoStartingError)) { waitingSince = null; console.warn(`[mission-control] orchestrator check stopped: ${heartbeat.error}`); }
+      else if (waitingSince === null) { waitingSince = Date.now(); console.warn(`[mission-control] orchestrator check waiting: ${heartbeat.error}`); }
+    }
   }
   server.handle(readFleet, async ({ refresh }) => ({ ...await snapshot(refresh), heartbeat }));
   server.handle(configureSupervisor, async input => {

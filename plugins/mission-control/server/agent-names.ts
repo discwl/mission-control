@@ -12,16 +12,36 @@ export type AgentRenameDeps = {
   setAgentName(agentId: string, name: string): Promise<void>;
 };
 
-type DaemonSources = { home?: string; env?: NodeJS.ProcessEnv; argv?: string[] };
+type DaemonSources = { home?: string; env?: NodeJS.ProcessEnv; argv?: string[]; alive?: (pid: number) => boolean };
 const paseoHome = () => process.env.PASEO_HOME || join(homedir(), ".paseo");
 const text = (value: unknown) => typeof value === "string" && value.trim() ? value.trim() : null;
 
-/** What the running daemon records in paseo.pid once its worker is ready: its bound listen address and server ID. */
-async function daemonLock(home: string): Promise<{ listen: string | null; serverId: string | null }> {
+/**
+ * Paseo's daemon loads every plugin before it accepts other connections. Until then it answers them with HTTP 503, which
+ * reaches Mission Control's own daemon connections as "Transport closed (code 1006)".
+ */
+export class PaseoStartingError extends Error {
+  constructor() {
+    super("Paseo is still starting (its daemon accepts connections once every plugin has loaded).");
+    this.name = "PaseoStartingError";
+  }
+}
+
+/** Whether a process exists. EPERM means it exists but this process may not signal it. */
+function processAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+/**
+ * paseo.pid, held by Paseo's supervisor while it runs. The supervisor adds its worker's bound listen address and server
+ * ID once the worker accepts connections, and clears them when the worker exits.
+ */
+async function daemonLock(home: string): Promise<{ pid: number | null; listen: string | null; serverId: string | null }> {
   try {
     const lock = JSON.parse(await readFile(join(home, "paseo.pid"), "utf8"));
-    return { listen: text(lock?.listen), serverId: text(lock?.serverId) };
-  } catch { return { listen: null, serverId: null }; }
+    return { pid: Number.isInteger(lock?.pid) && lock.pid > 0 ? lock.pid : null, listen: text(lock?.listen), serverId: text(lock?.serverId) };
+  } catch { return { pid: null, listen: null, serverId: null }; }
 }
 
 function listenArgument(argv: string[]) {
@@ -32,9 +52,15 @@ function listenArgument(argv: string[]) {
   return null;
 }
 
-/** Where the daemon listens: what it recorded, else Paseo's own order of --listen, PASEO_LISTEN, daemon.listen, then PORT. */
-export async function daemonListen({ home = paseoHome(), env = process.env, argv = process.argv }: DaemonSources = {}): Promise<string> {
-  const recorded = (await daemonLock(home)).listen ?? listenArgument(argv) ?? text(env.PASEO_LISTEN);
+/**
+ * Where the daemon listens: what it recorded, else Paseo's own order of --listen, PASEO_LISTEN, daemon.listen, then PORT.
+ * While a running supervisor hasn't recorded an address, the daemon is still starting and refuses connections, so this
+ * throws PaseoStartingError instead of guessing one. A lock whose supervisor is gone is stale and doesn't count.
+ */
+export async function daemonListen({ home = paseoHome(), env = process.env, argv = process.argv, alive = processAlive }: DaemonSources = {}): Promise<string> {
+  const lock = await daemonLock(home);
+  if (lock.pid !== null && !lock.listen && alive(lock.pid)) throw new PaseoStartingError();
+  const recorded = lock.listen ?? listenArgument(argv) ?? text(env.PASEO_LISTEN);
   if (recorded) return recorded;
   try {
     const configured = text(JSON.parse(await readFile(join(home, "config.json"), "utf8"))?.daemon?.listen);
@@ -63,7 +89,7 @@ export function listenUrl(listen: string): string {
   return `ws://${host.includes(":") ? `[${host}]` : host}:${port}/ws`;
 }
 
-/** The local daemon's WebSocket URL. */
+/** The local daemon's WebSocket URL, once the daemon accepts connections. */
 export async function daemonWsUrl(sources: DaemonSources = {}): Promise<string> {
   return listenUrl(await daemonListen(sources));
 }

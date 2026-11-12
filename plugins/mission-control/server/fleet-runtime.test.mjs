@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -49,6 +50,61 @@ test("fleet RPCs discover setup-created coordinators and empty host folders; enr
   snapshot = await handlers.get("orchestrator.fleet.read")({ refresh: true });
   assert.equal(snapshot.state.coordinators[0].enabled, false); assert.ok(snapshot.state.stoppedAgentIds.includes("coordinator")); assert.equal(snapshot.state.pipelines[0].mode, "paused");
   await assert.rejects(handlers.get("orchestrator.host.snapshot")({ serverId: "another" }, { paseo: {} }), /different host/);
+});
+
+/** A TCP listener that only counts connection attempts, standing in for whatever answers at the address Mission Control would dial. */
+async function countingListener(t) {
+  const listener = { attempts: 0 };
+  const server = createServer(socket => { listener.attempts++; socket.destroy(); });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  listener.port = server.address().port;
+  return listener;
+}
+
+test("while Paseo is still starting, the orchestrator check doesn't connect, says so once, and resumes when the daemon is ready", async t => {
+  const folder = await mkdtemp(join(tmpdir(), "mc-fleet-starting-"));
+  const previous = { home: process.env.PASEO_HOME, listen: process.env.PASEO_LISTEN };
+  const daemon = await countingListener(t);
+  process.env.PASEO_HOME = folder; process.env.PASEO_LISTEN = String(daemon.port);
+  t.after(async () => {
+    for (const [name, value] of [["PASEO_HOME", previous.home], ["PASEO_LISTEN", previous.listen]]) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    await rm(folder, { recursive: true, force: true });
+  });
+  // Paseo's supervisor (this process stands in for it) holds paseo.pid and adds the listen address once the daemon accepts connections.
+  const lock = listen => writeFile(join(folder, "paseo.pid"), JSON.stringify({ pid: process.pid, listen, serverId: listen ? "personal" : null }));
+  await writeFile(join(folder, "server-id"), "personal\n");
+  await lock(null);
+  t.mock.method(directory, "fleetDirectory", async () => ({ agents: [], workspaces: [], complete: true }));
+  t.mock.method(bindings, "readOrchestratorBindings", async () => ({ bindings: {}, problems: {} }));
+  const warnings = [];
+  t.mock.method(console, "warn", message => { if (String(message).startsWith("[mission-control] orchestrator check")) warnings.push(String(message)); });
+  const handlers = new Map();
+  const stop = registerFleet({ handle: (contract, handler) => handlers.set(contract.name, handler), on: () => {} }, { decisions: async () => ({ open: [], recent: [] }), questions: async () => ({ questions: [] }) }); t.after(stop);
+  const check = () => handlers.get("orchestrator.supervisor.check")({});
+
+  // The real connection path: before the fix it dialed the fallback address and failed with "Transport closed (code 1006)".
+  await assert.rejects(check(), /Paseo is still starting/);
+  await assert.rejects(check(), /Paseo is still starting/);
+  assert.equal(daemon.attempts, 0, "nothing dials a daemon that refuses connections");
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /orchestrator check waiting: Paseo is still starting/);
+
+  // Ready: the published address is used, and a stand-in connection lets the check finish.
+  const dialed = []; let failure = null;
+  t.mock.method(transport, "withFleetConnection", async action => { dialed.push(await names.daemonWsUrl()); if (failure) throw failure; return action({}, {}, "personal"); });
+  await lock(`127.0.0.1:${daemon.port}`);
+  await check();
+  assert.deepEqual(dialed, [`ws://127.0.0.1:${daemon.port}/ws`]);
+  assert.equal(warnings.length, 2);
+  assert.match(warnings[1], /orchestrator check resumed: Paseo finished starting \(waited \d+ s\)/);
+  assert.equal((await handlers.get("orchestrator.fleet.read")({})).heartbeat.error, null);
+
+  // Other failures are still reported on every check.
+  failure = new Error("Transport closed (code 1006)");
+  await assert.rejects(check(), /code 1006/);
+  await assert.rejects(check(), /code 1006/);
+  assert.deepEqual(warnings.slice(2), Array(2).fill("[mission-control] orchestrator check stopped: Transport closed (code 1006)"));
 });
 
 test("old-host compatibility reads only managed workspaces and remains ineligible for automation", async t => {
