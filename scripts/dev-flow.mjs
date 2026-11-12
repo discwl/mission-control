@@ -284,13 +284,8 @@ function agentIdOf(args) {
   return agentId;
 }
 
-// The plugin uses the same lock file, so the CLI and Mission Control never write a run at once.
-async function withRunLock(folder, action) {
-  const lockPath = join(folder, ".write.lock");
-  const lock = await open(lockPath, "wx");
-  try { return await action(); }
-  finally { await lock.close(); await unlink(lockPath); }
-}
+// Shared with the plugin: owner evidence and OS-backed writer exclusion.
+import { withRunLock, inspectRunLock, recoverRunLock } from "../plugins/mission-control/server/run-lock.mjs";
 
 async function loadRun(bound, folder, runId) {
   const current = parseRecord(await readFile(join(folder, "run.md"), "utf8"), "Run");
@@ -874,7 +869,27 @@ async function workspaceLabel(args) {
   } finally { await client.close(); }
 }
 
-const help = `Usage: dev-flow.mjs context|start|record|checkpoint|submit-plan|save-actions|request-decision|ask|decision|finding|workspace-label --task ID --server ID --workspace ID [--run ID] [--input JSON] [--decision ID] [--finding ID --status STATUS --evidence TEXT] [--agent ID] [--cwd PATH]
+async function runLock(args) {
+  const bound = await binding(args);
+  const folder = await runFolder(bound.folder, required(args.run, "--run"));
+  await loadRun(bound, folder, args.run);
+  const action = args.action || "inspect";
+  if (action === "inspect") return inspectRunLock(folder);
+  if (action !== "recover") throw new Error("run-lock --action must be inspect or recover.");
+  const input = await readInput(args);
+  const actor = agentIdOf(args);
+  if (!actor) throw new Error("Recovery needs the actual --agent actor.");
+  // Identity comes from the validated binding, never a caller-supplied filesystem path.
+  return recoverRunLock(folder, { ...input, actor });
+}
+
+const help = `Usage: dev-flow.mjs context|start|record|checkpoint|submit-plan|save-actions|request-decision|ask|decision|finding|workspace-label|run-lock --task ID --server ID --workspace ID [--run ID] [--input JSON] [--decision ID] [--finding ID --status STATUS --evidence TEXT] [--agent ID] [--cwd PATH]
+
+run-lock --run ID [--action inspect|recover] [--agent ID --input JSON]
+  inspect is read-only and reports ownership evidence, not liveness. recover accepts
+  { expectedRevision, expectedFileIdentity, expectedNonce, reason } only for complete new
+  owner locks under the original exclusive OS-backed gate. Legacy/unknown locks are refused.
+  Recovery never sends a prompt or changes a decision. Local filesystems with node:sqlite only.
 
 workspace-label [--action get|assign|remove|status] [--label NAME] [--color COLOR] [--reason TEXT] [--url ws://host:port/ws]
   get reads the live labels, catalog and linked tasks. assign creates a missing label and assigns it;
@@ -971,7 +986,7 @@ async function main() {
     return;
   }
   const args = options(argv);
-  const commands = { context, start, record, checkpoint, "submit-plan": submitPlan, "save-actions": saveActions, "request-decision": requestDecision, ask, decision: showDecision, finding: updateFinding, "workspace-label": workspaceLabel };
+  const commands = { context, start, record, checkpoint, "submit-plan": submitPlan, "save-actions": saveActions, "request-decision": requestDecision, ask, decision: showDecision, finding: updateFinding, "workspace-label": workspaceLabel, "run-lock": runLock };
   const result = Object.hasOwn(commands, command) ? await commands[command](args) : null;
   if (!result) throw new Error(`Unknown command: ${command}`);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

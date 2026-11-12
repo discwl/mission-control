@@ -58,21 +58,9 @@ export async function atomicWrite(file: string, content: string) {
 }
 
 // Shared with dev-flow.mjs, so the CLI and plugin never write a run at the same time.
+import { withRunLock as sharedRunLock } from "./run-lock.mjs";
 export async function withRunLock<T>(runFolder: string, action: () => Promise<T>): Promise<T> {
-  const lockPath = join(runFolder, ".write.lock");
-  let lock;
-  for (let attempt = 0; ; attempt++) {
-    try { lock = await open(lockPath, "wx"); break; }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST" || attempt >= 20) {
-        if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("This run is being updated. Retry in a moment.");
-        throw error;
-      }
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
-  }
-  try { return await action(); }
-  finally { await lock.close(); await unlink(lockPath); }
+  return sharedRunLock(runFolder, action);
 }
 
 function revisionOf(decisionText: string, findingsText: string) {

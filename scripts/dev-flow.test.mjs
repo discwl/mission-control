@@ -52,6 +52,22 @@ async function fixture(t) {
   return { base, vault, repo, folder, run };
 }
 
+test("run-lock CLI inspects exact bound run and refuses legacy recovery without mutation", async t => {
+  const { base, folder, run } = await fixture(t);
+  const start = run("start"); assert.equal(start.status, 0, start.stderr); const runId = JSON.parse(start.stdout).run.runId;
+  const runFolder = join(folder, "runs", runId); const names = await readdir(runFolder);
+  const inspected = run("run-lock", ["--run", runId]); assert.equal(inspected.status, 0, inspected.stderr); assert.equal(JSON.parse(inspected.stdout).state, "absent");
+  assert.deepEqual(await readdir(runFolder), names, "inspection creates no gate or records");
+  await writeFile(join(runFolder, ".write.lock"), "");
+  const legacy = JSON.parse(run("run-lock", ["--run", runId]).stdout); assert.equal(legacy.state, "legacy");
+  const input = join(base, "recovery.json"); await writeFile(input, JSON.stringify({ expectedRevision: legacy.revision, expectedFileIdentity: legacy.fileIdentity, expectedNonce: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", reason: "not proof" }));
+  const refused = run("run-lock", ["--run", runId, "--action", "recover", "--agent", "11111111-1111-4111-8111-111111111111", "--input", input]);
+  assert.notEqual(refused.status, 0); assert.match(refused.stderr, /gate is missing|cannot be recovered/);
+  assert.equal(await readFile(join(runFolder, ".write.lock"), "utf8"), "");
+  assert.notEqual(run("run-lock", ["--run", runId, "--workspace", "wks_wrong"]).status, 0);
+  assert.notEqual(run("run-lock", ["--run", "../escape"]).status, 0);
+});
+
 test("pipeline checkpoints require a versioned approved plan, bind actual reports and reject self review before writing", async t => {
   const { base, folder, run } = await fixture(t);
   const implementer = "11111111-1111-4111-8111-111111111111"; const reviewer = "22222222-2222-4222-8222-222222222222";
@@ -570,7 +586,8 @@ test("decision requests store plain-language fields, refuse IDs, hashes, paths a
   const passed = await request({ kind: "review", question: "Accept?", summary: "Clean.", plain: ordinary }, newRun());
   assert.equal(passed.status, 0, passed.stderr);
   assert.deepEqual(JSON.parse(passed.stdout).warnings, []);
-  assert.equal(passed.stderr, "");
+  // node:sqlite emits a runtime warning on Node 22; it is not a decision-language warning.
+  assert.equal(passed.stderr.replace(/^\(node:\d+\) ExperimentalWarning: SQLite is an experimental feature and might change at any time\r?\n(?:\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\r?\n)?/, ""), "");
   const jargon = { ...ordinary, found: "savePause in pause.ts was checked with tsc; works on Node.js." };
   const warned = await request({ kind: "review", question: "Accept?", summary: "Clean.", plain: jargon }, newRun());
   assert.equal(warned.status, 0, warned.stderr);

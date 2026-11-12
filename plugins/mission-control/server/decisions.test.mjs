@@ -48,6 +48,34 @@ async function fixture(t, { kind = "review", findings = [finding("11111111", "op
   return { store, paseo, agent, sent, state, findingsOnDisk, folder, runFolder };
 }
 
+test("first lock refusal preserves pending decision and never sends", async t => {
+  const f = await fixture(t, { findings: [] });
+  const [entry] = (await f.store.list(ids.serverId)).open;
+  f.agent.status = "running";
+  const saved = await f.store.resolve({ ...ids, expectedRevision: entry.revision, outcome: "approved", note: "", submitFindingIds: [] }, f.paseo);
+  f.agent.status = "closed";
+  await writeFile(join(f.runFolder, ".write.lock"), "");
+  await assert.rejects(f.store.resend({ ...ids, expectedRevision: saved.revision }, f.paseo), { code: "RUN_LOCK_OCCUPIED" });
+  const [actual] = (await f.store.list(ids.serverId)).recent;
+  assert.equal(actual.revision, saved.revision); assert.equal(actual.decision.resume.phase, "pending"); assert.equal(f.sent.length, 0);
+  assert.equal(await readFile(join(f.runFolder, ".write.lock"), "utf8"), "");
+});
+
+test("second lock refusal preserves sending after exactly one accepted message", async t => {
+  const f = await fixture(t, { findings: [] });
+  const [entry] = (await f.store.list(ids.serverId)).open;
+  f.agent.status = "running";
+  const saved = await f.store.resolve({ ...ids, expectedRevision: entry.revision, outcome: "approved", note: "", submitFindingIds: [] }, f.paseo);
+  f.agent.status = "closed";
+  const ref = f.paseo.agents.ref;
+  f.paseo.agents.ref = id => { const agent = ref(id); return { ...agent, send: async (...args) => { await agent.send(...args); await writeFile(join(f.runFolder, ".write.lock"), ""); } }; };
+  await assert.rejects(f.store.resend({ ...ids, expectedRevision: saved.revision }, f.paseo), { code: "RUN_LOCK_OCCUPIED" });
+  const [actual] = (await f.store.list(ids.serverId)).recent;
+  assert.equal(actual.decision.resume.phase, "sending"); assert.equal(f.sent.length, 1);
+  await assert.rejects(f.store.resend({ ...ids, expectedRevision: actual.revision }, f.paseo), /unconfirmed/);
+  assert.equal(f.sent.length, 1);
+});
+
 test("request changes submits chosen findings, dismisses the rest with a note, and resumes the agent once", async t => {
   const { store, paseo, sent, findingsOnDisk } = await fixture(t);
   const { open } = await store.list(ids.serverId);
