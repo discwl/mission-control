@@ -140,6 +140,37 @@ test("an automatic code run in the shared project checkout is blocked without re
   assert.deepEqual(f.dispatched, []); assert.deepEqual(f.prepared, []);
 });
 
+test("a runner held by a failed turn says which agent failed and why, and goes on once the error clears", async t => {
+  const f = await fleet(t, { a: [{ taskId: "task_a1" }] });
+  const coordinator = f.coordinators[0];
+  // Paseo 0.16: a turn stopped by a usage limit ends failed and keeps its error and error attention until the next turn.
+  coordinator.agent = { ...coordinator.agent, error: "Usage limit reached", attention: true, attentionReason: "error" };
+  await f.engine.tick();
+  assert.deepEqual(f.dispatched, []);
+  assert.match((await f.row("task_a1")).message, /^Waiting: the coordinator coord-a's last turn failed \(Usage limit reached\)\. Automatic work continues once its next turn starts/);
+  // Messaging it starts a new turn, which clears the error and makes the host busy: the note goes straight away.
+  coordinator.agent = { ...coordinator.agent, status: "running", error: null, attention: false, attentionReason: null };
+  f.advance(1); await f.engine.tick();
+  assert.deepEqual(f.dispatched, []);
+  assert.equal((await f.row("task_a1")).message, "Waiting for the coordinator, the task's workers and its workspace to be free.");
+  // A task worker's failed turn holds it the same way.
+  coordinator.agent = { ...coordinator.agent, status: "idle" };
+  const worker = f.hosts.get("a").agents.find(item => item.id === "worker-task_a1");
+  Object.assign(worker, { error: "Invalid API key", attention: true, attentionReason: "error" });
+  f.advance(1); await f.engine.tick();
+  assert.deepEqual(f.dispatched, []);
+  assert.match((await f.row("task_a1")).message, /^Waiting: the task worker worker-task_a1's last turn failed \(Invalid API key\)/);
+  // Cleared, but still held by something else: the stale note goes.
+  Object.assign(worker, { error: null, attention: false, attentionReason: null });
+  f.hosts.get("a").agents.push(agent("user-chat", { status: "running" }));
+  f.advance(1); await f.engine.tick();
+  assert.deepEqual(f.dispatched, []);
+  assert.equal((await f.row("task_a1")).message, "Waiting for the coordinator, the task's workers and its workspace to be free.");
+  f.hosts.get("a").agents.pop();
+  f.advance(1); await f.engine.tick();
+  assert.deepEqual(f.dispatched, ["task_a1"]);
+});
+
 test("a switched task's retired workers, even missing or errored ones, no longer hold back its stages", async t => {
   const f = await fleet(t, { a: [{ taskId: "task_old" }] });
   const host = f.hosts.get("a"); const coordinator = f.coordinators[0];

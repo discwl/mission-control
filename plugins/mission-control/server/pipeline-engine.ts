@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { FleetSnapshot, FleetTask } from "../shared/fleet";
+import type { FleetAgent, FleetSnapshot, FleetTask } from "../shared/fleet";
 import type { Pipeline } from "../shared/pipeline-state";
 import { isQuiet } from "../shared/agent-tree";
 import type { PipelineInspection } from "../shared/pipeline";
@@ -57,6 +57,9 @@ function automaticPipelinePrompt(row: Pipeline, facts: PipelineInspection, next:
     "Stop after this assigned stage. The controller will choose the next step from saved evidence; do not launch additional stages yourself.",
   ].join("\n\n");
 }
+/** Part of the runner message that says a failed turn holds it, so the message is dropped once that clears. */
+const FAILED_TURN = "'s last turn failed";
+
 export function createPipelineEngine(deps: Deps) {
   const now = deps.now ?? Date.now; let running = false; let stopped = false;
   async function set(id: string, patch: Partial<Pipeline>) { return deps.store.update(state => { const row = state.pipelines.find(item => item.id === id); if (!row || !active(row) || state.paused) return; Object.assign(row, patch, { updatedAt: new Date(now()).toISOString() }); }); }
@@ -82,6 +85,23 @@ export function createPipelineEngine(deps: Deps) {
     if (needsWorktree(row, selected)) return true;
     return !host.agents.some(agent => agent.workspaceId === workspaceId && (["running", "initializing"].includes(agent.status) || agent.pendingPermissions));
   }
+  /**
+   * Since Paseo 0.16 a turn stopped by a provider error (a usage limit, an invalid key) ends failed and keeps its error
+   * until the agent's next turn starts. permitted() holds the runner meanwhile; this names the agent and the error.
+   */
+  function failedTurnHold(row: Pipeline, snapshot: FleetSnapshot): string | null {
+    const coordinator = snapshot.coordinators.find(item => item.agentId === row.coordinatorId && item.remoteServerId === row.remoteServerId);
+    if (!coordinator) return null;
+    const failed = (agent: FleetAgent) => agent.status === "error" || Boolean(agent.error) || (agent.attention && agent.attentionReason === "error");
+    const say = (who: string, agent: FleetAgent) => `Waiting: ${who} ${agent.name}${FAILED_TURN}${agent.error ? ` (${agent.error.slice(0, 200)})` : ""}. Automatic work continues once its next turn starts, for example when you message it after a usage limit resets.`;
+    if (failed(coordinator.agent)) return say("the coordinator", coordinator.agent);
+    const host = snapshot.hosts.find(item => item.serverId === row.remoteServerId)?.snapshot;
+    const selected = host?.tasks.find(item => item.task.taskId === row.taskId);
+    if (!host || !selected) return null;
+    const retired = new Set(row.workflowMode === "automatic" && row.retiredWorkerIds !== undefined ? row.retiredWorkerIds : []);
+    const worker = taskWorkers(selected, host, managedWorkerIds(snapshot.serverId, coordinator, host.agents), coordinator.links).find(agent => !retired.has(agent.id) && failed(agent));
+    return worker ? say("the task worker", worker) : null;
+  }
   async function cycle() {
     const snapshot = await deps.snapshot();
     if (snapshot.state.paused) return;
@@ -97,7 +117,15 @@ export function createPipelineEngine(deps: Deps) {
       let row = (await deps.store.read()).pipelines.find(item => item.id === initial.id)!;
       if (!row || !active(row) || row.intake?.phase === "pending") continue;
       if (row.pending) { await set(row.id, { mode: "blocked", message: "A dispatch has no confirmed receipt. Inspect its remote stage worker under Reviewers and evidence or native Subagents; legacy messages and draft PR previews go to the coordinator. It will not be replayed." }); continue; }
-      if (busyHosts.has(row.remoteServerId) || !permitted(row, snapshot)) continue;
+      const busy = busyHosts.has(row.remoteServerId);
+      if (busy || !permitted(row, snapshot)) {
+        // Say which failed turn holds the runner, and drop that note once it clears. The agent's next turn clears it and
+        // also makes the host busy, so a busy host drops a stale note too.
+        const hold = failedTurnHold(row, snapshot);
+        if (hold && !busy && row.message !== hold) await set(row.id, { message: hold });
+        else if (!hold && row.message.includes(FAILED_TURN)) await set(row.id, { message: "Waiting for the coordinator, the task's workers and its workspace to be free." });
+        continue;
+      }
       let facts: PipelineInspection;
       try { facts = await deps.inspect(row, snapshot); }
       catch (error) { await set(row.id, { mode: "blocked", message: `Cannot verify stage evidence: ${error instanceof Error ? error.message : String(error)}` }); continue; }
