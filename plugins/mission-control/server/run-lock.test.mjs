@@ -11,7 +11,7 @@ async function fault(name, replacement, action) {
   const original = fs[name]; fs[name] = replacement(original); syncBuiltinESMExports();
   try { return await action(); } finally { fs[name] = original; syncBuiltinESMExports(); }
 }
-import { inspectRunLock, recoverRunLock, withRunLock } from "./run-lock.mjs";
+import { clearLegacyRunLock, inspectRunLock, LEGACY_LOCK_MIN_AGE_MS, recoverRunLock, runningAgentsInWorkspace, withRunLock } from "./run-lock.mjs";
 const moduleUrl = new URL("./run-lock.mjs", import.meta.url).href;
 async function fixture(t) { const folder = await mkdtemp(join(tmpdir(), "mc-run-lock-")); t.after(() => rm(folder, { recursive: true, force: true })); return folder; }
 const recovery = view => ({ expectedRevision: view.revision, expectedFileIdentity: view.fileIdentity, expectedNonce: view.owner.nonce, actor: "test-author", reason: "Explicit fixture recovery after owner exit" });
@@ -190,4 +190,64 @@ test("crash after side effect does not imply rollback or repeat action", async t
   const folder = await fixture(t); const view = await crashed(t, folder, "await writeFile(folder+'/applied','yes');process.send('applied');await new Promise(()=>{setInterval(()=>{},1000);});");
   await recoverRunLock(folder, recovery(view)); assert.equal(await readFile(join(folder, "applied"), "utf8"), "yes");
   assert.equal((await readdir(folder)).filter(name => name.endsWith(".completed.json")).length, 1);
+});
+
+const clearing = view => ({ expectedRevision: view.revision, expectedFileIdentity: view.fileIdentity, actor: "test-author", reason: "Empty lock left by a crashed write" });
+const later = () => Date.now() + LEGACY_LOCK_MIN_AGE_MS + 60_000;
+test("an empty lock untouched for 30 minutes is cleared once, with evidence, and the run is writable again", async t => {
+  const folder = await fixture(t); await writeFile(join(folder, ".write.lock"), "");
+  const view = await inspectRunLock(folder); assert.equal(view.state, "legacy");
+  await assert.rejects(clearLegacyRunLock(folder, clearing(view)), { code: "RUN_LOCK_RECENT" });
+  assert.equal((await inspectRunLock(folder)).state, "legacy", "a lock set moments ago stays");
+  const result = await clearLegacyRunLock(folder, clearing(view), later);
+  assert.equal(result.applied, true); assert.equal((await inspectRunLock(folder)).state, "absent");
+  const evidence = JSON.parse(await readFile(result.audit, "utf8"));
+  assert.equal(evidence.proof, "exclusive-gate-empty-lock-untouched-30-minutes-no-running-agent"); assert.equal(evidence.actor, "test-author"); assert.equal(evidence.owner, null);
+  assert.equal((await readdir(folder)).filter(name => name.endsWith(".completed.json")).length, 1);
+  await assert.rejects(clearLegacyRunLock(folder, clearing(view), later), { code: "RUN_LOCK_ABSENT" });
+  assert.equal(await withRunLock(folder, async () => "written"), "written");
+});
+test("clearing refuses a lock with content, a lock changed since inspect, and incomplete input", async t => {
+  const folder = await fixture(t);
+  // A bare ID, as an older recovery path writes: unknown content is left for a person.
+  await writeFile(join(folder, ".write.lock"), "11111111-1111-4111-8111-111111111111");
+  const unknown = await inspectRunLock(folder); assert.equal(unknown.state, "unknown");
+  await assert.rejects(clearLegacyRunLock(folder, clearing(unknown), later), { code: "RUN_LOCK_NOT_LEGACY" });
+  await unlink(join(folder, ".write.lock")); await writeFile(join(folder, ".write.lock"), "");
+  await assert.rejects(clearLegacyRunLock(folder, clearing(unknown), later), { code: "RUN_LOCK_CHANGED" });
+  await assert.rejects(clearLegacyRunLock(folder, { ...clearing(await inspectRunLock(folder)), reason: " " }, later), { code: "RUN_LOCK_INPUT" });
+  assert.equal(await readFile(join(folder, ".write.lock"), "utf8"), "");
+});
+test("a live owner holding the gate stops clearing without touching its lock", async t => {
+  const folder = await fixture(t); const c = child(folder, "await withRunLock(folder,async()=>{process.send('held');await new Promise(()=>{setInterval(()=>{},1000);});});");
+  t.after(() => c.proc.kill()); await once(c.proc, "message");
+  const view = await inspectRunLock(folder); const before = await readFile(join(folder, ".write.lock"));
+  await assert.rejects(clearLegacyRunLock(folder, clearing(view), later), { code: "RUN_LOCK_BUSY" });
+  assert.deepEqual(await readFile(join(folder, ".write.lock")), before); c.proc.kill(); await c.exit;
+});
+test("running agents in a workspace come from the host's list, background workspaces included and the caller left out", async () => {
+  const filters = [];
+  const pages = [
+    [{ agent: { id: "me", workspaceId: "wks_run", status: "running" } }, { agent: { id: "a1", title: "Builder", workspaceId: "wks_run", status: "running" } }, { agent: { id: "a2", workspaceId: "wks_other", status: "running" } }],
+    [{ agent: { id: "a3", workspaceId: "wks_run", status: "idle" } }, { agent: { id: "a4", workspaceId: "wks_run", status: "initializing" } }, { agent: { id: "a5", workspaceId: "wks_run", status: "running", archivedAt: "2026-11-01T00:00:00Z" } }],
+  ];
+  const paseo = { agents: { list: async ({ filter, page }) => { filters.push(filter); const index = page.cursor ? 1 : 0; return { entries: pages[index], pageInfo: { hasMore: index === 0, nextCursor: index === 0 ? "next" : null } }; } } };
+  assert.deepEqual(await runningAgentsInWorkspace(paseo, "wks_run", "me"), ["Builder", "a4"]);
+  assert.ok(filters.length === 2 && filters.every(filter => filter.includeBackground === true));
+  // A host before background workspaces is asked again without the field.
+  const older = { agents: { list: async ({ filter }) => { if (filter.includeBackground) throw new Error("Update the host to use background workspaces."); return { entries: pages[0], pageInfo: { hasMore: false } }; } } };
+  assert.deepEqual(await runningAgentsInWorkspace(older, "wks_run", "me"), ["Builder"]);
+  const endless = { agents: { list: async () => ({ entries: [], pageInfo: { hasMore: true, nextCursor: "again" } }) } };
+  await assert.rejects(runningAgentsInWorkspace(endless, "wks_run"), { code: "RUN_LOCK_AGENTS" });
+  // A list that says more follow but can't be continued, or has no paging at all, isn't taken as complete.
+  const stuck = { agents: { list: async () => ({ entries: [], pageInfo: { hasMore: true, nextCursor: null } }) } };
+  await assert.rejects(runningAgentsInWorkspace(stuck, "wks_run"), { code: "RUN_LOCK_AGENTS", message: /gave no way to read them/ });
+  const unpaged = { agents: { list: async () => ({ entries: [] }) } };
+  await assert.rejects(runningAgentsInWorkspace(unpaged, "wks_run"), { code: "RUN_LOCK_AGENTS", message: /came back incomplete/ });
+});
+
+test("a run that finds an empty lock says how to clear it", async t => {
+  const folder = await fixture(t); await writeFile(join(folder, ".write.lock"), "");
+  assert.equal((await inspectRunLock(folder)).recovery, "clear-legacy-once-30-minutes-old-with-no-agent-running");
+  await assert.rejects(withRunLock(folder, async () => assert.fail("legacy lock")), { code: "RUN_LOCK_OCCUPIED", message: /run-lock --action clear-legacy once it's 30 minutes old/ });
 });

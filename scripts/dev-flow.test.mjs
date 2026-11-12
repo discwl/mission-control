@@ -8,6 +8,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { planBrief } from "../plugins/mission-control/server/plan-test-data.mjs";
 import { createWorkflowInstructionsStore } from "../plugins/mission-control/server/workflow-instructions-store.mjs";
+import { runningAgentsInWorkspace } from "../plugins/mission-control/server/run-lock.mjs";
 
 const cli = join(dirname(fileURLToPath(import.meta.url)), "dev-flow.mjs");
 const taskId = "task_aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa";
@@ -66,6 +67,47 @@ test("run-lock CLI inspects exact bound run and refuses legacy recovery without 
   assert.equal(await readFile(join(runFolder, ".write.lock"), "utf8"), "");
   assert.notEqual(run("run-lock", ["--run", runId, "--workspace", "wks_wrong"]).status, 0);
   assert.notEqual(run("run-lock", ["--run", "../escape"]).status, 0);
+});
+
+test("run-lock clear-legacy needs an actor and is refused when Paseo can't be asked about running agents", async t => {
+  const { base, folder, run } = await fixture(t);
+  const start = run("start"); assert.equal(start.status, 0, start.stderr); const runId = JSON.parse(start.stdout).run.runId;
+  const runFolder = join(folder, "runs", runId);
+  await writeFile(join(runFolder, ".write.lock"), "");
+  const legacy = JSON.parse(run("run-lock", ["--run", runId]).stdout);
+  const input = join(base, "clear.json"); await writeFile(input, JSON.stringify({ expectedRevision: legacy.revision, expectedFileIdentity: legacy.fileIdentity, reason: "Empty lock left by a crashed write" }));
+  const anonymous = run("run-lock", ["--run", runId, "--action", "clear-legacy", "--input", input]);
+  assert.notEqual(anonymous.status, 0); assert.match(anonymous.stderr, /Clearing needs the actual --agent actor/);
+  const unreachable = run("run-lock", ["--run", runId, "--action", "clear-legacy", "--agent", "11111111-1111-4111-8111-111111111111", "--input", input, "--url", "ws://127.0.0.1:1/ws"]);
+  assert.notEqual(unreachable.status, 0); assert.match(unreachable.stderr, /Couldn't reach Paseo to check for running agents.*clearing refused/);
+  assert.equal(await readFile(join(runFolder, ".write.lock"), "utf8"), "", "the lock is untouched");
+  assert.ok(!(await readdir(runFolder)).some(name => name.startsWith(".write-recovery-")), "no evidence of a clearing that didn't happen");
+});
+
+test("clear-legacy asks only the task's own host, and leaves out only the agent running the command", async () => {
+  const source = await readFile(cli, "utf8");
+  const start = source.indexOf("async function checkNoRunningAgents(");
+  const end = source.indexOf("\n/** Runs `work` against the local daemon's Paseo API", start);
+  assert.ok(start >= 0 && end > start);
+  const env = {};
+  const { checkNoRunningAgents } = vm.runInNewContext(`${source.slice(start, end)}\n({checkNoRunningAgents})`, { process: { env }, runningAgentsInWorkspace });
+  const bound = { host: { serverId }, workspaceId };
+  let agents = [], listed = 0;
+  const paseo = { agents: { list: async () => { listed++; return { entries: agents.map(agent => ({ agent })), pageInfo: { hasMore: false, nextCursor: null } }; } } };
+  const daemon = id => ({ getLastServerInfoMessage: () => id === undefined ? null : { serverId: id } });
+  // Another daemon, or one that hasn't said which it is, proves nothing about this workspace.
+  for (const client of [daemon("srv_other"), daemon(undefined)]) await assert.rejects(checkNoRunningAgents(bound, client, paseo), /isn't this task's host/);
+  assert.equal(listed, 0);
+  // A coordinator elsewhere clearing on the worker's behalf (--agent <worker>) still sees the running worker.
+  const caller = "11111111-1111-4111-8111-111111111111", worker = "22222222-2222-4222-8222-222222222222";
+  agents = [{ id: caller, workspaceId, status: "running" }, { id: worker, title: "Worker", workspaceId, status: "running" }];
+  env.PASEO_AGENT_ID = caller;
+  await assert.rejects(checkNoRunningAgents(bound, daemon(serverId), paseo), /still running in this run's workspace \(Worker\)/);
+  agents = agents.slice(0, 1);
+  await checkNoRunningAgents(bound, daemon(serverId), paseo);
+  // Run outside an agent, nothing is left out.
+  delete env.PASEO_AGENT_ID;
+  await assert.rejects(checkNoRunningAgents(bound, daemon(serverId), paseo), new RegExp(caller));
 });
 
 test("pipeline checkpoints require a versioned approved plan, bind actual reports and reject self review before writing", async t => {

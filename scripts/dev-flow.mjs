@@ -285,7 +285,7 @@ function agentIdOf(args) {
 }
 
 // Shared with the plugin: owner evidence and OS-backed writer exclusion.
-import { withRunLock, inspectRunLock, recoverRunLock } from "../plugins/mission-control/server/run-lock.mjs";
+import { withRunLock, inspectRunLock, recoverRunLock, clearLegacyRunLock, runningAgentsInWorkspace } from "../plugins/mission-control/server/run-lock.mjs";
 
 async function loadRun(bound, folder, runId) {
   const current = parseRecord(await readFile(join(folder, "run.md"), "utf8"), "Run");
@@ -875,21 +875,54 @@ async function runLock(args) {
   await loadRun(bound, folder, args.run);
   const action = args.action || "inspect";
   if (action === "inspect") return inspectRunLock(folder);
-  if (action !== "recover") throw new Error("run-lock --action must be inspect or recover.");
+  if (action !== "recover" && action !== "clear-legacy") throw new Error("run-lock --action must be inspect, recover or clear-legacy.");
   const input = await readInput(args);
   const actor = agentIdOf(args);
-  if (!actor) throw new Error("Recovery needs the actual --agent actor.");
+  if (!actor) throw new Error(action === "recover" ? "Recovery needs the actual --agent actor." : "Clearing needs the actual --agent actor.");
   // Identity comes from the validated binding, never a caller-supplied filesystem path.
-  return recoverRunLock(folder, { ...input, actor });
+  if (action === "recover") return recoverRunLock(folder, { ...input, actor });
+  await withLocalPaseo(args, (client, paseo) => checkNoRunningAgents(bound, client, paseo));
+  return clearLegacyRunLock(folder, { ...input, actor });
+}
+
+/**
+ * Before an empty lock is cleared: a write from before the shared lock holds its lock only while it runs, so an agent
+ * still running in the run's workspace could be that writer. Only the agent running this command is left out. --agent
+ * may name another agent, such as the run's worker, which is exactly the one that could hold the lock.
+ */
+async function checkNoRunningAgents(bound, client, paseo) {
+  // Another daemon (a second instance, a tunnel, a wrong --url) has no agents in this workspace, so it proves nothing.
+  if (client.getLastServerInfoMessage()?.serverId !== bound.host.serverId) throw new Error("The Paseo at --url isn't this task's host, so it can't say whether an agent is running in the run's workspace; clearing refused.");
+  const running = await runningAgentsInWorkspace(paseo, bound.workspaceId, process.env.PASEO_AGENT_ID || null);
+  if (running.length) throw new Error(`An agent is still running in this run's workspace (${running.join(", ")}); clearing refused.`);
+}
+
+/** Runs `work` against the local daemon's Paseo API, at --url or Paseo's default address. */
+async function withLocalPaseo(args, work) {
+  const endpoint = new URL(args.url || "ws://127.0.0.1:6767/ws");
+  if (!["ws:", "wss:"].includes(endpoint.protocol) || endpoint.username || endpoint.password) throw new Error("--url must be a WebSocket endpoint without embedded credentials.");
+  const require = createRequire(new URL("../plugins/mission-control/package.json", import.meta.url));
+  const { DaemonClient } = await import(pathToFileURL(require.resolve("@getpaseo/client/internal/daemon-client")));
+  const { createPaseoApi } = await import(pathToFileURL(require.resolve("@getpaseo/client")));
+  const client = new DaemonClient({ url: endpoint.href, clientId: `dev-flow-run-lock-${randomUUID()}`, clientType: "cli", connectTimeoutMs: 10_000, reconnect: { enabled: false }, logger: { debug() {}, info() {}, warn() {}, error() {} } });
+  try {
+    try { await client.connect(); }
+    catch (error) { throw new Error(`Couldn't reach Paseo to check for running agents (${error instanceof Error ? error.message : String(error)}); clearing refused.`); }
+    return await work(client, createPaseoApi(client));
+  } finally { await client.close(); }
 }
 
 const help = `Usage: dev-flow.mjs context|start|record|checkpoint|submit-plan|save-actions|request-decision|ask|decision|finding|workspace-label|run-lock --task ID --server ID --workspace ID [--run ID] [--input JSON] [--decision ID] [--finding ID --status STATUS --evidence TEXT] [--agent ID] [--cwd PATH]
 
-run-lock --run ID [--action inspect|recover] [--agent ID --input JSON]
+run-lock --run ID [--action inspect|recover|clear-legacy] [--agent ID --input JSON] [--url ws://host:port/ws]
   inspect is read-only and reports ownership evidence, not liveness. recover accepts
   { expectedRevision, expectedFileIdentity, expectedNonce, reason } only for complete new
   owner locks under the original exclusive OS-backed gate. Legacy/unknown locks are refused.
-  Recovery never sends a prompt or changes a decision. Local filesystems with node:sqlite only.
+  clear-legacy accepts { expectedRevision, expectedFileIdentity, reason } only for an EMPTY
+  lock unchanged since inspect and untouched for 30 minutes, with no agent but the caller
+  running in the run's workspace, as the task host's Paseo at --url lists them (Paseo 0.16
+  background helpers aren't visible to it). Evidence is saved as for recover.
+  Neither sends a prompt or changes a decision. Local filesystems with node:sqlite only.
 
 workspace-label [--action get|assign|remove|status] [--label NAME] [--color COLOR] [--reason TEXT] [--url ws://host:port/ws]
   get reads the live labels, catalog and linked tasks. assign creates a missing label and assigns it;
