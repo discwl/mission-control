@@ -79,22 +79,33 @@ export type SmallModelRequest = {
 export async function askSmallModel(paseo: PaseoApi, workspaceId: string, model: SmallModel, request: SmallModelRequest): Promise<string> {
   const cwd = await workspaceDirectory(paseo, workspaceId);
   const modeId = await modeFor(paseo, model.provider, cwd);
-  // Mission Control's own ID, so an agent that Paseo 0.11 and older leave behind when create fails can still be
-  // archived. Where there's no crypto.randomUUID (some app runtimes), Paseo picks the ID.
-  const agentId = globalThis.crypto?.randomUUID?.();
+  const create = async (background: boolean) => {
+    // Mission Control's own ID, so an agent that Paseo 0.11 and older leave behind when create fails can still be
+    // archived. Where there's no crypto.randomUUID (some app runtimes), Paseo picks the ID.
+    const agentId = globalThis.crypto?.randomUUID?.();
+    try {
+      return await paseo.workspaces.ref(workspaceId).agents.create({
+        ...(agentId ? { agentId } : {}),
+        config: { provider: model.provider, systemPrompt: request.systemPrompt, ...(modeId ? { modeId } : {}), ...(model.thinkingOptionId ? { thinkingOptionId: model.thinkingOptionId } : {}) },
+        title: request.title,
+        prompt: request.prompt,
+        outputSchema: request.outputSchema,
+        labels: { "mission-control.role": request.role },
+        ...(background ? { background: true } : {}),
+      });
+    } catch (error) {
+      if (agentId) await paseo.agents.ref(agentId).archive().catch(() => undefined);
+      throw error;
+    }
+  };
   let agent;
-  try {
-    agent = await paseo.workspaces.ref(workspaceId).agents.create({
-      ...(agentId ? { agentId } : {}),
-      config: { provider: model.provider, systemPrompt: request.systemPrompt, ...(modeId ? { modeId } : {}), ...(model.thinkingOptionId ? { thinkingOptionId: model.thinkingOptionId } : {}) },
-      title: request.title,
-      prompt: request.prompt,
-      outputSchema: request.outputSchema,
-      labels: { "mission-control.role": request.role },
-    });
-  } catch (error) {
-    if (agentId) await paseo.agents.ref(agentId).archive().catch(() => undefined);
-    throw error;
+  // Paseo 0.16 runs it as a background agent: no tab, no notification. Older hosts refuse that before creating anything
+  // ("Update the host to use background agents.", or 0.15's "background is workspace creation intent"), so it then
+  // runs as an ordinary agent, as before.
+  try { agent = await create(true); }
+  catch (error) {
+    if (!/background/i.test(error instanceof Error ? error.message : String(error))) throw error;
+    agent = await create(false);
   }
   try {
     const result = await agent.waitForFinish(request.timeoutMs ?? 180_000);
