@@ -314,6 +314,7 @@ export function createDecisionStore(deps: { sources: (serverId: string) => Promi
     const records = await list(serverId, Infinity);
     const all = [...records.open, ...records.recent];
     const delivered: DecisionEntry[] = [];
+    const failures: string[] = [];
     for (const entry of records.recent) {
       const d = entry.decision;
       if (d.serverId !== serverId || d.resume?.phase !== "pending" || !d.agentId || agentId && d.agentId !== agentId) continue;
@@ -326,8 +327,12 @@ export function createDecisionStore(deps: { sources: (serverId: string) => Promi
       if (!agent || !isQuiet(agent) || agent.activeTurn || agent.pendingPermissions.length || agent.archivedAt || agent.workspaceId !== d.workspaceId) continue;
       // deliver re-reads under the run lock, checks plan version and persists intent before sending.
       // `sending` is intentionally never eligible, even after a restart or lost acknowledgement.
-      delivered.push(await deliver(d, paseo, true));
+      // One decision that can't be delivered (for example, its run's lock is stuck) must not hold back the rest.
+      try { delivered.push(await deliver(d, paseo, true)); }
+      catch (error) { failures.push(`${d.decisionId}: ${error instanceof Error ? error.message : String(error)}`); }
     }
+    // Still reported, with the decision, after the others had their turn.
+    if (failures.length) throw new Error(failures.length === 1 ? failures[0] : `${failures.length} saved decisions couldn't be delivered. First: ${failures[0]}`);
     return delivered;
   }
 

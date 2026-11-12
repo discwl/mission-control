@@ -392,3 +392,40 @@ test("supersede refuses a request that the user already decided, and changes not
   await assert.rejects(store.supersede({ serverId: ids.serverId, taskId: ids.taskId, decisionIds: [ids.decisionId], note: "switch" }), /already blocked. Nothing was changed/);
   assert.equal((await store.list(ids.serverId)).recent[0].decision.status, "blocked");
 });
+
+test("one saved decision that can't be delivered doesn't hold back the others", async t => {
+  const root = await mkdtemp(join(tmpdir(), "mission-decisions-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const rows = [
+    { taskId: "task_dddddddd-dddd-4ddd-dddd-dddddddddddd", runId: "run_eeeeeeee-eeee-4eee-eeee-eeeeeeeeeeee", decisionId: "decision_ffffffff-ffff-4fff-ffff-ffffffffffff", workspaceId: "wks_one", agentId: "agent-one" },
+    { taskId: "task_11111111-1111-4111-8111-111111111111", runId: "run_22222222-2222-4222-8222-222222222222", decisionId: "decision_33333333-3333-4333-8333-333333333333", workspaceId: "wks_two", agentId: "agent-two" },
+  ];
+  const sources = []; const agents = {};
+  for (const row of rows) {
+    const folder = join(root, row.taskId); row.runFolder = join(folder, "runs", row.runId);
+    await mkdir(join(row.runFolder, "decisions"), { recursive: true });
+    await writeFile(join(row.runFolder, "decisions", `${row.decisionId}.md`), markdown({
+      schemaVersion: 1, serverId: ids.serverId, workspaceId: row.workspaceId, taskId: row.taskId, runId: row.runId, decisionId: row.decisionId,
+      agentId: row.agentId, kind: "review", status: "open", question: "Fix these?", requestedAt: "2026-09-25T00:00:00Z",
+      gitHead: null, gitDirty: true, evidence: ["review.md"], findingIds: [], resolvedAt: null, note: null, resume: null,
+    }, "Checked."));
+    sources.push({ task: { taskId: row.taskId, projectId: "prj_test", title: row.taskId, assignments: [{ serverId: ids.serverId, workspaceId: row.workspaceId }] }, folder, file: join(folder, "task.md") });
+    agents[row.agentId] = { id: row.agentId, workspaceId: row.workspaceId, status: "running", activeTurn: null, pendingPermissions: [], archivedAt: null };
+  }
+  const sent = [];
+  const paseo = { agents: { ref: id => ({ refresh: async () => ({ agent: { ...agents[id] } }), send: async (text, options) => { sent.push({ id, options }); } }) } };
+  const store = createDecisionStore({ sources: async () => sources, kitRoot: async () => "kit" });
+  // Both workers are busy when the user decides, so both decisions are saved for later delivery.
+  for (const entry of (await store.list(ids.serverId)).open) {
+    const { serverId, workspaceId, taskId, runId, decisionId } = entry.decision;
+    await store.resolve({ serverId, workspaceId, taskId, runId, decisionId, expectedRevision: entry.revision, outcome: "changes_requested", note: "Fix it", submitFindingIds: [] }, paseo);
+  }
+  assert.equal(sent.length, 0);
+  // The decision retried first is in a run whose lock a crashed write left behind.
+  const first = (await store.list(ids.serverId, Infinity)).recent[0].decision;
+  const stuck = rows.find(row => row.decisionId === first.decisionId);
+  await writeFile(join(stuck.runFolder, ".write.lock"), "");
+  for (const agent of Object.values(agents)) agent.status = "idle";
+  await assert.rejects(store.retryPending(ids.serverId, paseo), new RegExp(stuck.decisionId));
+  assert.deepEqual(sent.map(item => item.id), [rows.find(row => row !== stuck).agentId], "the other worker still gets its decision");
+});
