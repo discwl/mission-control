@@ -108,6 +108,25 @@ test("while Paseo is still starting, the orchestrator check doesn't connect, say
   assert.deepEqual(warnings.slice(2), Array(2).fill("[mission-control] orchestrator check stopped: Transport closed (code 1006)"));
 });
 
+test("the fleet check lists this host through Paseo's own API once a handler has supplied it", async t => {
+  const folder = await mkdtemp(join(tmpdir(), "mc-fleet-hostapi-"));
+  const previous = process.env.PASEO_HOME; process.env.PASEO_HOME = folder;
+  t.after(async () => { if (previous === undefined) delete process.env.PASEO_HOME; else process.env.PASEO_HOME = previous; await rm(folder, { recursive: true, force: true }); });
+  // Paseo 0.16 hides background agents from the client bundled with Mission Control, but not from its own API.
+  const connection = { name: "bundled" }; const host = { name: "host" };
+  t.mock.method(transport, "withFleetConnection", async action => action(connection, {}, "personal"));
+  const listedThrough = [];
+  t.mock.method(directory, "fleetDirectory", async api => { listedThrough.push(api.name); return { agents: [], workspaces: [], complete: true }; });
+  t.mock.method(bindings, "readOrchestratorBindings", async api => { listedThrough.push(`bindings:${api.name}`); return { bindings: {}, problems: {} }; });
+  let current = null;
+  const handlers = new Map();
+  const stop = registerFleet({ handle: (contract, handler) => handlers.set(contract.name, handler), on: () => {} }, { decisions: async () => ({ open: [], recent: [] }), questions: async () => ({ questions: [] }) }, () => current); t.after(stop);
+  await handlers.get("orchestrator.fleet.read")({ refresh: true });
+  current = host;
+  await handlers.get("orchestrator.fleet.read")({ refresh: true });
+  assert.deepEqual(listedThrough, ["bundled", "bindings:bundled", "host", "bindings:host"]);
+});
+
 test("old-host compatibility reads only managed workspaces and remains ineligible for automation", async t => {
   t.mock.method(directory, "fleetDirectory", async () => ({ agents: [raw("worker", "managed", { "paseo.parent-agent-id": "coordinator", "paseo.parent-server-id": "personal" }), raw("unrelated", "other")], workspaces: [{ id: "managed", name: "Work", projectDisplayName: "Project", labels: [], status: "idle" }, { id: "other", name: "Other", projectDisplayName: "Project", labels: [], status: "idle" }], complete: true }));
   const calls = [];

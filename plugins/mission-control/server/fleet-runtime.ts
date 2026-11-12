@@ -1,3 +1,4 @@
+import type { PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { acknowledgeFleetDispatch, configureSupervisor, fleetSnapshotSchema, pauseFleet, readFleet, readFleetHost, reconcileFleet, setFleetQueue, supervisorEntrySchema, type FleetSnapshot } from "../shared/fleet";
 import { chooseNextTask, coordinatorCandidates, fleetTargets, managedTasks, taskFingerprint, withPipelineProjection } from "../shared/fleet-model";
@@ -13,7 +14,7 @@ import { daemonServerId, PaseoStartingError } from "./agent-names";
 
 import { registerPipelineRuntime } from "./pipeline-runtime";
 
-export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostDeps, "stoppedAgents">) {
+export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostDeps, "stoppedAgents">, hostPaseo: () => PaseoApi | null = () => null) {
   const store = createFleetStore(); const links = createOrchestratorWorkStore();
   let disposed = false; let cached: FleetSnapshot | null = null; let loading: Promise<FleetSnapshot> | null = null;
   let heartbeat = { checkedAt: null as string | null, error: null as string | null };
@@ -23,7 +24,11 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
     return collectFleetHost(paseo, serverId, hostDeps);
   });
   async function collect(): Promise<FleetSnapshot> {
-    return withFleetConnection(async (paseo, client, serverId) => {
+    return withFleetConnection(async (connection, client, serverId) => {
+      // Local lists go through the host's own Paseo API once a handler has supplied it. On Paseo 0.16 the client bundled
+      // with Mission Control isn't shown agents running in the background, so a background helper's workspace would look
+      // free. The bundled connection still routes reads to other hosts.
+      const paseo = hostPaseo() ?? connection;
       const directory = await fleetDirectory(paseo, serverId);
       const candidateIds = new Set(coordinatorCandidates(directory.agents.map(toFleetAgent)).map(agent => agent.id));
       const roots = directory.agents.filter(agent => candidateIds.has(agent.id));

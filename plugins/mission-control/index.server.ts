@@ -142,7 +142,7 @@ export default function contribute(context: PluginServerContext) {
   server.handle(supersedeDecisions, async input => ({ superseded: await decisions.supersede(input) }));
   // Questions agents recorded with dev-flow ask, shown in Attention as Waiting for you, and the user's replies.
   const questions = createQuestionStore({ sources: taskSources });
-  const stopFleet = registerFleet(server, { decisions: id => decisions.list(id, Infinity), questions: id => questions.list(id) });
+  const stopFleet = registerFleet(server, { decisions: id => decisions.list(id, Infinity), questions: id => questions.list(id) }, hostPaseo);
   server.handle(listWaiting, async ({ serverId }, { paseo }) => {
     const result = await questions.list(serverId);
     await needsYouTimeline.questions(result.questions, paseo);
