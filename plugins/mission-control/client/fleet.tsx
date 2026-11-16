@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { ScrollView, Text, TextInput, View } from "react-native";
 import { acknowledgeFleetDispatch, configureSupervisor, fleetScreenId, pauseFleet, readFleet, reconcileFleet, setFleetQueue, type FleetCoordinator, type FleetSnapshot } from "../shared/fleet";
+import { useFleetLive } from "./fleet-live";
 import { managedTasks, managedWorkerIds, taskWorkflow, taskWorkers, workflowStages } from "../shared/fleet-model";
 import { setOrchestratorWork } from "../shared/orchestrator-work";
 import { CompactLink } from "./compact-link";
@@ -77,7 +78,9 @@ export function OrchestratorFleet({ theme, host, layout, navigation }: PluginSur
   const colors = theme.colors; const compact = layout.compact || viewportWidth < 900;
   const read = useRpc(readFleet); const queue = useRpc(setFleetQueue); const pause = useRpc(pauseFleet); const check = useRpc(reconcileFleet);
   const cache = useQueryClient(); const key = ["mission-control", "fleet", host.id];
-  const query = useQuery({ queryKey: key, queryFn: () => read({ refresh: true }), refetchInterval: 20_000, retry: false });
+  // Live: pushes keep this current from cached reads. Every read this query makes itself forces (see useFleetLive).
+  const live = useFleetLive(key, () => read({ maxAgeMs: 45_000 }));
+  const query = useQuery({ queryKey: key, queryFn: () => read({ refresh: true }), refetchInterval: live ? false : 20_000, retry: false });
   const snapshot = query.data;
   const [view, setView] = usePageState<ViewName>(`fleet:${host.id}:view`, "Overview");
   const [filterHost, setFilterHost] = usePageState(`fleet:${host.id}:host`, "all");

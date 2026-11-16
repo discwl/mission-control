@@ -2,11 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { FleetSnapshot } from "../shared/fleet";
 import { inspectPipeline, startPipeline, controlPipeline, pipelineInspectionSchema, pipelineCapabilities, prepareTaskWorktree } from "../shared/pipeline";
-import { pipelineSchema, type Pipeline } from "../shared/pipeline-state";
+import { isStartingStage, needsDispatchCheck, pipelineSchema, type Pipeline } from "../shared/pipeline-state";
 import { supersedeDecisions } from "../shared/decisions";
 import { inspectPipelineTask } from "./pipeline-inspect";
 import { invokeChatHost } from "./chat-transport";
-import { createPipelineEngine } from "./pipeline-engine";
+import { createPipelineEngine, recordDispatch } from "./pipeline-engine";
 import { registerPipelineIntake } from "./pipeline-intake";
 import { registerIntake } from "./intake";
 import { collectFleetHost, type FleetHostDeps } from "./fleet-host";
@@ -16,10 +16,16 @@ import { daemonServerId } from "./agent-names";
 import { withFleetConnection } from "./fleet-transport";
 import { fleetEvent, type FleetStore } from "./fleet-store";
 import { registerAgentPolicies, effectiveAgentPolicy } from "./agent-policy";
-import { launchPipelineStage } from "../shared/stage-launch";
+import { cancelledBeforeArrival, launchHadEffects, launchPipelineStage, launchStageStatus, type LaunchReceipt } from "../shared/stage-launch";
 import { launchManagedStage } from "./stage-launch";
+import { createLaunchReceipts } from "./stage-launch-receipts";
+import { errorText } from "./host-errors";
+import { hideSecrets } from "../shared/secret-mask";
 import type { PaseoApi } from "@getpaseo/client";
 import { readPipelineEvidence } from "../shared/pipeline";
+
+/** How long a stage start may take before the host answers with its receipt so far: under Paseo's 30-second limit. Tests shorten it. */
+export const launchTiming = { answerMs: 20_000 };
 
 export function registerPipelineRuntime(server: PluginServerContext, store: FleetStore, hostDeps: FleetHostDeps,
   snapshot: () => Promise<FleetSnapshot>, send: (id: string, prompt: string, requestId: string) => Promise<void>, invalidate: () => void) {
@@ -45,19 +51,70 @@ export function registerPipelineRuntime(server: PluginServerContext, store: Flee
     }
     return facts;
   }
+  // Stage starts on this host keep receipts, so the coordinating computer can follow a start that outlasts Paseo's
+  // 30-second plugin-call limit instead of guessing (see shared/stage-launch.ts).
+  const receipts = createLaunchReceipts(); let pruned = false;
   server.handle(launchPipelineStage, async (input, { paseo }) => {
-    const facts = await inspectLocal({ ...input, taskId: input.row.taskId, workflowMode: input.row.workflowMode }, paseo);
-    const host = await collectFleetHost(paseo, input.serverId, hostDeps);
-    if (host.agents.some(agent => agent.workspaceId === input.workspaceId && (["running", "initializing"].includes(agent.status) || agent.pendingPermissions))) throw new Error("Another agent is active in this workspace.");
-    return launchManagedStage(input, facts, paseo, store);
+    // Claiming comes first, so a repeated or cancelled request ID can never start the stage again. Old finished
+    // receipts are removed once per process, on the first start.
+    const claimed = await receipts.claim(input.requestId);
+    if (!pruned) { pruned = true; void receipts.prune(); }
+    if (!claimed.created) {
+      const { receipt } = claimed;
+      if (receipt.phase === "done" && receipt.agentId && receipt.runId) return { agentId: receipt.agentId, runId: receipt.runId };
+      if (input.acceptPending) return { receipt };
+      throw new Error(receipt.error ?? "This stage start is already running on this host.");
+    }
+    const job = (async () => {
+      try {
+        const facts = await inspectLocal({ ...input, taskId: input.row.taskId, workflowMode: input.row.workflowMode }, paseo);
+        const host = await collectFleetHost(paseo, input.serverId, hostDeps);
+        if (host.agents.some(agent => agent.workspaceId === input.workspaceId && (["running", "initializing"].includes(agent.status) || agent.pendingPermissions))) throw new Error("Another agent is active in this workspace.");
+        const result = await launchManagedStage(input, facts, paseo, store, (step, detail) => receipts.step(input.requestId, step, detail));
+        await receipts.finish(input.requestId, { phase: "done", ...result });
+        return result;
+      } catch (error) {
+        await receipts.finish(input.requestId, { phase: "failed", error: hideSecrets(errorText(error)).slice(0, 1000) }).catch(() => {});
+        throw error;
+      }
+    })();
+    if (!input.acceptPending) return job;
+    // Answer within the budget: the worker if the start finished, otherwise the receipt so far. The start goes on here.
+    await Promise.race([job.then(() => {}, () => {}), new Promise(resolve => setTimeout(resolve, launchTiming.answerMs).unref?.())]);
+    const receipt = await receipts.status(input.requestId);
+    if (receipt?.phase === "done" && receipt.agentId && receipt.runId) return { agentId: receipt.agentId, runId: receipt.runId };
+    return { receipt: receipt ?? claimed.receipt };
   });
+  server.handle(launchStageStatus, async ({ serverId, requestId, cancelIfMissing }) => {
+    if (serverId !== await daemonServerId()) throw new Error("This vault belongs to a different host.");
+    return { receipt: cancelIfMissing ? await receipts.cancelIfMissing(requestId) : await receipts.status(requestId) };
+  });
+  // Hosts known to keep start receipts. Only a confirmed answer is remembered; a failed check is asked again next time.
+  const receiptHosts = new Set<string>();
+  async function launchStatus(row: Pipeline, requestId: string): Promise<LaunchReceipt> {
+    const { receipt } = launchStageStatus.output.parse(await invokeChatHost(row.remoteServerId, launchStageStatus.name, { serverId: row.remoteServerId, requestId, cancelIfMissing: true }));
+    if (!receipt) throw new Error("The host returned no receipt for this stage start.");
+    return receipt;
+  }
   const engine = createPipelineEngine({ store, snapshot, send,
-    dispatch: async (row, facts, fingerprint, requestId) => {
-      const current = await snapshot();
-      const workspaceId = facts.entry.run?.workspaceId ?? facts.entry.task.worktree?.workspaceId ?? facts.entry.task.assignments.find(item => item.serverId === row.remoteServerId)?.workspaceId;
-      if (!workspaceId) throw new Error("Task workspace is unavailable.");
-      return launchPipelineStage.output.parse(await invokeChatHost(row.remoteServerId, launchPipelineStage.name, { serverId: row.remoteServerId, workspaceId, row, fingerprint, requestId, parent: { serverId: current.serverId, agentId: row.coordinatorId } }));
+    dispatch: async (row, facts, fingerprint, requestId, acceptPending) => {
+      let workspaceId: string | undefined; let parent: { serverId: string; agentId: string };
+      // Anything that fails before the host is called sent nothing, and says so (the runner then releases the dispatch).
+      try {
+        workspaceId = facts.entry.run?.workspaceId ?? facts.entry.task.worktree?.workspaceId ?? facts.entry.task.assignments.find(item => item.serverId === row.remoteServerId)?.workspaceId;
+        if (!workspaceId) throw new Error("Task workspace is unavailable.");
+        // This computer's own ID, without reading every host again just before the start.
+        parent = { serverId: await daemonServerId(), agentId: row.coordinatorId };
+      } catch (error) { throw Object.assign(error instanceof Error ? error : new Error(String(error)), { notSent: true }); }
+      return launchPipelineStage.output.parse(await invokeChatHost(row.remoteServerId, launchPipelineStage.name, { serverId: row.remoteServerId, workspaceId, row, fingerprint, requestId, parent, ...(acceptPending ? { acceptPending: true } : {}) }));
     },
+    launchReceipts: async serverId => {
+      if (receiptHosts.has(serverId)) return true;
+      const supported = pipelineCapabilities.output.parse(await invokeChatHost(serverId, pipelineCapabilities.name, { serverId })).stageLaunchReceipts === true;
+      if (supported) receiptHosts.add(serverId);
+      return supported;
+    },
+    launchStatus,
     inspect: async (row, current) => {
       const task = current.hosts.find(host => host.serverId === row.remoteServerId)?.snapshot?.tasks.find(entry => entry.task.taskId === row.taskId);
       const workspaceId = task?.run?.workspaceId ?? task?.task.worktree?.workspaceId ?? task?.task.assignments.find(item => item.serverId === row.remoteServerId)?.workspaceId;
@@ -199,6 +256,23 @@ export function registerPipelineRuntime(server: PluginServerContext, store: Flee
       await retireOpenRequests(adoption.remoteServerId, adoption.taskId, plan.openDecisionIds);
       retired = plan.retiredWorkerIds;
     }
+    // A followed stage start is settled from its host's receipt, never from a guess. Acknowledging waits while the host
+    // says the start is still running: a start treated as never sent could otherwise begin afterwards.
+    let launch: LaunchReceipt | null = null;
+    if (input.action === "acknowledge") {
+      const row = (await store.read()).pipelines.find(item => item.id === input.id);
+      if (row?.pending?.launch === "awaiting" && row.pending.requestId === input.requestId) {
+        try { launch = await launchStatus(row, row.pending.requestId); }
+        catch (error) {
+          // While the runner still follows the start it settles it itself. Once it stopped following (it blocked), a host
+          // that can't report the receipt (rolled back, removed, offline) leaves the decision to the person, as before.
+          if (isStartingStage(row)) throw new Error(`The host can't report this stage start right now (${errorText(error)}). Mission Control keeps following it; check again later.`);
+        }
+        if (launch?.phase === "running") throw new Error(`This stage is still starting on its host (last step: ${launch.step}). Wait for it, or reload Mission Control on that host to stop it, then check again.`);
+        // A cancellation written long after the attempt may stand in for a pruned receipt: the person's check decides.
+        if (launch && launch.phase === "cancelled" && !cancelledBeforeArrival(launch, row.pending.attemptedAt)) launch = null;
+      }
+    }
     let result: Pipeline | undefined;
     await store.update(state => {
       const row = state.pipelines.find(item => item.id === input.id); if (!row) throw new Error("Runner no longer exists.");
@@ -210,10 +284,19 @@ export function registerPipelineRuntime(server: PluginServerContext, store: Flee
         row.message = adoptedMessage;
       } else if (input.action === "acknowledge") {
         if (!row.pending || row.pending.requestId !== input.requestId || !input.delivery) throw new Error("Inspect the exact pending dispatch and identify whether it was delivered.");
-        row.lastDispatch = input.delivery === "sent" ? row.pending.fingerprint : null; row.pending = null; row.mode = "paused";
-        row.message = "Dispatch inspected by you. Resume when ready.";
+        if (launch && row.pending.launch !== "awaiting") throw new Error("The runner changed while the host was asked. Refresh and check again.");
+        if (launch?.phase === "done" && launch.agentId && launch.runId) recordDispatch(row, row.pending, Date.now(), { agentId: launch.agentId, runId: launch.runId });
+        else {
+          // A receipt showing nothing started settles it; after a partial start, the person's check decides. A delivered
+          // dispatch counts its wake-up and the repair attempts saved with its reservation.
+          const delivered = launch && (launch.phase === "cancelled" || !launchHadEffects(launch)) ? false : input.delivery === "sent";
+          if (delivered) recordDispatch(row, row.pending, Date.now(), null);
+          else { row.lastDispatch = null; row.pending = null; }
+        }
+        row.mode = "paused"; row.message = "Dispatch inspected by you. Resume when ready.";
       } else {
-        if (input.action === "resume" && row.pending) throw new Error("Inspect and acknowledge the uncertain dispatch before resuming.");
+        // A paused runner still following a stage start may resume; the next cycle settles the start from its receipt.
+        if (input.action === "resume" && needsDispatchCheck(row)) throw new Error("Inspect and acknowledge the uncertain dispatch before resuming.");
         if (input.action === "resume" && ["done", "stopped"].includes(row.mode)) throw new Error("This runner is finished. Start a new runner for a new attempt.");
         if (input.action === "resume") { state.stoppedAgentIds = state.stoppedAgentIds.filter(id => id !== row.coordinatorId); row.runId = null; if (row.message.startsWith("The worker stopped without")) row.lastDispatch = null; }
         row.mode = input.action === "pause" ? "paused" : input.action === "stop" ? "stopped" : "running";

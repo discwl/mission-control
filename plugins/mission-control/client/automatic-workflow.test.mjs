@@ -7,6 +7,11 @@ const ts = require("typescript");
 const coordinator = { agentId: "coordinator", remoteServerId: "remote", hostLabel: "Example", name: "Task coordinator" };
 const colors = { foreground: "#eeeeee", foregroundMuted: "#bbbbbb", surface1: "#222222", surface2: "#333333", border: "#555555", statusWarning: "#ffaa44", accent: "#77ccff" };
 const snapshot = () => ({ serverId: "local", state: { revision: 8, paused: false, pipelines: [] }, coordinators: [coordinator], hosts: [{ serverId: "remote", label: "Example", snapshot: { complete: true, workspaces: [{ id: "workspace", status: "active", projectName: "Project", name: "Work" }], tasks: [{ task: { taskId: "task_one", title: "Fix the behavior", status: "ready" }, run: null }] } }] });
+/** The real shared module (its only dependency is zod), so the runner card uses the same pending-dispatch rules. */
+function loadShared(relative) {
+  const code = ts.transpileModule(readFileSync(new URL(relative, import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+  const module = { exports: {} }; new Function("require", "module", "exports", code)(require, module, module.exports); return module.exports;
+}
 function runtime(file, initialProps, handler = async () => ({}), memory = new Map()) {
   let index = 0; const state = [], nodes = [], calls = [], pending = [], errors = [];
   const useState = initial => { const slot = index++; if (!(slot in state)) state[slot] = typeof initial === "function" ? initial() : initial; return [state[slot], next => { state[slot] = typeof next === "function" ? next(state[slot]) : next; }]; };
@@ -20,6 +25,7 @@ function runtime(file, initialProps, handler = async () => ({}), memory = new Ma
     if (id === "@getpaseo/plugin/client") return { useRpc: method => async input => { calls.push({ method, input }); return handler(method, input); } };
     if (id === "../shared/pipeline") return { startPipeline: "start", controlPipeline: "control", intakePipeline: "intake" };
     if (id === "../shared/fleet-model") return { managedTasks: () => [] };
+    if (id === "../shared/pipeline-state") return loadShared("../shared/pipeline-state.ts");
     if (id === "./compact-link") return { CompactLink: "CompactLink" };
     if (id === "./pipeline-intake") return { PipelineIntakeForm: "PipelineIntakeForm" };
     if (id === "./date-time") return { formatDateTime: value => value };

@@ -1,4 +1,4 @@
-import { defineRpc } from "@getpaseo/plugin";
+import { defineRpc, defineSubscription } from "@getpaseo/plugin";
 import { z } from "zod";
 import { taskSchema } from "./tasks";
 import { runSchema } from "./runs";
@@ -77,7 +77,16 @@ export const fleetSnapshotSchema = z.object({
 export type FleetSnapshot = z.infer<typeof fleetSnapshotSchema>;
 // This RPC executes beside the target host's vault, never on a substituted host.
 export const readFleetHost = defineRpc({ name: "orchestrator.host.snapshot", input: z.object({ serverId: z.string() }), output: fleetHostSchema });
-export const readFleet = defineRpc({ name: "orchestrator.fleet.read", input: z.object({ refresh: z.boolean().optional() }), output: fleetSnapshotSchema });
+// maxAgeMs lets a view that receives fleetChanges reuse the snapshot the server's own check just read, instead of forcing
+// another read of every host. Older servers ignore it and keep their 10-second cache.
+export const readFleet = defineRpc({ name: "orchestrator.fleet.read", input: z.object({ refresh: z.boolean().optional(), maxAgeMs: z.number().int().min(0).max(300_000).optional() }), output: fleetSnapshotSchema });
+/**
+ * Paseo 0.16 plugin subscription: the server pushes { observedAt } after every fleet read it completes. Null on older
+ * Paseo, where defineSubscription does not exist and views keep polling.
+ */
+export const fleetChanges = typeof defineSubscription === "function"
+  ? defineSubscription({ name: "orchestrator.fleet.changes", input: z.object({}), event: z.object({ observedAt: z.string() }) })
+  : null;
 export const configureSupervisor = defineRpc({
   name: "orchestrator.supervisor.configure",
   input: z.object({ agentId: z.string(), remoteServerId: z.string(), enabled: z.boolean(), intervalMinutes: z.number().int().min(5).max(120), maxWakeupsPerDay: z.number().int().min(1).max(96), expectedRevision: z.number().int() }),

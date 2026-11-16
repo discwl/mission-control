@@ -1,6 +1,6 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { acknowledgeFleetDispatch, configureSupervisor, fleetSnapshotSchema, pauseFleet, readFleet, readFleetHost, reconcileFleet, setFleetQueue, supervisorEntrySchema, type FleetSnapshot } from "../shared/fleet";
+import { acknowledgeFleetDispatch, configureSupervisor, fleetChanges, fleetSnapshotSchema, pauseFleet, readFleet, readFleetHost, reconcileFleet, setFleetQueue, supervisorEntrySchema, type FleetSnapshot } from "../shared/fleet";
 import { chooseNextTask, coordinatorCandidates, fleetTargets, managedTasks, taskFingerprint, withPipelineProjection } from "../shared/fleet-model";
 import { hideSecrets } from "../shared/secret-mask";
 import { isQuiet } from "../shared/agent-tree";
@@ -11,6 +11,8 @@ import { readRemoteFleet, withFleetConnection } from "./fleet-transport";
 import { readOrchestratorBindings } from "./orchestrator";
 import { createOrchestratorWorkStore } from "./orchestrator-work";
 import { daemonServerId, PaseoStartingError } from "./agent-names";
+import { readRowBadges, rowBadges } from "../shared/row-badges";
+import { needsDispatchCheck } from "../shared/pipeline-state";
 
 import { registerPipelineRuntime } from "./pipeline-runtime";
 
@@ -18,6 +20,8 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
   const store = createFleetStore(); const links = createOrchestratorWorkStore();
   let disposed = false; let cached: FleetSnapshot | null = null; let loading: Promise<FleetSnapshot> | null = null;
   let heartbeat = { checkedAt: null as string | null, error: null as string | null };
+  // Views subscribed through Paseo 0.16 hear about every completed fleet read (see fleetChanges).
+  const fleetListeners = new Set<(event: { observedAt: string }) => void>();
   const hostDeps = { ...deps, stoppedAgents: async () => (await store.read()).stoppedAgentIds };
   server.handle(readFleetHost, async ({ serverId }, { paseo }) => {
     if (serverId !== await daemonServerId()) throw new Error("This vault belongs to a different host.");
@@ -50,8 +54,8 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
       return fleetSnapshotSchema.parse({ serverId, observedAt: new Date().toISOString(), coordinators, hosts, state: await store.read(), warnings });
     });
   }
-  async function snapshot(refresh = false): Promise<FleetSnapshot> {
-    if (!refresh && cached && Date.now() - Date.parse(cached.observedAt) < 10_000) return withPipelineProjection(cached, await store.read());
+  async function snapshot(refresh = false, maxAgeMs = 10_000): Promise<FleetSnapshot> {
+    if (!refresh && cached && Date.now() - Date.parse(cached.observedAt) < Math.max(10_000, maxAgeMs)) return withPipelineProjection(cached, await store.read());
     if (!loading) loading = collect().then(async result => {
       const observed: Record<string, string> = {};
       const changes: { coordinatorId: string; remoteServerId: string; taskId: string; title: string }[] = [];
@@ -68,7 +72,9 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
         for (const change of changes) fleetEvent(state, { ...change, kind: "progress", message: `Workflow records changed: ${change.title}` });
         state.seen = Object.fromEntries(Object.entries({ ...state.seen, ...observed }).slice(-5000));
       });
-      cached = result; return result;
+      cached = result;
+      for (const listener of fleetListeners) listener({ observedAt: result.observedAt });
+      return result;
     }).finally(() => { loading = null; });
     return withPipelineProjection(await loading, await store.read());
   }
@@ -112,7 +118,19 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
       else if (waitingSince === null) { waitingSince = Date.now(); console.warn(`[mission-control] orchestrator check waiting: ${heartbeat.error}`); }
     }
   }
-  server.handle(readFleet, async ({ refresh }) => ({ ...await snapshot(refresh), heartbeat }));
+  server.handle(readFleet, async ({ refresh, maxAgeMs }) => ({ ...await snapshot(refresh, maxAgeMs), heartbeat }));
+  // Sidebar badges for this host's own rows. A minute-old snapshot is fine: the 30-second check keeps it fresher, so
+  // badge reads never force another read of every host.
+  server.handle(readRowBadges, async () => {
+    const current = await snapshot(false, 60_000);
+    return { badges: [...rowBadges(current, current.serverId, Date.now())].map(([workspaceId, badge]) => ({ workspaceId, ...badge })) };
+  });
+  // The handler returns at once; the subscription stays open until the view releases it or the plugin stops.
+  if (fleetChanges) server.handle(fleetChanges, (_input, { push, signal }) => {
+    const listener = (event: { observedAt: string }) => { void push(event).catch(() => {}); };
+    fleetListeners.add(listener);
+    signal.addEventListener("abort", () => fleetListeners.delete(listener), { once: true });
+  });
   server.handle(configureSupervisor, async input => {
     const current = await snapshot(true);
     const coordinator = current.coordinators.find(item => item.agentId === input.agentId && item.remoteServerId === input.remoteServerId);
@@ -122,7 +140,7 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
     if (input.enabled && (!remote?.snapshot?.complete || remote.error || remote.snapshot.warnings.length)) throw new Error("A complete current fleet snapshot is required. Connect the host and update its Mission Control plugin before enabling automatic work.");
     const result = await store.update(state => {
       let entry = state.coordinators.find(item => item.agentId === input.agentId);
-      if (entry?.pending && input.enabled || input.enabled && state.pipelines.some(row => row.coordinatorId === input.agentId && row.pending)) throw new Error("Reconcile the uncertain dispatch before enabling this coordinator.");
+      if (entry?.pending && input.enabled || input.enabled && state.pipelines.some(row => row.coordinatorId === input.agentId && needsDispatchCheck(row))) throw new Error("Reconcile the uncertain dispatch before enabling this coordinator.");
       if (!entry) { entry = supervisorEntrySchema.parse({ agentId: input.agentId, remoteServerId: input.remoteServerId }); state.coordinators.push(entry); }
       Object.assign(entry, { remoteServerId: input.remoteServerId, enabled: input.enabled, intervalMinutes: input.intervalMinutes, maxWakeupsPerDay: input.maxWakeupsPerDay, nextCheckAt: null,
         message: input.enabled ? "Enrolled. Only explicitly queued tasks can advance." : "Paused by you." });

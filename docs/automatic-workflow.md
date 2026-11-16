@@ -18,6 +18,8 @@ The checker should accept a sufficient, maintainable plan. Repairs need concrete
 
 Each host keeps a queue of automatic tasks in the order they were started, so start the most urgent work first. Each host runs one stage at a time, and different hosts run in parallel. A task's stages are at least five minutes apart, so another task on the same host can take a free slot in between.
 
+A host that is briefly out of reach doesn't stop its tasks. While it restarts Paseo, reloads Mission Control or answers slowly, the runner waits and says so ("Waiting for the host to answer"). It blocks for you only if the host still hasn't answered after 30 minutes. A stage that takes longer than 20 seconds to start is followed through a receipt kept on the host, so it shows as "Starting the plan stage" instead of asking you whether a message arrived. If the start never reached the host, the runner tries it up to three times in all. If it stopped partway, for example after creating its worker, the task is blocked so you can check that worker. A start that is still running can't be marked as checked.
+
 Before planning, a code task gets its own worktree and branch, created the way Start creates one. The branch follows the project's branch-name template, using its feature option when the ticket type is unknown. Its changes never mix with other tasks' work in the project checkout, and its draft PR is published from that branch. If the worktree can't be created, the task is blocked with the reason until you resume it.
 
 ## Reviews and validation
@@ -42,6 +44,8 @@ OCR's code-diff coverage applies to code changes. Non-code reviewers inspect the
 ## Pages focused on your next action
 
 **Needs you** replaces the old Mission Control v2 preview. It groups questions, work ready to publish, actions ready to execute and problems that need intervention. Older tasks that still require manual approvals are labelled separately. Each task appears once with its host, a plain explanation and a next action. Unavailable or incomplete hosts are visibly unconfirmed, never reported as clear of work.
+
+With Paseo 0.16 on both the host and the app, each task's workspace row in the sidebar shows its state: **Needs you**, **Blocked**, the stage it's in (for example **Planning** or **Code review**) or **Queued**. Delivered tasks show nothing. On the coordinating computer, an orchestrator's workspace shows how many of its host's tasks need you. You can hide the badges per device in the sidebar's **Show** menu. Needs you, All work and the Orchestrator screen also update when the host pushes a change, instead of re-reading every host every 20 seconds.
 
 On the coordinating computer, Needs you and All work cover every host its orchestrator folders bind. On a computer that coordinates no other host, for example a remote host's own Paseo app, they show that computer's own Mission Control work as "This computer".
 

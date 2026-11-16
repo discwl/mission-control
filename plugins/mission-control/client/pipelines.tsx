@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { isStartingStage, needsDispatchCheck } from "../shared/pipeline-state";
 import { Text, TextInput, View } from "react-native";
 import { useRpc, type PluginSurfaceProps } from "@getpaseo/plugin/client";
 import type { FleetCoordinator, FleetSnapshot } from "../shared/fleet";
@@ -59,14 +60,15 @@ export function PipelineBoard({ snapshot, coordinators, colors, busy, act, openA
           <CompactLink label="Open coordinator" colors={colors} onPress={() => openAgent(snapshot.serverId, row.coordinatorId)} />
           {row.workflowMode !== "automatic" && ["paused", "blocked", "waiting"].includes(row.mode) ? <CompactLink label="Switch to automatic plan check and two reviews" colors={colors} disabled={busy || Boolean(row.pending) || !remote?.snapshot?.complete} onPress={() => act(row.id, () => control({ id: row.id, action: "adopt-automatic", expectedRevision: snapshot.state.revision }))} /> : null}
           {!["stopped", "done"].includes(row.mode) ? <>
-            <CompactLink label={row.mode === "paused" || row.mode === "blocked" ? "Resume after checking" : "Pause future stages"} colors={colors} disabled={busy || Boolean(row.pending)} onPress={() => change(row.mode === "paused" || row.mode === "blocked" ? "resume" : "pause")} />
+            <CompactLink label={row.mode === "paused" || row.mode === "blocked" ? "Resume after checking" : "Pause future stages"} colors={colors} disabled={busy || needsDispatchCheck(row)} onPress={() => change(row.mode === "paused" || row.mode === "blocked" ? "resume" : "pause")} />
             <CompactLink label="Stop this runner" colors={colors} disabled={busy} onPress={() => change("stop")} />
           </> : null}
         </View>
         {task?.run ? <PipelineReviewEvidence serverId={row.remoteServerId} workspaceId={task.run.workspaceId} taskId={row.taskId} pendingRequestId={row.pending?.requestId} colors={colors} openAgent={openAgent} /> : null}
         {task ? <TaskAgentPolicyEditor key={`${row.remoteServerId}:${row.taskId}`} serverId={row.remoteServerId} projectId={task.task.projectId} taskId={row.taskId} colors={colors} /> : null}
-        {row.pending ? <View style={{ gap: 8 }}>
-          <Text selectable style={{ color: colors.statusWarning }}>Check dispatch {row.pending.requestId} in its remote stage worker, shown above or under the coordinator's native Subagents. Legacy messages and draft PR previews go to the coordinator. Confirm whether it arrived; this stays paused after your answer.</Text>
+        {isStartingStage(row) ? <Text selectable style={{ color: colors.foregroundMuted }}>Starting the {row.pending!.stage} stage on its host. Mission Control confirms it from the host's receipt; nothing is needed from you.</Text> : null}
+        {needsDispatchCheck(row) ? <View style={{ gap: 8 }}>
+          <Text selectable style={{ color: colors.statusWarning }}>Check dispatch {row.pending?.requestId} in its remote stage worker, shown above or under the coordinator's native Subagents. Legacy messages and draft PR previews go to the coordinator. Confirm whether it arrived; this stays paused after your answer.</Text>
           <View style={buttonRow}>{(["sent", "not_sent"] as const).map(delivery => <CompactLink key={delivery} label={delivery === "sent" ? "I checked: message was delivered" : "I checked: message was not delivered"} colors={colors} disabled={busy} onPress={() => act(row.id, () => control({ id: row.id, action: "acknowledge", requestId: row.pending!.requestId, delivery, expectedRevision: snapshot.state.revision }))} />)}</View>
         </View> : null}
       </View>;

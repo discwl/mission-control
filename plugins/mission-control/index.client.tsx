@@ -40,6 +40,7 @@ import { setUnifiedExplorer } from "./client/layout";
 
 import { registerChatClient } from "./client/chat-workflow";
 import { registerKanban } from "./client/kanban";
+import { registerRowBadges } from "./client/row-badge-item";
 
 export default function contribute(client: PluginClientContext) {
   const stopChat = registerChatClient(client);
@@ -47,6 +48,7 @@ export default function contribute(client: PluginClientContext) {
   const stopFleet = registerFleetClient(client);
   const stopMissionControlV2 = registerMissionControlV2(client);
   const stopKanban = registerKanban(client);
+  const stopRowBadges = registerRowBadges(client);
   const stopWorkerHistory = registerWorkerHistory(client);
   const stopCoordinatorReturn = registerCoordinatorReturn(client);
   // addFilePanel and the unified compact Explorer shipped together in Paseo 0.13.
@@ -193,6 +195,7 @@ export default function contribute(client: PluginClientContext) {
     stopCoordinatorReturn();
     stopWorkerHistory();
     stopKanban();
+    stopRowBadges();
     stopMissionControlV2();
     stopFleet();
     removeNeedsYouTimeline();

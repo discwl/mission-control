@@ -22,12 +22,20 @@ Paseo's cross-host agent list (still in 0.12) supplies workspace assignment and 
 
 ## Paseo 0.12
 
-Mission Control still needs Paseo 0.9.1 or later. Its server ships its own copy of `@getpaseo/client`, 0.12.0, for the calls Paseo's plugin API doesn't offer (labels, renames, helpers, `scripts/remote.mjs`, `dev-flow.mjs`); that client checks each daemon's features before using anything newer. On hosts running Paseo 0.12:
+Mission Control needs Paseo 0.13.2 or later. Its server ships its own copy of `@getpaseo/client`, now 0.16.0, for the calls Paseo's plugin API doesn't offer (labels, renames, helpers, `scripts/remote.mjs`, `dev-flow.mjs`); that client checks each daemon's features before using anything newer. On hosts running Paseo 0.12:
 
 - **Background workspaces:** Paseo leaves them, and every agent in them, out of lists unless asked, and its sidebar hides them. Mission Control asks for them everywhere: Workspaces, Attention, the agent trees, the Mission button and chat bubbles, agent cleanup, and the status label sync. Older hosts ignore the request. A 0.12 app refuses it for an older host, so Mission Control asks that host again without it and doesn't ask it again for ten minutes (`shared/background.ts`).
 - **Phones:** Paseo's compact layout (narrower than 720 px) has no plugin header buttons and no Explorer. There, every active chat gets a **Mission** bubble above its composer (with the **N needs you** count), and Mission, Review and Agents open as tabs. `/mission` and **Open Agents** do the same.
 - **Messages from other agents:** Paseo 0.12 records a prompt one agent sends another as an `agent_message` row, not a user message. A sub-agent's "Started for" line, Attention's conversation steps and rename suggestions read both (`shared/agent-messages.ts`).
 - **Reload:** a 0.12 `paseo plugin reload` waits for the reload to finish. Older CLIs can time out after 60 seconds while the reload still succeeds; see the [install guide](../../docs/install-mission-control.md).
+
+## Paseo 0.16
+
+The bundled `@getpaseo/client` and the SDK types are 0.16.0. `requirements.paseo` stays `>=0.13.2`: every 0.16-only part is checked before use, so 0.15 hosts and apps keep today's behaviour.
+
+- **Sidebar badges:** each task's workspace row shows its state (`addWorkspaceRowBadgeItem`). The host computes them (`orchestrator.row-badges`), so a device fetches a short list, never the fleet snapshot.
+- **Live updates:** Needs you, All work and the Orchestrator screen subscribe to `orchestrator.fleet.changes` and update when the host finishes a fleet read. First loads, refresh buttons and refreshes after you act still force a full read.
+- **Stage starts and restarts:** see [Run to draft PR](docs/run-to-draft-pr.md) for start receipts and for runners waiting through transient host errors.
 
 ## Agents panel
 

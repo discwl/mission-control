@@ -156,3 +156,32 @@ test("review does not start if OCR fails or the exact stage fingerprint changes"
   assert.equal(f.created.length, 0);
   await assert.rejects(launchManagedStage({ ...f.input(), fingerprint: "old" }, f.facts, f.paseo, {}), /Stage changed/);
 });
+
+test("a stage start reports each step before it acts, so its receipt errs on the safe side", async t => {
+  const f = await fixture(t); const order = [];
+  const created = f.paseo.workspaces.ref().agents.create;
+  f.paseo.workspaces.ref = () => ({ refresh: async () => ({ workspaceDirectory: f.root, projectId: "project" }), agents: { create: async input => { order.push("create"); const agent = await created(input); return { send: async (...args) => { order.push("send"); return agent.send(...args); } }; } } });
+  await launchManagedStage(f.input(), f.facts, f.paseo, {}, async step => { order.push(`step:${step}`); });
+  assert.deepEqual(order, ["step:assignment", "step:agent", "create", "step:sending", "send"]);
+});
+
+test("a stage-start lock left by a copy that stopped mid-start is cleared; a live one is refused", async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.root, ".stage-launch.lock"), "mc-pipeline-from-a-stopped-copy");
+  await launchManagedStage(f.input(), f.facts, f.paseo, {});
+  assert.equal(f.sent.length, 1, "the stale lock no longer blocks every retry");
+  await assert.rejects(readFile(join(f.root, ".stage-launch.lock")), /ENOENT/, "the start removes its own lock when it finishes");
+  let release; const hold = new Promise(resolve => { release = resolve; });
+  const slow = launchManagedStage(f.input(), f.facts, f.paseo, {}, async step => { if (step === "assignment") await hold; });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  await assert.rejects(launchManagedStage(f.input(), f.facts, f.paseo, {}), /Another stage start holds this task's lock/);
+  release(); await slow;
+});
+
+test("two simultaneous starts of one task can't both take its lock", async t => {
+  const f = await fixture(t);
+  const results = await Promise.allSettled([launchManagedStage(f.input(), f.facts, f.paseo, {}), launchManagedStage(f.input(), f.facts, f.paseo, {})]);
+  assert.deepEqual(results.map(item => item.status).sort(), ["fulfilled", "rejected"]);
+  assert.match(String(results.find(item => item.status === "rejected").reason), /Another stage start holds this task's lock/);
+  assert.equal(f.sent.length, 1, "only one worker got instructions");
+});

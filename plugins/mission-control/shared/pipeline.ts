@@ -20,7 +20,9 @@ export const pipelineInspectionSchema = z.object({
 export type PipelineInspection = z.infer<typeof pipelineInspectionSchema>;
 export const pipelineCapabilities = defineRpc({ name: "pipeline.capabilities", input: z.object({ serverId: z.string() }), output: z.object({ serverId: z.string(), version: z.literal(1), idempotentIntake: z.literal(true), automaticWorkflow: z.literal(true).optional(), actionBundles: z.literal(true).optional(),
   // Automatic code tasks get their own worktree before planning, and switching a task can retire its open requests.
-  taskWorktrees: z.literal(true).optional(), supersedeDecisions: z.literal(true).optional() }) });
+  taskWorktrees: z.literal(true).optional(), supersedeDecisions: z.literal(true).optional(),
+  // Stage starts keep durable receipts (pipeline.stage.launch-status), so a slow start is followed, not guessed.
+  stageLaunchReceipts: z.literal(true).optional() }) });
 // Creates and attaches the task's own worktree before its first automatic stage. It replies within seconds; a slow
 // creation continues on the host and a later call reports it. Repeated calls never create a second worktree.
 export const prepareTaskWorktree = defineRpc({ name: "pipeline.worktree.prepare", input: z.object({ serverId: z.string().min(1), workspaceId: z.string().min(1), taskId: z.string().regex(/^task_[a-f0-9-]+$/) }),

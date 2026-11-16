@@ -3,7 +3,7 @@ import { mkdir, open, realpath, unlink, writeFile } from "node:fs/promises";
 import { join, relative, isAbsolute } from "node:path";
 import type { PaseoApi, PaseoAgentHandle } from "@getpaseo/client";
 import type { PipelineInspection } from "../shared/pipeline";
-import { launchPipelineStage } from "../shared/stage-launch";
+import { launchPipelineStage, type LaunchStep } from "../shared/stage-launch";
 import { missingReviewRole, nextPipelineStep, pipelineFingerprint } from "../shared/pipeline-model";
 import { pipelinePrompt } from "./pipeline-engine";
 import { type FleetStore } from "./fleet-store";
@@ -22,7 +22,34 @@ import { readAutomaticPlan, verifyAutomaticPlanAcceptance } from "./plan-snapsho
 import { readActionBundle } from "./action-bundles.mjs";
 import type { z } from "zod";
 
-export async function launchManagedStage(input: z.infer<typeof launchPipelineStage.input>, facts: PipelineInspection, paseo: PaseoApi, store: FleetStore) {
+// Stage-start locks this process holds. Only Mission Control's plugin process takes them, and Paseo never runs two
+// copies of a plugin on one host, so a lock this process doesn't hold was left by a copy that stopped mid-start.
+const heldLocks = new Set<string>();
+async function acquireStageLock(path: string, requestId: string) {
+  // Claimed in memory before the first await, so two starts in this process can never both get past this point.
+  if (heldLocks.has(path)) throw new Error(`Another stage start holds this task's lock (${path}).`);
+  heldLocks.add(path);
+  try {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const handle = await open(path, "wx");
+        try { await handle.writeFile(requestId); }
+        catch (error) { await handle.close().catch(() => {}); await unlink(path).catch(() => {}); throw error; }
+        return handle;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if (attempt > 0) throw new Error(`Another stage start holds this task's lock (${path}).`);
+        // Not held in this process, so a copy that stopped mid-start left it.
+        await unlink(path).catch(() => {});
+      }
+    }
+  } catch (error) { heldLocks.delete(path); throw error; }
+}
+
+/** Progress reports for a start's receipt. Each step is reported before its effect, so the receipt errs on the safe side. */
+export type LaunchProgress = (step: LaunchStep, detail?: { agentId?: string; runId?: string }) => Promise<void>;
+
+export async function launchManagedStage(input: z.infer<typeof launchPipelineStage.input>, facts: PipelineInspection, paseo: PaseoApi, store: FleetStore, progress: LaunchProgress = async () => {}) {
   if (input.row.remoteServerId !== input.serverId || input.parent.agentId !== input.row.coordinatorId) throw new Error("Stage host or coordinator changed.");
   const next = nextPipelineStep(input.row, facts);
   if (!next.dispatch || !["plan", "plan-review", "execute", "fix", "validate", "review"].includes(next.stage) || pipelineFingerprint(facts, next) !== input.fingerprint) throw new Error("Stage changed before launch.");
@@ -57,7 +84,7 @@ export async function launchManagedStage(input: z.infer<typeof launchPipelineSta
   const profile = policy.profiles.find(item => item.role === role);
   if (!profile) throw new Error(`Choose a native profile for ${role} before launching.`);
   const root = await realpath(source.folder); const lockPath = join(root, ".stage-launch.lock");
-  const lock = await open(lockPath, "wx");
+  const lock = await acquireStageLock(lockPath, input.requestId);
   try {
     const agentId = randomUUID(); const id = randomUUID();
     const createAgent = () => paseo.workspaces.ref(input.workspaceId).agents.create({ agentId, idempotencyKey: input.requestId, parent: input.parent, title: `${source.task.title} · ${role}`, labels: { "mission-control.task-id": source.task.taskId, "mission-control.role": role },
@@ -69,7 +96,9 @@ export async function launchManagedStage(input: z.infer<typeof launchPipelineSta
     if (!runId) {
       if (next.stage !== "plan") throw new Error("Start with planning for this task.");
       // A new run must never point at a worker that failed to be created. Creation alone sends no task prompt.
+      await progress("agent", { agentId });
       agent = await createAgent();
+      await progress("run", { agentId });
       const result = await runProcess(process.execPath, [join(kitRoot, "scripts", "dev-flow.mjs"), "start", "--task", source.task.taskId, "--server", input.serverId, "--workspace", input.workspaceId, "--cwd", cwd, "--agent", agentId], { cwd, timeoutMs: 20_000 });
       if (result.code) throw new Error(`Task run could not start: ${result.stderr.slice(-1500)}`);
       runId = JSON.parse(result.stdout).run.runId as string;
@@ -92,8 +121,9 @@ export async function launchManagedStage(input: z.infer<typeof launchPipelineSta
     }
     const execution = { assignmentId: id, policyRevision: policy.revision, role: profile.role, profileId: profile.id, profileName: profile.name, provider: profile.provider, model: profile.model };
     const assignment = assignmentSchema.parse({ id, agentId, requestId: input.requestId, taskId: source.task.taskId, runId, serverId: input.serverId, workspaceId: input.workspaceId, stage: next.stage, execution, workflowMode, deliveryKind, planScopeRevision: submittedPlan?.scopeRevision ?? null, planRevision: facts.planRevision, candidate, createdAt: new Date().toISOString(), reviewCount: workflowMode === "automatic" ? 2 : policy.reviewCount, manifest });
+    await progress("assignment", { agentId, runId });
     await writeFile(join(actual, `${id}.json`), JSON.stringify(assignment, null, 2), { flag: "wx" });
-    agent ??= await createAgent();
+    if (!agent) { await progress("agent", { agentId, runId }); agent = await createAgent(); }
     const { prompt } = await taskAgentPrompt(input.workspaceId, source.task.taskId);
     const stageInstructions = workflowMode === "automatic" ? [
       "This task explicitly uses the automatic workflow. This verified task policy supersedes generic profile notes requesting human plan or code-review approval; scope, Gortex and outward-action restrictions remain in effect. Submit a versioned plan and independent machine checkpoints; do not request or fabricate human plan/code approval. Existing human decisions still block work. Ask a genuine question when requirements or authority are missing. Publishing, push, draft PRs, tracker changes, deployments, production operations and executing prepared action bundles require final explicit user authorization.",
@@ -110,7 +140,8 @@ export async function launchManagedStage(input: z.infer<typeof launchPipelineSta
       "Stop after your assigned stage, including when a later human approval arrives. The runner launches the next role; approval does not turn this agent into the next role.",
       manifest ? `OCR has already run. Read ${join(folder, manifest)} for the exact file/status checklist, exclusions, rules and scope. Inspect every selected diff with those rules. Do not read another reviewer's report until your own review is saved. For your checkpoint include coverage:[{path,status,outcome:"reviewed"|"skipped",reason:""}] and findings:[{title,severity:"high"|"medium"|"low",detail,file}]. Account for EVERY selected file/status pair. A skipped reviewable file or unresolved finding prevents a passing review. Explicitly disclose excluded files and any acceptance-criteria gaps. Save your own report; the coordinator combines both reviewers and prepares the final authorization checkpoint. Do not request the human review decision yourself.` : "",
     ].filter(Boolean).join("\n\n");
+    await progress("sending", { agentId, runId });
     await agent.send(instructions, { messageId: input.requestId });
     return { agentId, runId };
-  } finally { await lock.close(); await unlink(lockPath); }
+  } finally { await lock.close(); heldLocks.delete(lockPath); await unlink(lockPath); }
 }

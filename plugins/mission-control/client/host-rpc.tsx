@@ -23,7 +23,8 @@ export function HostRpcProvider({ copy, children }: { copy: MissionControlCopy; 
  * Views shared by the main page and an orchestrator's Host agents tab use this one.
  */
 export function useRpc<InputSchema extends ZodType, OutputSchema extends ZodType>(contract: PluginRpcContract<InputSchema, OutputSchema>): (input: ZodInput<InputSchema>) => Promise<ZodOutput<OutputSchema>> {
-  const local = useInstallationRpc(contract);
+  // Paseo 0.16 types the SDK caller's input as a wire input (JSON or binary); Mission Control only sends JSON inputs.
+  const local = useInstallationRpc(contract) as (input: ZodInput<InputSchema>) => Promise<ZodOutput<OutputSchema>>;
   const target = useContext(HostRpc);
   return useMemo(() => target ? (input: ZodInput<InputSchema>) => target.call(contract, input) as Promise<ZodOutput<OutputSchema>> : local, [target, local, contract]);
 }

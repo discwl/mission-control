@@ -142,3 +142,34 @@ test("old-host compatibility reads only managed workspaces and remains ineligibl
   assert.deepEqual(calls.filter(item => item.method === "tasks.list").map(item => item.input.workspaceId), ["managed"]);
   assert.ok(calls.every(item => item.pluginId === "mission-control"));
 });
+
+test("Paseo 0.16 views hear about each fleet read and can reuse the server's latest one", async t => {
+  const folder = await mkdtemp(join(tmpdir(), "mc-fleet-live-"));
+  const previous = process.env.PASEO_HOME; process.env.PASEO_HOME = folder;
+  t.after(async () => { if (previous === undefined) delete process.env.PASEO_HOME; else process.env.PASEO_HOME = previous; await rm(folder, { recursive: true, force: true }); });
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse(at) });
+  t.mock.method(transport, "withFleetConnection", async action => action({}, {}, "personal"));
+  t.mock.method(names, "daemonServerId", async () => "personal");
+  let reads = 0;
+  t.mock.method(transport, "readRemoteFleet", async (_client, serverId) => { reads++; return { ...remote(), serverId }; });
+  t.mock.method(directory, "fleetDirectory", async () => ({ agents: [], workspaces: [{ id: "folder" }], complete: true }));
+  t.mock.method(bindings, "readOrchestratorBindings", async () => ({ bindings: { folder: { serverId: "remote", label: "Remote" } }, problems: {} }));
+  const handlers = new Map();
+  const stop = registerFleet({ handle: (contract, handler) => handlers.set(contract.name, handler), on: () => {} }, { decisions: async () => ({ open: [], recent: [] }), questions: async () => ({ questions: [] }) }); t.after(stop);
+  const read = handlers.get("orchestrator.fleet.read"); const subscribe = handlers.get("orchestrator.fleet.changes");
+  assert.equal(typeof subscribe, "function", "the subscription is registered where the SDK offers it");
+  const pushed = []; const view = new AbortController();
+  assert.equal(subscribe({}, { paseo: {}, push: async event => { pushed.push(event); }, signal: view.signal }), undefined, "the handler returns at once and the subscription stays open");
+  const first = await read({ refresh: true });
+  assert.deepEqual(pushed, [{ observedAt: first.observedAt }]);
+  t.mock.timers.tick(30_000);
+  const reused = await read({ maxAgeMs: 45_000 });
+  assert.equal(reused.observedAt, first.observedAt, "a 30-second-old read is reused within 45 seconds");
+  assert.equal(reads, 1);
+  const plain = await read({});
+  assert.notEqual(plain.observedAt, first.observedAt, "without maxAgeMs the 10-second cache still applies");
+  assert.equal(reads, 2); assert.equal(pushed.length, 2);
+  view.abort();
+  await read({ refresh: true });
+  assert.equal(pushed.length, 2, "a released view hears nothing more");
+});

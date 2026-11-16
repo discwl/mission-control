@@ -14,6 +14,7 @@ test('a fresh response between clock ticks is evaluated at render time, and time
     '../shared/fleet': { readFleet: {} },
     './mission-control-v2-model': { retainV2Hosts: x => x, buildV2Tasks: (snapshot, options) => { evaluated.push(options.now - snapshot.observedAt); return []; } },
     './kanban-model': { kanbanTask: x => x },
+    './fleet-live': { useFleetLive: () => false },
   };
   const code = ts.transpileModule(readFileSync(new URL('./kanban-data.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
   const module = { exports: {} };

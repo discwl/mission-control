@@ -184,3 +184,261 @@ test("a switched task's retired workers, even missing or errored ones, no longer
   await f.engine.tick();
   assert.deepEqual(f.dispatched, ["task_old"]);
 });
+
+test("a host whose Mission Control is restarting holds the runner instead of blocking it", async t => {
+  const f = await fleet(t, { a: [{ taskId: "task_restart" }] });
+  const inspect = f.deps.inspect; let down = true;
+  f.deps.inspect = async (...args) => { if (down) throw new Error("Request failed: Plugin is not available: mission-control requestType=plugin.rpc.invoke.request code=handler_error"); return inspect(...args); };
+  await f.engine.tick();
+  let row = await f.row("task_restart");
+  assert.equal(row.mode, "running");
+  assert.match(row.message, /^Waiting for a to answer: its Mission Control was restarting\./);
+  assert.equal(row.pending, null);
+  assert.deepEqual(f.dispatched, []);
+  down = false; f.advance(1);
+  await f.engine.tick();
+  assert.deepEqual(f.dispatched, ["task_restart"], "the stage starts once the host answers again");
+});
+
+test("transient evidence errors block the runner after 30 minutes without an answer", async t => {
+  const f = await fleet(t, { a: [{ taskId: "task_slow" }] });
+  f.deps.inspect = async () => { throw new Error("Request failed: Plugin RPC timed out: mission-control.invoke"); };
+  // Every check fails, a few minutes apart, as when each cycle's inspection times out.
+  for (let minute = 0; minute <= 28; minute += 4) { await f.engine.tick(); assert.equal((await f.row("task_slow")).mode, "running", `still waiting at ${minute} min`); f.advance(4); }
+  await f.engine.tick();
+  const row = await f.row("task_slow");
+  assert.equal(row.mode, "blocked");
+  assert.match(row.message, /^Cannot verify stage evidence: Request failed: Plugin RPC timed out/);
+});
+
+test("a transient wait that wasn't renewed for a while starts over, so one old hiccup can't block the next at once", async t => {
+  const f = await fleet(t, { a: [{ taskId: "task_slept" }] });
+  f.deps.inspect = async () => { throw new Error("Request failed: Plugin is not available: mission-control"); };
+  await f.engine.tick();
+  // The host sleeps: its fleet read carries a warning, so the runner is skipped before inspection for two hours.
+  f.hosts.get("a").warnings = ["Host asleep"];
+  for (let minute = 0; minute < 120; minute += 30) { f.advance(30); await f.engine.tick(); }
+  f.hosts.get("a").warnings = [];
+  f.advance(1); await f.engine.tick();
+  const row = await f.row("task_slept");
+  assert.equal(row.mode, "running", "the first hiccup after the gap starts a new 30-minute wait");
+  assert.match(row.message, /^Waiting for a to answer/);
+});
+
+test("a definite evidence error still blocks the runner at once", async t => {
+  const f = await fleet(t, { a: [{ taskId: "task_gone" }] });
+  f.deps.inspect = async () => { throw new Error("Task not found on this host."); };
+  await f.engine.tick();
+  const row = await f.row("task_gone");
+  assert.equal(row.mode, "blocked");
+  assert.equal(row.message, "Cannot verify stage evidence: Task not found on this host.");
+});
+
+test("a failed recheck after reserving a dispatch releases the reservation instead of leaving it unconfirmed", async t => {
+  const f = await fleet(t, { a: [{ taskId: "task_recheck" }] });
+  const inspect = f.deps.inspect; let calls = 0;
+  f.deps.inspect = async (...args) => { if (++calls === 2) throw new Error("Paseo is still starting (its daemon accepts connections once every plugin has loaded)."); return inspect(...args); };
+  await f.engine.tick();
+  let row = await f.row("task_recheck");
+  assert.equal(row.pending, null, "nothing was sent, so nothing waits for confirmation");
+  assert.equal(row.mode, "running");
+  assert.match(row.message, /Paseo was starting/);
+  assert.deepEqual(f.dispatched, []);
+  f.advance(1); await f.engine.tick();
+  assert.deepEqual(f.dispatched, ["task_recheck"]);
+});
+
+const { recordDispatch } = require("./pipeline-engine.ts");
+const receipt = (requestId, phase, step = "accepted", extra = {}) => ({ requestId, phase, step, agentId: null, runId: null, error: null, startedAt: at, updatedAt: at, ...extra });
+/** A host that keeps stage start receipts. Unknown request IDs read as cancelled, as cancelIfMissing reports them. */
+function withReceipts(f) {
+  const receipts = new Map(); const sent = [];
+  f.deps.launchReceipts = async () => true;
+  f.deps.launchStatus = async (_row, requestId) => receipts.get(requestId) ?? receipt(requestId, "cancelled", "accepted", { error: "The stage start was cancelled before it reached this host." });
+  return { receipts, sent, answer: reply => { f.deps.dispatch = async (row, _facts, _fingerprint, requestId, acceptPending) => { sent.push({ requestId, acceptPending }); f.dispatched.push(row.taskId); return reply(requestId); }; } };
+}
+
+test("a slow stage start on a host with receipts is followed to its worker, not shown as unconfirmed", async t => {
+  const f = await fleet(t, { a: [{ taskId: "task_slow_start" }] }); const host = withReceipts(f);
+  host.answer(requestId => { const running = receipt(requestId, "running", "agent", { agentId: "stage-worker" }); host.receipts.set(requestId, running); return { receipt: running }; });
+  await f.engine.tick();
+  let row = await f.row("task_slow_start");
+  assert.equal(host.sent[0].acceptPending, true);
+  assert.equal(row.pending.launch, "awaiting"); assert.equal(row.mode, "running");
+  assert.ok("failureId" in row.pending && "planFailureId" in row.pending, "repair accounting is saved with the reservation");
+  assert.match(row.message, /^Starting the execute stage on a \(creating its worker\)\./);
+  host.receipts.set(host.sent[0].requestId, receipt(host.sent[0].requestId, "done", "sent", { agentId: "stage-worker", runId: "run_a" }));
+  f.advance(1); await f.engine.tick();
+  row = await f.row("task_slow_start");
+  assert.equal(row.pending, null);
+  assert.deepEqual(row.lastWorker, { agentId: "stage-worker", runId: "run_a" });
+  assert.equal(row.wakeups, 1); assert.ok(row.lastDispatch);
+  assert.equal(row.message, "The execute stage started on a.", "no lasting Starting note once the start is confirmed");
+  assert.deepEqual(f.dispatched, ["task_slow_start"], "the stage was sent once");
+});
+
+test("a dispatch error on a followed host is settled from the receipt; a start that never arrived is retried three times at most", async t => {
+  const f = await fleet(t, { a: [{ taskId: "task_lost" }] }); withReceipts(f);
+  const attempts = [];
+  f.deps.dispatch = async (_row, _facts, _fingerprint, requestId) => { attempts.push(requestId); throw new Error("Request failed: Plugin RPC timed out: mission-control.invoke"); };
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await f.engine.tick();
+    let row = await f.row("task_lost");
+    assert.equal(row.pending.launch, "awaiting"); assert.match(row.message, /^Confirming the execute stage start with a/);
+    f.advance(1); await f.engine.tick();
+    row = await f.row("task_lost");
+    assert.equal(row.pending, null);
+    if (attempt < 3) { assert.equal(row.mode, "running"); assert.match(row.message, /didn't start on a \(the request never reached a \(Request failed: Plugin RPC timed out: mission-control\.invoke\)\)\. The runner checks again\./); }
+    else { assert.equal(row.mode, "blocked"); assert.match(row.message, /couldn't start on a: the request never reached a \(Request failed: Plugin RPC timed out: mission-control\.invoke\)\. Nothing was started there\. Resume to try again\./); }
+    f.advance(1);
+  }
+  assert.equal(attempts.length, 3);
+});
+
+test("a start that failed after creating its worker blocks and keeps the dispatch for a person to check", async t => {
+  const f = await fleet(t, { a: [{ taskId: "task_partial" }] }); const host = withReceipts(f);
+  host.answer(requestId => ({ receipt: receipt(requestId, "failed", "run", { agentId: "stage-worker", error: "Task run could not start." }) }));
+  await f.engine.tick();
+  const row = await f.row("task_partial");
+  assert.equal(row.mode, "blocked"); assert.equal(row.pending.launch, "awaiting");
+  assert.match(row.message, /started only partly on a \(starting its run, worker stage-worker\): Task run could not start\. Check that worker/);
+});
+
+test("a start that did nothing blocks with a lasting reason, and re-evaluates when only the facts moved", async t => {
+  const lasting = await fleet(t, { a: [{ taskId: "task_profiles" }] }); const host = withReceipts(lasting);
+  host.answer(requestId => ({ receipt: receipt(requestId, "failed", "accepted", { error: "Choose native agent profiles on this host before launching a managed stage." }) }));
+  await lasting.engine.tick();
+  let row = await lasting.row("task_profiles");
+  assert.equal(row.pending, null); assert.equal(row.mode, "blocked");
+  assert.match(row.message, /couldn't start on a: Choose native agent profiles.*Nothing was started there/);
+  const moved = await fleet(t, { a: [{ taskId: "task_moved" }] }); const other = withReceipts(moved);
+  other.answer(requestId => ({ receipt: receipt(requestId, "failed", "accepted", { error: "Stage changed before launch." }) }));
+  await moved.engine.tick();
+  row = await moved.row("task_moved");
+  assert.equal(row.pending, null); assert.equal(row.mode, "running");
+  assert.match(row.message, /didn't start on a \(Stage changed before launch\.\)\. The runner checks again\./);
+});
+
+test("a paused runner still following a start is settled from the host's receipt and stays paused", async t => {
+  const f = await fleet(t, { a: [{ taskId: "task_paused" }] }); const host = withReceipts(f);
+  host.answer(requestId => { const running = receipt(requestId, "running", "sending", { agentId: "stage-worker" }); host.receipts.set(requestId, running); return { receipt: running }; });
+  await f.engine.tick();
+  await f.store.update(state => { state.pipelines.find(item => item.taskId === "task_paused").mode = "paused"; });
+  host.receipts.set(host.sent[0].requestId, receipt(host.sent[0].requestId, "done", "sent", { agentId: "stage-worker", runId: "run_a" }));
+  f.advance(1); await f.engine.tick();
+  const row = await f.row("task_paused");
+  assert.equal(row.mode, "paused"); assert.equal(row.pending, null); assert.deepEqual(row.lastWorker, { agentId: "stage-worker", runId: "run_a" });
+});
+
+test("a stage still starting holds its host for runners ahead of it in the order, and blocks after 30 minutes", async t => {
+  const f = await fleet(t, { a: [{ taskId: "task_ahead" }, { taskId: "task_starting" }] }); const host = withReceipts(f);
+  const requestId = "mc-pipeline-held";
+  host.receipts.set(requestId, receipt(requestId, "running", "agent", { agentId: "stage-worker" }));
+  await f.store.update(state => { state.pipelines.find(item => item.taskId === "task_starting").pending = { requestId, fingerprint: "fp", stage: "execute", attemptedAt: at, launch: "awaiting", failureId: null, planFailureId: null }; });
+  await f.engine.tick();
+  assert.deepEqual(f.dispatched, [], "the earlier runner waits while the later one's stage is starting on the same host");
+  f.advance(31); await f.engine.tick();
+  const row = await f.row("task_starting");
+  assert.equal(row.mode, "blocked"); assert.equal(row.pending.requestId, requestId);
+  assert.match(row.message, /has been starting on a for over 30 minutes \(creating its worker\)/);
+});
+
+test("a host without start receipts keeps today's unconfirmed block on a dispatch error", async t => {
+  const f = await fleet(t, { a: [{ taskId: "task_old_host" }] });
+  f.deps.launchReceipts = async () => false; f.deps.launchStatus = async () => { throw new Error("must not be asked"); };
+  f.deps.dispatch = async () => { throw new Error("Request failed: Plugin RPC timed out: mission-control.invoke"); };
+  await f.engine.tick();
+  const row = await f.row("task_old_host");
+  assert.equal(row.mode, "blocked"); assert.equal(row.pending.launch, undefined);
+  assert.match(row.message, /^Dispatch outcome is unconfirmed/);
+});
+
+test("a confirmed dispatch counts the repair attempts saved with its reservation", () => {
+  const row = { pending: {}, lastDispatch: null, lastSentAt: null, date: "2026-11-08", wakeups: 5, lastWorker: null, runId: null, repairs: 0, repairIds: [], planRepairs: 1, planRepairIds: ["plan_a"], updatedAt: at };
+  recordDispatch(row, { requestId: "r", fingerprint: "fp", stage: "fix", attemptedAt: at, failureId: "finding_a", planFailureId: "plan_b" }, Date.parse(at), { agentId: "w", runId: "run_b" });
+  assert.equal(row.pending, null); assert.equal(row.lastDispatch, "fp");
+  assert.deepEqual([row.repairs, row.repairIds], [1, ["finding_a"]]);
+  assert.deepEqual([row.planRepairs, row.planRepairIds], [2, ["plan_a", "plan_b"]]);
+  assert.equal(row.wakeups, 1, "a new day starts a new count"); assert.equal(row.runId, "run_b");
+});
+
+test("a cancellation long after the attempt may stand in for a pruned receipt, so the runner asks a person", async t => {
+  const f = await fleet(t, { a: [{ taskId: "task_pruned" }] }); const host = withReceipts(f);
+  const requestId = "mc-pipeline-pruned";
+  await f.store.update(state => { state.pipelines.find(item => item.taskId === "task_pruned").pending = { requestId, fingerprint: "fp", stage: "execute", attemptedAt: at, launch: "awaiting", failureId: null, planFailureId: null }; });
+  f.advance(40 * 24 * 60);
+  host.receipts.set(requestId, receipt(requestId, "cancelled", "accepted", { startedAt: new Date(Date.parse(at) + 40 * 24 * 60 * 60_000).toISOString() }));
+  await f.engine.tick();
+  const row = await f.row("task_pruned");
+  assert.equal(row.mode, "blocked"); assert.equal(row.pending.requestId, requestId);
+  assert.match(row.message, /can't be confirmed: the host no longer keeps its receipt/);
+});
+
+test("failures in back-to-back inspections keep the 30-minute clock, however long each cycle takes", async t => {
+  const f = await fleet(t, { a: [{ taskId: "task_stuck" }] });
+  // Each cycle takes 6 minutes inside its inspections, as when many runners' inspections time out one after another;
+  // the next cycle starts right after the last one ends.
+  f.deps.inspect = async () => { f.advance(6); throw new Error("Request failed: Plugin RPC timed out: mission-control.invoke"); };
+  for (let cycle = 0; cycle < 5; cycle++) { await f.engine.tick(); assert.equal((await f.row("task_stuck")).mode, "running", `still waiting after cycle ${cycle + 1}`); }
+  await f.engine.tick();
+  const row = await f.row("task_stuck");
+  assert.equal(row.mode, "blocked", "the stuck host's runner asks a person after 30 minutes");
+});
+
+test("pausing a runner or the fleet starts any transient wait afresh when it resumes", async t => {
+  for (const pause of ["runner", "fleet"]) {
+    const f = await fleet(t, { a: [{ taskId: `task_paused_${pause}` }] });
+    f.deps.inspect = async () => { throw new Error("Request failed: Plugin is not available: mission-control"); };
+    await f.engine.tick();
+    const set = value => f.store.update(state => { if (pause === "fleet") state.paused = value; else state.pipelines[0].mode = value ? "paused" : "running"; });
+    await set(true);
+    for (let minute = 0; minute < 40; minute += 10) { f.advance(10); await f.engine.tick(); }
+    await set(false);
+    f.advance(1); await f.engine.tick();
+    const row = await f.row(`task_paused_${pause}`);
+    assert.equal(row.mode, "running", `after a ${pause} pause the first hiccup starts a new wait`);
+    assert.match(row.message, /^Waiting for a to answer/);
+  }
+});
+
+test("after a gap with no pass through the runners (this computer slept), a hiccup starts a new wait", async t => {
+  const f = await fleet(t, { a: [{ taskId: "task_asleep" }] });
+  f.deps.inspect = async () => { throw new Error("Request failed: Plugin is not available: mission-control"); };
+  await f.engine.tick();
+  f.advance(60); // asleep for an hour: no cycle runs
+  await f.engine.tick();
+  const row = await f.row("task_asleep");
+  assert.equal(row.mode, "running"); assert.match(row.message, /^Waiting for a to answer/);
+});
+
+test("a failed check of whether the host keeps receipts waits and asks again instead of sending unfollowed", async t => {
+  const f = await fleet(t, { a: [{ taskId: "task_capability" }] }); withReceipts(f);
+  let down = true;
+  f.deps.launchReceipts = async () => { if (down) throw new Error("Request failed: Plugin RPC timed out: mission-control.invoke"); return true; };
+  await f.engine.tick();
+  let row = await f.row("task_capability");
+  assert.equal(row.pending, null, "nothing was sent, so nothing waits for confirmation");
+  assert.equal(row.mode, "running"); assert.match(row.message, /^Waiting for a to answer: it answered too slowly/);
+  assert.deepEqual(f.dispatched, []);
+  down = false; f.advance(1); await f.engine.tick();
+  assert.deepEqual(f.dispatched, ["task_capability"]);
+  row = await f.row("task_capability");
+  assert.equal(row.pending, null, "the default dispatch answered with its worker");
+});
+
+test("a dispatch that failed before calling the host releases the reservation and says why", async t => {
+  const f = await fleet(t, { a: [{ taskId: "task_local" }] }); withReceipts(f);
+  f.deps.dispatch = async () => { throw Object.assign(new Error("Task workspace is unavailable."), { notSent: true }); };
+  await f.engine.tick();
+  const row = await f.row("task_local");
+  assert.equal(row.pending, null); assert.equal(row.mode, "blocked");
+  assert.equal(row.message, "The execute stage couldn't start: Task workspace is unavailable. Nothing was sent. Resume to try again.");
+});
+
+test("a start that never reached its host keeps the dispatch error as its reason", async t => {
+  const f = await fleet(t, { a: [{ taskId: "task_reason" }] }); withReceipts(f);
+  f.deps.dispatch = async () => { throw new Error("Request failed: Plugin mission-control is not available on the route"); };
+  await f.engine.tick(); f.advance(1); await f.engine.tick();
+  const row = await f.row("task_reason");
+  assert.match(row.message, /didn't start on a \(the request never reached a \(Request failed: Plugin mission-control is not available on the route\)\)/);
+});

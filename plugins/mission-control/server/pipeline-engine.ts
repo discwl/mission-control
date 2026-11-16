@@ -1,18 +1,46 @@
 import { randomUUID } from "node:crypto";
 import type { FleetAgent, FleetSnapshot, FleetTask } from "../shared/fleet";
-import type { Pipeline } from "../shared/pipeline-state";
+import { isStartingStage, type Pipeline } from "../shared/pipeline-state";
 import { isQuiet } from "../shared/agent-tree";
 import type { PipelineInspection } from "../shared/pipeline";
 import { nextPipelineStep, pipelineFingerprint, missingReviewRole, sharedCheckoutMessage, type PipelineStep } from "../shared/pipeline-model";
 import { managedTasks, managedWorkerIds, taskWorkers } from "../shared/fleet-model";
+import { cancelledBeforeArrival, launchHadEffects, type LaunchReceipt, type LaunchStep } from "../shared/stage-launch";
 import { fleetEvent, type FleetStore } from "./fleet-store";
+import { errorText, transientHostError } from "./host-errors";
 
+type Worker = { agentId: string; runId: string };
 type Deps = { store: FleetStore; snapshot(): Promise<FleetSnapshot>; inspect(row: Pipeline, snapshot: FleetSnapshot): Promise<PipelineInspection>;
-  dispatch?(row: Pipeline, facts: PipelineInspection, fingerprint: string, requestId: string): Promise<{ agentId: string; runId: string }>;
+  // With acceptPending, a host that keeps start receipts answers within about 20 seconds: the worker, or the receipt so far.
+  dispatch?(row: Pipeline, facts: PipelineInspection, fingerprint: string, requestId: string, acceptPending?: boolean): Promise<Worker | { receipt: LaunchReceipt }>;
+  // Whether a host keeps stage start receipts (pipeline.capabilities stageLaunchReceipts).
+  launchReceipts?(serverId: string): Promise<boolean>;
+  // A start's receipt on its host. A request that never arrived is cancelled there for good and reported as cancelled.
+  launchStatus?(row: Pipeline, requestId: string): Promise<LaunchReceipt>;
   send(id: string, prompt: string, requestId: string): Promise<void>; prepare(id: string, taskId: string, deliveryKind: Pipeline["deliveryKind"]): Promise<void | { completed?: boolean; authorized?: boolean }>;
   // Creates the task's own worktree before its first automatic code stage (pipeline.worktree.prepare on its host).
   prepareWorktree?(row: Pipeline, facts: PipelineInspection): Promise<{ phase: "ready"; workspaceId: string; branch: string } | { phase: "creating" | "failed"; message: string }>; now?: () => number };
+type Pending = NonNullable<Pipeline["pending"]>;
 const active = (row: Pipeline) => ["running", "waiting", "ready"].includes(row.mode);
+/** How long a runner waits through transient host errors before it blocks for a person to look. */
+export const EVIDENCE_WAIT_MS = 30 * 60_000;
+/** How long the runner follows a stage start on its host before it asks a person to look. */
+export const LAUNCH_WAIT_MS = 30 * 60_000;
+// A start that did nothing because the facts moved between the check and the start, a plugin restarted before its first
+// step, or another start held the task's lock. The next cycle decides again, at most three times in a row.
+const raced = [/Stage changed before launch/, /candidate changed before stage launch/, /submitted plan changed before stage launch/, /Another agent is active in this workspace/, /Code changed during OCR selection/, /Another stage start holds this task's lock/, /restarted while the stage was starting/];
+const stepText: Record<LaunchStep, string> = { accepted: "accepted", agent: "creating its worker", run: "starting its run", assignment: "saving its assignment", sending: "sending the worker its instructions", sent: "instructions sent" };
+
+/** What every confirmed dispatch records on its runner, whether it was confirmed at once or by a later receipt. */
+export function recordDispatch(row: Pipeline, pending: Pending, at: number, worker: Worker | null) {
+  const date = new Date(at).toISOString().slice(0, 10);
+  row.pending = null; row.lastDispatch = pending.fingerprint; row.lastSentAt = new Date(at).toISOString();
+  row.wakeups = (row.date === date ? row.wakeups : 0) + 1; row.date = date;
+  if (worker) { row.lastWorker = worker; row.runId = worker.runId; }
+  if (pending.failureId) { row.repairIds.push(pending.failureId); row.repairs++; }
+  if (pending.planFailureId) { row.planRepairIds.push(pending.planFailureId); row.planRepairs++; }
+  row.updatedAt = new Date(at).toISOString();
+}
 /** An automatic code task that has no run yet first gets its own worktree; until then nothing runs in its project checkout. */
 const needsWorktree = (row: Pipeline, task: FleetTask | undefined) => row.workflowMode === "automatic" && row.deliveryKind === "code" && !task?.run && !task?.task.worktree;
 export function pipelinePrompt(row: Pipeline, facts: PipelineInspection, next: PipelineStep): string {
@@ -63,6 +91,97 @@ const FAILED_TURN = "'s last turn failed";
 export function createPipelineEngine(deps: Deps) {
   const now = deps.now ?? Date.now; let running = false; let stopped = false;
   async function set(id: string, patch: Partial<Pipeline>) { return deps.store.update(state => { const row = state.pipelines.find(item => item.id === id); if (!row || !active(row) || state.paused) return; Object.assign(row, patch, { updatedAt: new Date(now()).toISOString() }); }); }
+  // When each runner's stage evidence first became unreadable for a transient reason, in this process. A host
+  // restarting or reloading Mission Control answers again within minutes; only a lasting failure blocks the runner.
+  const unreadableSince = new Map<string, { since: number; last: number; skipped: boolean }>();
+  // When a cycle last went through the runners.
+  let lastPass: number | null = null;
+  // The last dispatch error per stage start request, so a start that never reached its host keeps its real reason.
+  const dispatchErrors = new Map<string, string>();
+  async function evidenceUnreadable(row: Pipeline, error: unknown, snapshot: FleetSnapshot) {
+    // The wait starts over only when the runner was skipped since its last failure and that was a while ago (for
+    // example while its host slept), so one old hiccup can't make the next block at once. Failures in back-to-back
+    // inspections keep the clock, however long a slow cycle takes.
+    const reason = transientHostError(error); const previous = unreadableSince.get(row.id);
+    const since = previous && !(previous.skipped && now() - previous.last >= 5 * 60_000) ? previous.since : now();
+    if (reason && now() - since < EVIDENCE_WAIT_MS) {
+      unreadableSince.set(row.id, { since, last: now(), skipped: false });
+      const label = snapshot.hosts.find(host => host.serverId === row.remoteServerId)?.label ?? "the host";
+      const message = `Waiting for ${label} to answer: ${reason}. The runner checks again automatically.`;
+      if (row.message !== message) await set(row.id, { message });
+      return;
+    }
+    unreadableSince.delete(row.id);
+    await set(row.id, { mode: "blocked", message: `Cannot verify stage evidence: ${errorText(error)}` });
+  }
+  const hostLabel = (snapshot: FleetSnapshot, serverId: string) => snapshot.hosts.find(host => host.serverId === serverId)?.label ?? "its host";
+  /** Changes a runner while its dispatch is still this request, whatever its mode (a paused runner is followed too). */
+  async function settle(id: string, requestId: string, change: (row: Pipeline, state: Awaited<ReturnType<FleetStore["read"]>>) => void) {
+    await deps.store.update(state => {
+      const row = state.pipelines.find(item => item.id === id); if (!row || row.pending?.requestId !== requestId) return;
+      change(row, state); row.updatedAt = new Date(now()).toISOString();
+    });
+  }
+  // Consecutive starts per runner that did nothing on the host, for the same dispatch. A few are expected; the same
+  // outcome three times in a row blocks the runner instead of retrying every cycle.
+  const fruitless = new Map<string, { fingerprint: string; count: number }>();
+  /** Asks the host for a start's receipt and records what it says. */
+  async function followLaunch(row: Pipeline, snapshot: FleetSnapshot) {
+    const pending = row.pending!; const host = hostLabel(snapshot, row.remoteServerId); const waited = now() - Date.parse(pending.attemptedAt);
+    let receipt: LaunchReceipt;
+    try { receipt = await deps.launchStatus!(row, pending.requestId); }
+    catch (error) {
+      const reason = transientHostError(error); const wait = Boolean(reason) && waited < LAUNCH_WAIT_MS;
+      const message = wait ? `Waiting for ${host} to confirm the ${pending.stage} stage started: ${reason}.`
+        : `The ${pending.stage} stage start on ${host} can't be confirmed: ${errorText(error)} Check its stage worker before acknowledging delivery.`;
+      await settle(row.id, pending.requestId, current => { current.message = message; if (!wait) current.mode = "blocked"; });
+      return;
+    }
+    await settleLaunch(row, pending, receipt, host, waited);
+  }
+  async function settleLaunch(row: Pipeline, pending: Pending, receipt: LaunchReceipt, host: string, waited: number) {
+    if (receipt.phase === "done" && receipt.agentId && receipt.runId) {
+      fruitless.delete(row.id);
+      const worker = { agentId: receipt.agentId, runId: receipt.runId };
+      await settle(row.id, pending.requestId, (current, state) => {
+        recordDispatch(current, current.pending!, now(), worker);
+        current.message = `The ${pending.stage} stage started on ${host}.`;
+        fleetEvent(state, { coordinatorId: row.coordinatorId, remoteServerId: row.remoteServerId, taskId: row.taskId, kind: "dispatch", message: `Managed workflow: ${pending.stage} stage dispatched.` });
+      });
+      return;
+    }
+    if (receipt.phase === "cancelled" && !cancelledBeforeArrival(receipt, pending.attemptedAt)) {
+      // Cancelled long after the attempt: it may stand in for a receipt the host no longer keeps. Nothing follows from it.
+      fruitless.delete(row.id);
+      await settle(row.id, pending.requestId, current => { current.mode = "blocked"; current.message = `The ${pending.stage} stage start on ${host} can't be confirmed: the host no longer keeps its receipt. Check its stage worker before acknowledging delivery.`; });
+      return;
+    }
+    if (receipt.phase === "running") {
+      const stuck = waited >= LAUNCH_WAIT_MS;
+      const message = stuck ? `The ${pending.stage} stage has been starting on ${host} for over 30 minutes (${stepText[receipt.step]}). Check its stage worker before acknowledging delivery.`
+        : `Starting the ${pending.stage} stage on ${host} (${stepText[receipt.step]}).`;
+      await settle(row.id, pending.requestId, current => { current.message = message; if (stuck) current.mode = "blocked"; });
+      return;
+    }
+    if (receipt.phase === "cancelled" || !launchHadEffects(receipt)) {
+      // Nothing was started there: the reservation is released, and a lasting failure blocks with its reason.
+      const sendError = dispatchErrors.get(pending.requestId); dispatchErrors.delete(pending.requestId);
+      const reason = receipt.phase === "cancelled" ? `the request never reached ${host}${sendError ? ` (${sendError})` : ""}` : receipt.error ?? "no reason recorded";
+      const previous = fruitless.get(row.id); const count = previous?.fingerprint === pending.fingerprint ? previous.count + 1 : 1;
+      const retry = (receipt.phase === "cancelled" || raced.some(pattern => pattern.test(receipt.error ?? ""))) && count < 3;
+      if (retry) fruitless.set(row.id, { fingerprint: pending.fingerprint, count }); else fruitless.delete(row.id);
+      const message = retry ? `The ${pending.stage} stage didn't start on ${host} (${reason}). The runner checks again.`
+        : `The ${pending.stage} stage couldn't start on ${host}: ${reason}. Nothing was started there. Resume to try again.`;
+      await settle(row.id, pending.requestId, current => { current.pending = null; current.message = message; if (!retry) current.mode = "blocked"; });
+      return;
+    }
+    // It failed after a step that may have left a worker or delivered its instructions: a person checks that worker.
+    fruitless.delete(row.id);
+    await settle(row.id, pending.requestId, current => {
+      current.mode = "blocked";
+      current.message = `The ${pending.stage} stage started only partly on ${host} (${stepText[receipt.step]}${receipt.agentId ? `, worker ${receipt.agentId}` : ""}): ${receipt.error ?? "no reason recorded"} Check that worker before acknowledging delivery.`;
+    });
+  }
   function permitted(row: Pipeline, snapshot: FleetSnapshot) {
     const coordinator = snapshot.coordinators.find(item => item.agentId === row.coordinatorId && item.remoteServerId === row.remoteServerId);
     const host = snapshot.hosts.find(item => item.serverId === row.remoteServerId)?.snapshot;
@@ -104,21 +223,32 @@ export function createPipelineEngine(deps: Deps) {
   }
   async function cycle() {
     const snapshot = await deps.snapshot();
-    if (snapshot.state.paused) return;
+    // A paused fleet or runner starts any transient wait afresh when it resumes. So does every wait after a gap in which
+    // no cycle went through the runners (this computer slept, or cycles failed before reaching them).
+    if (snapshot.state.paused) { unreadableSince.clear(); lastPass = now(); return; }
+    if (lastPass !== null && now() - lastPass > 5 * 60_000) unreadableSince.clear();
+    try { await serve(snapshot); } finally { lastPass = now(); }
+  }
+  async function serve(snapshot: FleetSnapshot) {
     const busyHosts = new Set(snapshot.coordinators.filter(coordinator => {
       if (["running", "initializing"].includes(coordinator.agent.status)) return true;
       const host = snapshot.hosts.find(item => item.serverId === coordinator.remoteServerId)?.snapshot; if (!host) return false;
       const ids = managedWorkerIds(snapshot.serverId, coordinator, host.agents);
       return host.agents.some(agent => ids.has(agent.id) && ["running", "initializing"].includes(agent.status));
     }).map(coordinator => coordinator.remoteServerId));
+    // A stage still starting holds its host, whichever runner comes first in the order.
+    for (const row of snapshot.state.pipelines) if (isStartingStage(row)) busyHosts.add(row.remoteServerId);
     // Runners are served in enrollment order. Each host runs one stage at a time; hosts run in parallel.
     for (const initial of snapshot.state.pipelines) {
       if (stopped) return;
       let row = (await deps.store.read()).pipelines.find(item => item.id === initial.id)!;
-      if (!row || !active(row) || row.intake?.phase === "pending") continue;
+      if (!row) continue;
+      if (isStartingStage(row) && deps.launchStatus) { busyHosts.add(row.remoteServerId); await followLaunch(row, snapshot); continue; }
+      if (!active(row) || row.intake?.phase === "pending") { unreadableSince.delete(row.id); continue; }
       if (row.pending) { await set(row.id, { mode: "blocked", message: "A dispatch has no confirmed receipt. Inspect its remote stage worker under Reviewers and evidence or native Subagents; legacy messages and draft PR previews go to the coordinator. It will not be replayed." }); continue; }
       const busy = busyHosts.has(row.remoteServerId);
       if (busy || !permitted(row, snapshot)) {
+        const waiting = unreadableSince.get(row.id); if (waiting) waiting.skipped = true;
         // Say which failed turn holds the runner, and drop that note once it clears. The agent's next turn clears it and
         // also makes the host busy, so a busy host drops a stale note too.
         const hold = failedTurnHold(row, snapshot);
@@ -128,7 +258,8 @@ export function createPipelineEngine(deps: Deps) {
       }
       let facts: PipelineInspection;
       try { facts = await deps.inspect(row, snapshot); }
-      catch (error) { await set(row.id, { mode: "blocked", message: `Cannot verify stage evidence: ${error instanceof Error ? error.message : String(error)}` }); continue; }
+      catch (error) { await evidenceUnreadable(row, error, snapshot); continue; }
+      unreadableSince.delete(row.id);
       if (row.runId && row.runId !== facts.entry.run?.runId) { await set(row.id, { mode: "blocked", message: "The task's active run changed. Inspect it and explicitly resume to adopt the current run." }); continue; }
       const next = nextPipelineStep(row, facts); const fingerprint = pipelineFingerprint(facts, next);
       const prepare = next.mode === "ready" && row.lastDispatch !== fingerprint;
@@ -152,8 +283,9 @@ export function createPipelineEngine(deps: Deps) {
       }
       const date = new Date(now()).toISOString().slice(0, 10); const wakeups = row.date === date ? row.wakeups : 0;
       if (wakeups >= 24) { await set(row.id, { mode: "blocked", message: "The daily limit of 24 stage dispatches was reached. Inspect progress before resuming." }); continue; }
-      const requestId = `mc-pipeline-${randomUUID()}`; const pending = { requestId, fingerprint, stage: next.stage, attemptedAt: new Date(now()).toISOString() };
-      let worker: { agentId: string; runId: string } | null = null;
+      const requestId = `mc-pipeline-${randomUUID()}`;
+      const pending: Pending = { requestId, fingerprint, stage: next.stage, attemptedAt: new Date(now()).toISOString(), failureId: next.failureId ?? null, planFailureId: next.planFailureId ?? null };
+      let worker: Worker | null = null;
       let delivery: void | { completed?: boolean; authorized?: boolean };
       const before = await deps.store.read();
       await deps.store.update(state => {
@@ -161,29 +293,58 @@ export function createPipelineEngine(deps: Deps) {
         if (!current || !active(current) || current.pending || state.paused) throw new Error("Pipeline changed before dispatch.");
         current.pending = pending;
       }, before.revision);
+      // Recheck the evidence after reserving the dispatch. Nothing has been sent yet, so a failure here releases the
+      // reservation and is handled like any unreadable evidence, never as an unconfirmed dispatch.
+      const release = () => deps.store.update(state => { const current = state.pipelines.find(item => item.id === row.id); if (current?.pending?.requestId === requestId) current.pending = null; });
+      let fresh: FleetSnapshot; let verified: PipelineInspection; let latestState: Awaited<ReturnType<FleetStore["read"]>>;
+      try { fresh = await deps.snapshot(); verified = await deps.inspect(row, fresh); latestState = await deps.store.read(); }
+      catch (error) { await release(); await evidenceUnreadable(row, error, snapshot); continue; }
+      const latest = latestState.pipelines.find(item => item.id === row.id);
+      if (latestState.paused || !latest || !active(latest) || latest.pending?.requestId !== requestId || !permitted(latest, fresh) || pipelineFingerprint(verified, nextPipelineStep(latest, verified)) !== fingerprint) { await release(); continue; }
+      const managed = !prepare && Boolean(verified.agentPolicy && deps.dispatch && (next.stage !== "review" || missingReviewRole(verified, verified.checkpoints.find(item => item.stage === "validate" && item.verdict === "pass")?.createdAt)));
+      // A host that keeps start receipts is followed through them. The reservation says so before the host is called,
+      // so any outcome (an answer, an error, a restart on either side) is read from the receipt instead of guessed.
+      let followed = false;
+      if (managed && deps.launchStatus && deps.launchReceipts) {
+        // Not knowing whether the host keeps receipts isn't a "no": nothing has been sent, so wait and ask again.
+        try { followed = await deps.launchReceipts(row.remoteServerId); }
+        catch (error) { await release(); await evidenceUnreadable(row, error, snapshot); continue; }
+      }
+      if (followed) await deps.store.update(state => { const current = state.pipelines.find(item => item.id === row.id); if (current?.pending?.requestId === requestId) current.pending = { ...current.pending, launch: "awaiting" }; });
       try {
-        const fresh = await deps.snapshot(); const verified = await deps.inspect(row, fresh);
-        const latestState = await deps.store.read(); const latest = latestState.pipelines.find(item => item.id === row.id);
-        if (latestState.paused || !latest || !active(latest) || latest.pending?.requestId !== requestId || !permitted(latest, fresh) || pipelineFingerprint(verified, nextPipelineStep(latest, verified)) !== fingerprint) {
-          await deps.store.update(state => { const current = state.pipelines.find(item => item.id === row.id); if (current?.pending?.requestId === requestId) current.pending = null; }); continue;
-        }
         if (prepare) delivery = await deps.prepare(row.coordinatorId, row.taskId, row.deliveryKind);
-        else if (verified.agentPolicy && deps.dispatch && (next.stage !== "review" || missingReviewRole(verified, verified.checkpoints.find(item => item.stage === "validate" && item.verdict === "pass")?.createdAt))) worker = await deps.dispatch(row, verified, fingerprint, requestId);
+        else if (managed) {
+          const result = await deps.dispatch!(row, verified, fingerprint, requestId, followed);
+          if ("receipt" in result) {
+            busyHosts.add(row.remoteServerId);
+            await settleLaunch(row, { ...pending, launch: "awaiting" }, result.receipt, hostLabel(fresh, row.remoteServerId), now() - Date.parse(pending.attemptedAt));
+            continue;
+          }
+          worker = result;
+        }
         else await deps.send(row.coordinatorId, pipelinePrompt(row, verified, next), requestId);
       } catch (error) {
+        // An error raised before the host was called sent nothing: release the reservation and say why.
+        if ((error as { notSent?: boolean } | null)?.notSent) {
+          await release();
+          if (transientHostError(error)) await evidenceUnreadable(row, error, snapshot);
+          else await set(row.id, { mode: "blocked", message: `The ${next.stage} stage couldn't start: ${errorText(error)} Nothing was sent. Resume to try again.` });
+          continue;
+        }
         // The stage may have started on the host before the error, so nothing else is dispatched there this cycle.
         busyHosts.add(row.remoteServerId);
+        if (followed) {
+          dispatchErrors.set(requestId, errorText(error));
+          await settle(row.id, requestId, current => { current.message = `Confirming the ${next.stage} stage start with ${hostLabel(fresh, row.remoteServerId)} (${errorText(error)}).`; });
+          continue;
+        }
         await set(row.id, { mode: "blocked", message: `Dispatch outcome is unconfirmed; it will not be replayed. Check its remote stage worker and coordinator before acknowledging delivery: ${error instanceof Error ? error.message : String(error)}` }); continue;
       }
       await deps.store.update(state => {
         const current = state.pipelines.find(item => item.id === row.id); if (current?.pending?.requestId !== requestId) return;
-        current.pending = null; current.lastDispatch = fingerprint; current.lastSentAt = new Date(now()).toISOString(); current.date = date; current.wakeups = wakeups + 1;
-        if (worker) { current.lastWorker = worker; current.runId = worker.runId; }
-        if (next.failureId) { current.repairIds.push(next.failureId); current.repairs++; }
-        if (next.planFailureId) { current.planRepairIds.push(next.planFailureId); current.planRepairs++; }
+        recordDispatch(current, current.pending, now(), worker);
         if (delivery?.completed) { current.mode = "done"; current.message = "The reviewed report and final receipt are saved."; }
         else if (delivery?.authorized) { current.mode = "waiting"; current.message = "Exact action authorization is recorded. Waiting for actual execution results from the existing worker."; }
-        current.updatedAt = new Date(now()).toISOString();
         fleetEvent(state, { coordinatorId: row.coordinatorId, remoteServerId: row.remoteServerId, taskId: row.taskId, kind: "dispatch", message: prepare ? delivery?.completed ? "Reviewed report completed." : row.deliveryKind === "code" ? "Draft PR preview prepared. Waiting for exact publication approval." : "Reviewed action bundle prepared. Waiting for exact action authorization." : `Managed workflow: ${next.stage} stage dispatched.` });
       });
       busyHosts.add(row.remoteServerId);

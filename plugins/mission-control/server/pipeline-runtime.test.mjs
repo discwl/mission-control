@@ -25,7 +25,7 @@ async function fixture(t) {
   const deps = { decisions: async () => ({ open: [], recent: [] }), questions: async () => ({ questions: [] }), stoppedAgents: async () => [] };
   const engine = registerPipelineRuntime({ handle: (contract, handler) => handlers.set(contract.name, handler) }, store, deps, snapshot, async (...args) => calls.push(args), () => {}); t.after(() => engine.stop());
   t.mock.method(names, "daemonServerId", async () => "personal");
-  const invoke = async (method, input) => handlers.get(method)(input);
+  const invoke = async (method, input) => handlers.get(method)(input, { paseo: {} });
   return { file, store, task, host, coordinator, others, snapshot, calls, invoke };
 }
 function bindExistingRun(f, extra = {}) {
@@ -273,4 +273,90 @@ test("chat status and controls never select another coordinator or host", async 
   await assert.rejects(managePipelineChat(`stop pipeline ${taskId}`, { ...context, agentId: "someone-else" }), /no longer manages/);
   assert.equal((await f.store.read()).pipelines[0].mode, "running");
   await managePipelineChat(`pause pipeline ${taskId}`, context); assert.equal((await f.store.read()).pipelines[0].mode, "paused");
+});
+
+const launchReceipt = (requestId, phase, step = "accepted", extra = {}) => ({ requestId, phase, step, agentId: null, runId: null, error: null, startedAt: at, updatedAt: at, ...extra });
+async function isolatedHome(t) {
+  const home = await mkdtemp(join(tmpdir(), "mc-launch-home-")); const previous = process.env.PASEO_HOME; process.env.PASEO_HOME = home;
+  t.after(async () => { if (previous === undefined) delete process.env.PASEO_HOME; else process.env.PASEO_HOME = previous; await rm(home, { recursive: true, force: true }); });
+}
+
+test("a stage start answers within its budget with its receipt, and its outcome stays on the host", async t => {
+  await isolatedHome(t);
+  const f = await fixture(t);
+  const { launchTiming } = require("./pipeline-runtime.ts"); const budget = launchTiming.answerMs; launchTiming.answerMs = 30; t.after(() => { launchTiming.answerMs = budget; });
+  // The start fails at its first check (this test's host is "remote", the daemon says "personal"), after a slow answer.
+  names.daemonServerId.mock.mockImplementation(async () => { await new Promise(resolve => setTimeout(resolve, 120)); return "personal"; });
+  const row = await f.invoke("pipeline.start", { coordinatorId: "coordinator", remoteServerId: "remote", taskId, expectedRevision: 0 });
+  const input = { serverId: "remote", workspaceId: "work", row, fingerprint: "fp", requestId: "mc-pipeline-budget", parent: { serverId: "personal", agentId: "coordinator" }, acceptPending: true };
+  const first = await f.invoke("pipeline.stage.launch", input);
+  assert.deepEqual([first.receipt.phase, first.receipt.step], ["running", "accepted"], "a slow start answers with its receipt so far");
+  await new Promise(resolve => setTimeout(resolve, 300));
+  names.daemonServerId.mock.mockImplementation(async () => "personal");
+  const status = await f.invoke("pipeline.stage.launch-status", { serverId: "personal", requestId: input.requestId });
+  assert.equal(status.receipt.phase, "failed"); assert.match(status.receipt.error, /different host/);
+  assert.equal((await f.invoke("pipeline.stage.launch", input)).receipt.phase, "failed", "the same request ID never starts twice");
+  await assert.rejects(f.invoke("pipeline.stage.launch", { ...input, requestId: "mc-pipeline-legacy", acceptPending: undefined }), /different host/, "an older caller still waits for the whole start");
+  const cancelled = await f.invoke("pipeline.stage.launch-status", { serverId: "personal", requestId: "mc-pipeline-never", cancelIfMissing: true });
+  assert.equal(cancelled.receipt.phase, "cancelled");
+  assert.equal((await f.invoke("pipeline.stage.launch", { ...input, requestId: "mc-pipeline-never" })).receipt.phase, "cancelled", "a request cancelled before it arrived starts nothing");
+});
+
+test("acknowledging a followed stage start asks its host first, and a paused runner still following one may resume", async t => {
+  const f = await fixture(t);
+  const row = await f.invoke("pipeline.start", { coordinatorId: "coordinator", remoteServerId: "remote", taskId, expectedRevision: 0 });
+  const receipts = new Map();
+  t.mock.method(transport, "invokeChatHost", async (_serverId, method, input) => {
+    assert.equal(method, "pipeline.stage.launch-status"); assert.equal(input.cancelIfMissing, true);
+    return { receipt: receipts.get(input.requestId) ?? launchReceipt(input.requestId, "cancelled") };
+  });
+  const follow = (requestId, mode) => f.store.update(state => { state.pipelines[0].pending = { requestId, fingerprint: "exact-stage", stage: "execute", attemptedAt: at, launch: "awaiting", failureId: null, planFailureId: null }; state.pipelines[0].mode = mode; state.pipelines[0].lastDispatch = null; });
+  const control = async (action, extra = {}) => f.invoke("pipeline.control", { id: row.id, action, expectedRevision: (await f.store.read()).revision, ...extra });
+
+  await follow("start-running", "blocked"); receipts.set("start-running", launchReceipt("start-running", "running", "agent"));
+  await assert.rejects(control("acknowledge", { requestId: "start-running", delivery: "not_sent" }), /still starting on its host/);
+  receipts.set("start-running", launchReceipt("start-running", "cancelled"));
+  let checked = await control("acknowledge", { requestId: "start-running", delivery: "sent" });
+  assert.deepEqual([checked.mode, checked.pending, checked.lastDispatch], ["paused", null, null], "a receipt showing nothing started decides, whatever the answer");
+
+  await follow("start-done", "blocked"); receipts.set("start-done", launchReceipt("start-done", "done", "sent", { agentId: "stage-worker", runId: "run_b" }));
+  checked = await control("acknowledge", { requestId: "start-done", delivery: "not_sent" });
+  assert.deepEqual([checked.mode, checked.pending, checked.lastDispatch], ["paused", null, "exact-stage"]);
+  assert.deepEqual(checked.lastWorker, { agentId: "stage-worker", runId: "run_b" });
+
+  await follow("start-partial", "blocked"); receipts.set("start-partial", launchReceipt("start-partial", "failed", "agent", { agentId: "stage-worker", error: "send failed" }));
+  checked = await control("acknowledge", { requestId: "start-partial", delivery: "sent" });
+  assert.equal(checked.lastDispatch, "exact-stage", "after a partial start, the person's check decides");
+
+  await follow("start-paused", "paused");
+  const resumed = await control("resume");
+  assert.equal(resumed.mode, "running"); assert.equal(resumed.pending.requestId, "start-paused", "the next cycle settles the start from its receipt");
+  await follow("start-stuck", "blocked");
+  await assert.rejects(control("resume"), /acknowledge/);
+});
+
+test("a host that can't report a start's receipt leaves the decision to the person once the runner stopped following it", async t => {
+  const f = await fixture(t);
+  const row = await f.invoke("pipeline.start", { coordinatorId: "coordinator", remoteServerId: "remote", taskId, expectedRevision: 0 });
+  t.mock.method(transport, "invokeChatHost", async () => { throw new Error("Request failed: Plugin mission-control does not contribute RPC pipeline.stage.launch-status"); });
+  const follow = (requestId, mode, extra = {}) => f.store.update(state => { state.pipelines[0].pending = { requestId, fingerprint: "exact-stage", stage: "fix", attemptedAt: at, launch: "awaiting", failureId: "finding_a", planFailureId: null, ...extra }; state.pipelines[0].mode = mode; state.pipelines[0].lastDispatch = null; });
+  const control = async (action, extra = {}) => f.invoke("pipeline.control", { id: row.id, action, expectedRevision: (await f.store.read()).revision, ...extra });
+  await follow("start-following", "running");
+  await assert.rejects(control("acknowledge", { requestId: "start-following", delivery: "not_sent" }), /keeps following it/);
+  await follow("start-rolled-back", "blocked");
+  const checked = await control("acknowledge", { requestId: "start-rolled-back", delivery: "sent" });
+  assert.deepEqual([checked.mode, checked.pending, checked.lastDispatch], ["paused", null, "exact-stage"]);
+  assert.deepEqual([checked.repairs, checked.repairIds], [1, ["finding_a"]], "a delivered fix counts against the repair limit");
+  assert.equal(checked.wakeups, 1);
+});
+
+test("a cancellation written long after the attempt doesn't override the person's answer", async t => {
+  const f = await fixture(t);
+  const row = await f.invoke("pipeline.start", { coordinatorId: "coordinator", remoteServerId: "remote", taskId, expectedRevision: 0 });
+  // The host pruned the start's receipt; asking now leaves a fresh cancellation, 40 days after the attempt.
+  const later = new Date(Date.parse(at) + 40 * 24 * 60 * 60_000).toISOString();
+  t.mock.method(transport, "invokeChatHost", async (_serverId, _method, input) => ({ receipt: launchReceipt(input.requestId, "cancelled", "accepted", { startedAt: later, updatedAt: later }) }));
+  await f.store.update(state => { state.pipelines[0].pending = { requestId: "start-old", fingerprint: "exact-stage", stage: "execute", attemptedAt: at, launch: "awaiting", failureId: null, planFailureId: null }; state.pipelines[0].mode = "blocked"; });
+  const checked = await f.invoke("pipeline.control", { id: row.id, action: "acknowledge", requestId: "start-old", delivery: "sent", expectedRevision: (await f.store.read()).revision });
+  assert.equal(checked.lastDispatch, "exact-stage", "the person said it was delivered; a late cancellation proves nothing");
 });
