@@ -619,7 +619,7 @@
 <h4>Pull requests and Clean up</h4>
 <p>Attention also lists the pull requests it opened, with their state: draft, open, merged or closed. <span class="ui">Refresh</span> or <span class="ui">Check status</span> reads the latest state from the forge.</p>
 <ul>
-  <li>When a PR is <strong>merged</strong>, it shows <strong>PR merged</strong> with <span class="ui">Clean up</span>. After a confirmation, this archives the task's workspace, deletes its local branch and marks the task delivered. Nothing is cleaned up without you.</li>
+  <li>When the host confirms the task’s PR merged, the task moves to <strong>Delivered</strong>. <span class="ui">Clean up</span> is a separate action that archives the task’s workspace and deletes its local branch after you confirm.</li>
   <li>Clean up refuses, and changes nothing, if the local branch has work the PR didn't include, or the worktree has uncommitted changes. Squash merges, branches deleted on the website, and review fixes pushed to the PR are all fine.</li>
   <li>A PR <strong>closed</strong> without merging offers no cleanup.</li>
 </ul>
