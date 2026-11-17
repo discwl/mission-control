@@ -139,7 +139,7 @@
     </li>
     <li><a href="#mission-panel">The Mission panel</a></li>
     <li><a href="#agents-panel">The Agents panel</a> · <a href="#agent-cleanup">Agent cleanup</a></li>
-    <li><a href="#orchestrator">Orchestrator workspaces</a></li>
+    <li><a href="#orchestrator">Orchestrator workspaces</a> · <a href="#all-work-running">Running agents in All work</a></li>
     <li><a href="#morning-check">Morning check</a></li>
     <li><a href="#settings">Settings</a>
       <ol>
@@ -758,6 +758,15 @@
     Your answer goes to that host's own Mission Control, so it's recorded as if you'd answered there. <span class="ui">Open agent</span> takes you to the agent's chat. Questions and decisions need Mission Control on that host; without it, the dialog says so, and the bubble counts only permission prompts and errors.</li>
 </ul>
 <p>Attention, Tasks, Review and Docs come from Mission Control on that host, read through its own copy running in your Paseo app, so they need Mission Control installed there and a version with this screen. When it's missing, outdated or the host is offline, the tab says which. Workspaces that Paseo sends without an activity time now show their latest agent's activity, or when they entered their current status, here and on the Workspaces page.</p>
+
+<!-- ============================================================ -->
+<h3 id="all-work-running">Running agents in All work <span class="badge">New</span></h3>
+<p>The sidebar's <span class="ui">All work</span> row shows how many agents are running, and <span class="ui">All work → Running</span> lists exactly those agents, one row each. Both cover this computer and every host it manages: the managed hosts' agents, your orchestrator chats, and this computer's own agents. A host that manages no other host shows its own agents the same way.</p>
+<ul>
+  <li><strong>Open:</strong> a row for a task's worker opens that task; any other agent, such as an orchestrator or a chat that isn't part of a task, opens its chat.</li>
+  <li><strong>Filters:</strong> the host, workspace and search filters narrow the list. A project filter keeps only task workers, because other agents have no task project.</li>
+  <li><strong>Only live activity:</strong> a host that's offline, out of date or only partly read isn't counted, and the list says how many hosts were left out. An agent waiting on a permission counts as needing you, not as running.</li>
+</ul>
 
 <!-- ============================================================ -->
 <h3 id="orchestrator-command">Driving a host's Mission Control from an orchestrator</h3>

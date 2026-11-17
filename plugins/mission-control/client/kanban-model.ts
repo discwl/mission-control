@@ -1,5 +1,5 @@
 import type { V2Task } from "./mission-control-v2-model";
-import type { FleetSnapshot } from "../shared/fleet";
+import type { FleetAgent, FleetHost, FleetSnapshot } from "../shared/fleet";
 
 export const kanbanScreenId = "kanban";
 export const kanbanLanes = [
@@ -129,10 +129,40 @@ export function kanbanCounts(tasks: KanbanTask[]) {
   };
 }
 
-/** Sidebar activity is agent-based; decisions are task-based. Cached activity is never live activity. */
-export function kanbanSidebarCounts(snapshot: FleetSnapshot | undefined, tasks: KanbanTask[], now: number, failed = false) {
+/**
+ * One running agent as All work counts it. `task` is the task card it works for, if any (opened instead of the chat);
+ * `role` says why it is listed: a task's worker, a coordinator (orchestrator chat on this computer), or any other agent.
+ */
+export type RunningAgent = {
+  key: string; serverId: string; hostLabel: string; agent: FleetAgent;
+  role: "worker" | "coordinator" | "agent"; task: KanbanTask | null; workspaceName: string | null; projectName: string | null;
+};
+
+const workingStatuses = ["running", "initializing", "starting"];
+const counted = (agent: FleetAgent) => !agent.archivedAt && agent.pendingPermissions === 0 && workingStatuses.includes(agent.status);
+
+/**
+ * Every running agent All work counts, each once: agents on each managed host with a fresh, complete observation, then
+ * this computer's coordinators and its own agents, fresh with the snapshot itself (a computer that coordinates none
+ * returns its agents as its one host; the key keeps each agent once). An agent waiting on a permission is counted as
+ * needing input instead. Cached activity is never live activity: a failed refresh or an unavailable, stale or
+ * incomplete host contributes nothing, and is listed in `unavailable`.
+ */
+export function runningAgents(snapshot: FleetSnapshot | undefined, tasks: readonly KanbanTask[], now: number, failed = false): { agents: RunningAgent[]; unavailable: Set<string> } {
   const unavailable = new Set<string>();
-  const running = new Set<string>();
+  const agents = new Map<string, RunningAgent>();
+  // A worker opens its task; with several (a shared workspace), the one still in progress wins over finished work.
+  const taskOf = new Map<string, KanbanTask>();
+  for (const item of [...tasks].sort((a, b) => Number(a.lane === "done") - Number(b.lane === "done"))) {
+    for (const worker of item.row.workers) { const key = `${item.row.serverId}:${worker.id}`; if (!taskOf.has(key)) taskOf.set(key, item); }
+  }
+  const add = (serverId: string, hostLabel: string, agent: FleetAgent, role: RunningAgent["role"], workspaces: FleetHost["workspaces"]) => {
+    const key = `${serverId}:${agent.id}`;
+    if (agents.has(key) || !counted(agent)) return;
+    const task = taskOf.get(key) ?? null;
+    const workspace = workspaces.find(item => item.id === agent.workspaceId);
+    agents.set(key, { key, serverId, hostLabel, agent, role: task ? "worker" : role, task, workspaceName: workspace?.name ?? null, projectName: workspace?.projectName ?? null });
+  };
   const receivedAt = snapshot ? Date.parse(snapshot.observedAt) : NaN;
   for (const remote of snapshot?.hosts ?? []) {
     const host = remote.snapshot;
@@ -144,24 +174,29 @@ export function kanbanSidebarCounts(snapshot: FleetSnapshot | undefined, tasks: 
       unavailable.add(remote.serverId);
       continue;
     }
-    for (const agent of host.agents) {
-      if (!agent.archivedAt && agent.pendingPermissions === 0 && ["running", "initializing", "starting"].includes(agent.status)) {
-        running.add(`${remote.serverId}:${agent.id}`);
-      }
-    }
+    for (const agent of host.agents) add(remote.serverId, remote.label, agent, "agent", host.workspaces);
   }
-  // Coordinators live on the installation host, independently of their remote host connection.
+  // Coordinators and this computer's own agents live on the installation host, independently of any remote connection.
   const age = snapshot ? now - Date.parse(snapshot.observedAt) : NaN;
   if (!failed && snapshot && Number.isFinite(age) && age >= 0 && age <= 90_000) {
-    for (const { agent } of snapshot.coordinators) {
-      if (!agent.archivedAt && agent.pendingPermissions === 0 && ["running", "initializing", "starting"].includes(agent.status)) running.add(`${snapshot.serverId}:${agent.id}`);
-    }
+    const own = snapshot.hosts.find(remote => remote.serverId === snapshot.serverId);
+    const label = own?.label ?? "This computer";
+    const workspaces = own?.snapshot?.workspaces ?? [];
+    for (const coordinator of snapshot.coordinators) add(snapshot.serverId, label, coordinator.agent, "coordinator", workspaces);
+    // Where this computer is also one of the hosts (it coordinates none), that host's own freshness decides.
+    if (!own || !unavailable.has(own.serverId)) for (const agent of snapshot.localAgents ?? []) add(snapshot.serverId, label, agent, "agent", workspaces);
   }
+  return { agents: [...agents.values()], unavailable };
+}
+
+/** Sidebar activity is agent-based; decisions are task-based. Cached activity is never live activity. */
+export function kanbanSidebarCounts(snapshot: FleetSnapshot | undefined, tasks: KanbanTask[], now: number, failed = false) {
+  const { agents, unavailable } = runningAgents(snapshot, tasks, now, failed);
   const confirmed = tasks.filter(item => !failed && !unavailable.has(item.row.serverId) && item.row.state !== "Unconfirmed" && !item.row.limited);
   const plans = confirmed.filter(item => item.needsYou && item.tab === "Plan" && item.row.entry.decisions.some(entry => entry.decision.kind === "plan" && entry.decision.status === "open")).length;
   const reviews = confirmed.filter(item => item.needsYou && item.tab === "Code review" && !item.row.staleReview && item.row.entry.decisions.some(entry => entry.decision.kind === "review" && entry.decision.status === "open")).length;
   return {
-    runningAgents: running.size,
+    runningAgents: agents.length,
     input: confirmed.filter(item => item.needsYou && item.tab !== "Plan" && item.tab !== "Code review").length,
     plans, reviews, ready: plans + reviews,
     unavailableHosts: unavailable.size,

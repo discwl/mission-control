@@ -7,10 +7,10 @@ import { formatDateTime } from "./date-time";
 import { useKanbanData } from "./kanban-data";
 import { KanbanDetail } from "./kanban-detail";
 import { KanbanIntake } from "./kanban-intake";
-import { filterKanban, kanbanCounts, kanbanSidebarCounts, kanbanLanes, kanbanLayout, kanbanScreenId, type KanbanFocus, type KanbanLane, type KanbanTask } from "./kanban-model";
+import { filterKanban, kanbanCounts, kanbanSidebarCounts, kanbanLanes, kanbanLayout, kanbanScreenId, runningAgents, type KanbanFocus, type KanbanLane, type KanbanTask, type RunningAgent } from "./kanban-model";
 
 import { KanbanFilterMenu } from "./kanban-filter-menu";
-import { changeKanbanScope, emptyKanbanScope, kanbanFilterOptions, kanbanProjectLabel, matchesKanbanScope, type ScopeKind } from "./kanban-filters-model";
+import { changeKanbanScope, emptyKanbanScope, filterRunningAgents, kanbanFilterOptions, kanbanProjectLabel, matchesKanbanScope, type ScopeKind } from "./kanban-filters-model";
 
 type Colors = PluginSurfaceProps["theme"]["colors"];
 const focuses: KanbanFocus[] = ["All work", "Needs you", "Running"];
@@ -64,7 +64,37 @@ function Lane({ lane, tasks, colors, width, open, loading }: { lane: typeof kanb
   </View>;
 }
 
-import { KanbanOrigin } from "./kanban-origin";
+import { KanbanOrigin, navigateFromKanban } from "./kanban-origin";
+
+const roleLabel: Record<RunningAgent["role"], string> = { worker: "Task worker", coordinator: "Orchestrator", agent: "Not linked to a task" };
+
+/** One running agent. A task worker opens its task card; any other agent opens its chat. */
+function RunningRow({ item, colors, open }: { item: RunningAgent; colors: Colors; open(): void }) {
+  const task = item.task?.row.entry.task;
+  const where = [item.hostLabel, item.workspaceName ?? item.projectName].filter(Boolean).join(" · ");
+  const action = item.task ? "Open task" : "Open chat";
+  return <Pressable accessibilityRole="button" accessibilityLabel={`${item.agent.name}, ${roleLabel[item.role]}, ${where}. ${action}`} onPress={open}
+    style={({ pressed }) => ({ padding: 12, gap: 6, marginBottom: 8, backgroundColor: pressed ? colors.surface1 : colors.surface2, borderRadius: 9, borderWidth: 1, borderColor: colors.border })}>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+      <ActivityIndicator size={12} color="#3b82f6" />
+      <Text numberOfLines={1} style={{ color: colors.foreground, fontWeight: "600", flex: 1 }}>{item.agent.name}</Text>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{item.agent.status}</Text>
+    </View>
+    <Text numberOfLines={1} style={{ color: colors.foregroundMuted, fontSize: 12 }}>{where} · {roleLabel[item.role]}</Text>
+    {task ? <Text numberOfLines={2} style={{ color: colors.foreground, fontSize: 13 }}>{task.ticket?.key ? `${task.ticket.key} · ` : ""}{task.title}</Text> : null}
+    <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 11, flex: 1 }}>{item.agent.activityAt ? `Active ${formatDateTime(item.agent.activityAt)}` : `Updated ${formatDateTime(item.agent.updatedAt)}`}</Text>
+      <Text style={{ color: colors.foreground, fontWeight: "600", fontSize: 13 }}>{action}</Text><Icon name="ArrowRight" color={colors.foregroundMuted} size={15} />
+    </View>
+  </Pressable>;
+}
+
+function RunningEmpty({ colors, loading, unavailable }: { colors: Colors; loading: boolean; unavailable: number }) {
+  return <View style={{ padding: 24, alignItems: "center", gap: 12 }}>
+    <Icon name={loading ? "RefreshCw" : "CircleCheck"} size={24} color={colors.foregroundMuted} />
+    <Text style={{ color: colors.foregroundMuted, textAlign: "center", lineHeight: 21 }}>{loading ? "Reading managed hosts…" : "No running agents match."}{!loading && unavailable ? ` ${unavailable} host${unavailable === 1 ? " is" : "s are"} unavailable, stale or incomplete, so ${unavailable === 1 ? "its" : "their"} agents aren't counted.` : ""}</Text>
+  </View>;
+}
 
 export function Kanban({ theme, host, layout, navigation, params, openNeedsYou }: PluginScreenProps & { openNeedsYou?: () => void }) {
   const colors = theme.colors;
@@ -92,6 +122,19 @@ export function Kanban({ theme, host, layout, navigation, params, openNeedsYou }
   const visible = useMemo(() => filterKanban(scopedTasks, "all", "all", search, focus), [scopedTasks, search, focus]);
   const counts = kanbanCounts(query.tasks);
   const filteredCounts = kanbanCounts(filterKanban(scopedTasks, "all", "all", search, "All work"));
+  // Running lists agents, not tasks: the same set the sidebar counts (runningAgents), under the board's scope and search.
+  const running = useMemo(() => runningAgents(query.data, query.tasks, query.now, query.isError), [query.data, query.tasks, query.now, query.isError]);
+  const runningList = useMemo(() => filterRunningAgents(running.agents, scope, search), [running.agents, scope, search]);
+  const showingRunning = focus === "Running";
+  const [runningError, setRunningError] = useState<string | null>(null);
+  const openRunning = (item: RunningAgent) => {
+    setRunningError(null);
+    if (item.task) { setSelection(item.task.row.key); return; }
+    try {
+      if (!navigation) throw new Error("Conversation navigation is unavailable.");
+      navigateFromKanban(query.data?.serverId ?? host.id, () => navigation.openAgent({ serverId: item.serverId, agentId: item.agent.id }));
+    } catch (error) { setRunningError(error instanceof Error ? error.message : String(error)); }
+  };
   const hosts = [...(query.data?.hosts ?? [])].sort((a, b) => a.label.localeCompare(b.label));
   const filterOptions = kanbanFilterOptions(query.tasks, hosts, scope);
   const unavailable = hosts.filter(remote => remote.error || !remote.snapshot);
@@ -109,7 +152,7 @@ export function Kanban({ theme, host, layout, navigation, params, openNeedsYou }
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
           <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}><Icon name="SquareKanban" size={22} color={colors.foregroundMuted} /><Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 22, fontWeight: "600" }}>All work</Text></View>
           <TextInput accessibilityLabel="Search all work" placeholder="Search tickets, tasks, workers or blockers" placeholderTextColor={colors.foregroundMuted} value={search} onChangeText={setSearch} style={{ flex: 1, minWidth: sizing.singleLane ? 180 : 260, color: colors.foreground, backgroundColor: colors.surface1, borderWidth: 1, borderColor: colors.border, borderRadius: 7, padding: 10, minHeight: 42 }} />
-          <Text style={{ color: colors.foregroundMuted }}>{query.isPending ? "Loading…" : `${visible.length} tasks`}</Text>
+          <Text style={{ color: colors.foregroundMuted }}>{query.isPending ? "Loading…" : showingRunning ? `${runningList.length} running agents` : `${visible.length} tasks`}</Text>
           <CompactLink label="Open Needs you" colors={colors} disabled={!openNeedsYou} onPress={() => openNeedsYou?.()} />
           <CompactLink label="New task" colors={colors} disabled={!query.data} onPress={() => { setFilterMenu(null); setIntake(true); }} />
           <CompactLink label={query.isFetching ? "Refreshing…" : "Refresh"} colors={colors} disabled={query.isFetching} onPress={refresh} />
@@ -125,27 +168,39 @@ export function Kanban({ theme, host, layout, navigation, params, openNeedsYou }
               onOpenChange={open => setFilterMenu(open ? filter.kind : null)} onChange={ids => { setScope(current => changeKanbanScope(current, filter.kind, ids)); setLaneFilter("all"); }} />)}
         </View>
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-          {focuses.map(name => <CompactLink key={name} colors={colors} selected={focus === name} label={name === "Needs you" ? `Needs you · ${filteredCounts.needsYou}` : name === "Running" ? `Running · ${filteredCounts.running}` : "All work"} onPress={() => { setFocus(name); setLaneFilter("all"); }} />)}
+          {focuses.map(name => <CompactLink key={name} colors={colors} selected={focus === name} label={name === "Needs you" ? `Needs you · ${filteredCounts.needsYou}` : name === "Running" ? `Running · ${runningList.length}` : "All work"} onPress={() => { setFocus(name); setLaneFilter("all"); }} />)}
           <CompactLink label={showEmpty ? "Hide empty lanes" : "Show empty lanes"} colors={colors} onPress={() => setShowEmpty(!showEmpty)} />
           {scope.hosts.length || scope.projects.length || scope.workspaces.length || search || focus !== "All work" || laneFilter !== "all" ? <CompactLink label="Reset filters" colors={colors} onPress={reset} /> : null}
         </View>
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-          <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>One card per task · {hosts.length} hosts · {filteredCounts.needsYou} need your attention</Text>
+          <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{showingRunning
+            ? `One row per running agent on this computer and ${hosts.filter(remote => remote.serverId !== query.data?.serverId).length} managed hosts · a task's worker opens the task, any other agent its chat`
+            : `One card per task · ${hosts.length} hosts · ${filteredCounts.needsYou} need your attention`}</Text>
           {unavailable.length || limited.length || query.data?.warnings.length || counts.unconfirmed ? <CompactLink label={`${unavailable.length} unavailable · ${limited.length} partial · ${counts.unconfirmed} unconfirmed tasks`} colors={colors} expanded={notices} onPress={() => setNotices(!notices)} /> : null}
         </View>
         {notices ? <View style={{ gap: 6 }}>{hosts.filter(remote => remote.error || !remote.snapshot || !remote.snapshot.complete).map(remote => <Text key={remote.serverId} selectable style={{ color: colors.statusWarning, fontSize: 12 }}>{remote.label}: {remote.error ?? remote.snapshot?.warnings.join(" · ") ?? "No snapshot returned"}</Text>)}{query.data?.warnings.map((warning, index) => <Text key={index} style={{ color: colors.statusWarning, fontSize: 12 }}>{warning}</Text>)}<Text style={{ color: colors.statusWarning, fontSize: 12 }}>Unavailable hosts may have more work. Last-known tasks stay visible; unconfirmed counts are not live status.</Text></View> : null}
         {query.isError ? <Text accessibilityRole="alert" style={{ color: colors.statusWarning }}>Refresh failed. Last-known tasks are unconfirmed. {query.error instanceof Error ? query.error.message : String(query.error)}</Text> : null}
         {selection && !selected ? <Text accessibilityRole="alert" style={{ color: colors.statusWarning }}>The selected task is no longer in the returned host records. Choose another task or refresh.</Text> : null}
-        <ScrollView horizontal style={{ flexGrow: 0 }} contentContainerStyle={{ gap: 6 }} showsHorizontalScrollIndicator={false}>
+        {runningError && showingRunning ? <Text accessibilityRole="alert" style={{ color: colors.statusWarning }}>{runningError}</Text> : null}
+        {showingRunning ? null : <ScrollView horizontal style={{ flexGrow: 0 }} contentContainerStyle={{ gap: 6 }} showsHorizontalScrollIndicator={false}>
           {!sizing.singleLane ? <CompactLink label="All lanes" selected={laneFilter === "all"} colors={colors} onPress={() => setLaneFilter("all")} /> : null}
           {kanbanLanes.map(lane => <CompactLink key={lane.id} label={`${lane.title} · ${visible.filter(item => item.lane === lane.id).length}`} selected={sizing.singleLane ? chosenLane.id === lane.id : laneFilter === lane.id} colors={colors} onPress={() => { setLaneFilter(lane.id); setShowEmpty(true); boardScroll.current?.scrollTo({ x: 0, animated: false }); }} />)}
-        </ScrollView>
+        </ScrollView>}
       </View>;
   const loadError = query.isError && !query.data;
   const errorMessage = <View style={{ padding: 24, gap: 10 }}><Text style={{ color: colors.foreground }}>The board could not load. Check the selected installation's connection and refresh.</Text></View>;
   const laneTasks = visible.filter(item => item.lane === chosenLane.id);
   return <View onLayout={event => { setWidth(event.nativeEvent.layout.width); setHeight(event.nativeEvent.layout.height); }} style={{ flex: 1, minHeight: 0, backgroundColor: colors.surface0 }}>
-    {intake && query.data ? <KanbanIntake snapshot={query.data} colors={colors} navigation={navigation} close={() => setIntake(false)} refresh={refresh} openTask={(serverId, taskId) => { setIntake(false); setSelection(`${serverId}:${taskId}`); refresh(); }} /> : selection && selected && query.data ? <KanbanDetail key={selected.row.key} item={selected} snapshot={query.data} colors={colors} compact={sizing.singleLane} height={height} navigation={navigation} close={() => setSelection(null)} refresh={refresh} /> : sizing.singleLane ?
+    {intake && query.data ? <KanbanIntake snapshot={query.data} colors={colors} navigation={navigation} close={() => setIntake(false)} refresh={refresh} openTask={(serverId, taskId) => { setIntake(false); setSelection(`${serverId}:${taskId}`); refresh(); }} /> : selection && selected && query.data ? <KanbanDetail key={selected.row.key} item={selected} snapshot={query.data} colors={colors} compact={sizing.singleLane} height={height} navigation={navigation} close={() => setSelection(null)} refresh={refresh} /> : showingRunning ? <>
+        {filterMenu && !sizing.singleLane ? <Pressable accessibilityRole="button" accessibilityLabel="Close filter menu" onPress={() => setFilterMenu(null)} style={{ position: "absolute", top: 0, bottom: 0, left: 0, right: 0, zIndex: 2 }} /> : null}
+        {sizing.singleLane ? null : header}
+        {/* One list in both layouts; on a phone the header scrolls with it, as the lanes do. */}
+        <FlatList testID="kanban-running-list" data={loadError ? [] : runningList} keyExtractor={item => item.key}
+          style={{ flex: 1, minHeight: 0 }} contentContainerStyle={{ paddingTop: sizing.singleLane ? 0 : 12, paddingBottom: 32 }} keyboardShouldPersistTaps="handled"
+          ListHeaderComponent={sizing.singleLane ? header : null} initialNumToRender={20} maxToRenderPerBatch={20}
+          renderItem={({ item }) => <View style={{ paddingHorizontal: 12, maxWidth: 900 }}><RunningRow item={item} colors={colors} open={() => openRunning(item)} /></View>}
+          ListEmptyComponent={loadError ? errorMessage : <RunningEmpty colors={colors} loading={query.isPending} unavailable={running.unavailable.size} />} />
+      </> : sizing.singleLane ?
       // One vertical scroll owner: controls and cards must move together even when the header fills the viewport.
       <FlatList testID="kanban-mobile-list" data={loadError ? [] : laneTasks} keyExtractor={item => item.row.key}
         style={{ flex: 1, minHeight: 0 }} contentContainerStyle={{ paddingBottom: 32 }} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag"
@@ -168,7 +223,7 @@ export function KanbanSidebar(props: PluginSidebarItemProps) {
   const colors = props.theme.colors;
   const counts = kanbanSidebarCounts(query.data, query.tasks, query.now, query.isError);
   const indicators = [
-    { key: "running", icon: "CircleDot" as const, count: counts.runningAgents, label: `${counts.runningAgents} running agents across managed hosts, including coordinators`, color: "#3b82f6" },
+    { key: "running", icon: "CircleDot" as const, count: counts.runningAgents, label: `${counts.runningAgents} running agents on this computer and its managed hosts, including orchestrators; All work → Running lists them`, color: "#3b82f6" },
     { key: "input", icon: "MessageCircle" as const, count: counts.input, label: `${counts.input} tasks need an answer, delivery decision or blocker follow-up`, color: colors.statusWarning },
     { key: "review", icon: "ClipboardCheck" as const, count: counts.ready, label: `${counts.plans} plans and ${counts.reviews} code reviews waiting for your decision; not completed tasks`, color: colors.statusSuccess },
     { key: "hosts", icon: "CloudOff" as const, count: counts.unavailableHosts, label: `${counts.unavailableHosts} hosts unavailable, stale or incomplete; their activity and decisions are excluded`, color: colors.foregroundMuted },
