@@ -1,6 +1,12 @@
 # Automatic task workflow
 
-New tasks use automatic plan checking and two independent reviews whenever an orchestrator chat manages the task's host. This applies however the task starts: a task's **Start automatic workflow** button, an orchestrator's `start` command, the chat command `run to draft PR <task ID>`, or Orchestrator → Run a task. The manual workflow remains only where no orchestrator manages the host, such as the coordinating computer's own tasks. The planner still writes a readable, versioned plan; a fresh agent using a different model checks that plan against the task's requirements, existing implementation and scope. A passing check enables implementation without a human plan decision. It is recorded as machine acceptance, never as human approval.
+New automatic tasks default to **Standard**. The configured planner model writes a versioned plan. The builder implements it, handles fixes and validates the result. When both profiles use the same provider and compatible settings, Mission Control changes the model in the planner's chat so the builder has the planning context. A provider change or incompatible settings starts a builder chat with the saved plan. One fresh reviewer checks the validated candidate. You answer open questions and authorize delivery.
+
+Choose **Advanced** when an independent plan check and a second review would materially reduce risk, such as a data migration that would be difficult to reverse. Intake and planning agents can recommend a workflow and explain the reason. You choose Advanced explicitly. Both workflows require current evidence and a fresh independent review.
+
+Choose the workflow in the task launcher or **Orchestrator → Run a task**, or enter `/mc run to draft PR <task ID> advanced` in the owning orchestrator chat. An orchestrator agent can also use `remote.mjs start --workspace <id> --task <id> --workflow advanced`. Automatic starts require an orchestrator for the task's host. The host-local launcher offers manual Start on unmanaged hosts. Earlier automatic runs continue with Advanced checks. Runs with human approvals retain those approvals.
+
+The Advanced stages are shown below.
 
 ```mermaid
 flowchart LR
@@ -12,7 +18,11 @@ flowchart LR
   R --> F[Final authorization]
 ```
 
-The checker should accept a sufficient, maintainable plan. Repairs need concrete missing requirements, incorrect assumptions or unnecessary complexity; extra features and speculative abstractions are not a reason to keep iterating. Gortex remains required for indexed repository evidence. Existing patterns, user changes, acceptance criteria and non-goals remain binding.
+The Advanced plan checker should accept a sufficient, maintainable plan. Repairs need concrete missing requirements, incorrect assumptions or unnecessary complexity; extra features and speculative abstractions are not a reason to keep iterating. Gortex remains required for indexed repository evidence. Existing patterns, user changes, acceptance criteria and non-goals remain binding.
+
+## Grouped ticket intake
+
+When Jira or Azure DevOps tickets in a discovery report need the same code change and can ship together, the intake agent can recommend a single task. Check the proposed ticket IDs, shared deliverable and each ticket's acceptance checks. Use `/mc discovery group KEY,KEY into <workspace> | <shared task title>` in the owning orchestrator chat to create it. Start that task once to use one branch. Select its workflow when enrolling the task.
 
 ## Queue and worktrees
 
@@ -24,11 +34,11 @@ Before planning, a code task gets its own worktree and branch, created the way S
 
 ## Reviews and validation
 
-Validation runs before either reviewer. For code this means the relevant existing tests, type checks, builds and other checks selected in the plan, with their actual outcomes tied to the current candidate. A green badge or previous revision's checks cannot stand in for fresh evidence.
+The Standard builder or Advanced validator records the checks before independent review. For code this means the relevant existing tests, type checks, builds and other checks selected in the plan, with their actual outcomes tied to the current candidate. A green badge or previous revision's checks cannot stand in for fresh evidence.
 
-Both code reviewers use OCR for file selection and rules, and Gortex for repository context. They reason independently in fresh sessions using different normalized models. They run sequentially; the second reviewer does not read the first review's conclusions before submitting its own verdict. Both must cover the same validated candidate. Missing OCR evidence, an unavailable required model, a changed candidate, open findings or incomplete host information block automatic delivery.
+Each code reviewer uses OCR for file selection and rules, and Gortex for repository context. In Advanced, the two reviewers reason independently in fresh sessions using different normalized models. They run sequentially; the second reviewer does not read the first review's conclusions before submitting its own verdict. Both must cover the same validated candidate. Missing OCR evidence, an unavailable required model, a changed candidate, open findings or incomplete host information block automatic delivery.
 
-Substantiated findings return to the builder. Fixes require validation and both reviews of the revised candidate. Plan repairs and implementation repairs each have a limit of two automatic attempts. Unresolved requirements, missing authority, scope changes or exhausted repair attempts become questions or blockers for the user. The flow does not turn failed tests or permission requests into silent model fallback.
+Substantiated findings return to the builder. Fixes require validation and fresh review of the revised candidate by the number of reviewers the workflow requires. Plan repairs and implementation repairs each have a limit of two automatic attempts. Unresolved requirements, missing authority, scope changes or exhausted repair attempts become questions or blockers for the user. The flow does not turn failed tests or permission requests into silent model fallback.
 
 ## Final decision
 
@@ -36,8 +46,8 @@ Automatic tasks do not request routine human plan or code-review approval. Publi
 
 For a task with no code changes, select **Actions** or **Report** when starting it:
 
-- **Actions:** the builder saves an immutable bundle containing the environment, prerequisites, exact commands or steps, expected effects, verification and rollback. Validation uses safe local checks or dry runs where available; it does not execute the proposed external changes. Two independent models review the bundle. The user then authorizes that exact reviewed version. Mission Control resumes the assigned worker with the authorized steps; it is not a general shell executor. A changed bundle needs fresh checks, reviews and authorization. An uncertain send is shown for inspection, never blindly retried.
-- **Report:** the same evidence and dual-review requirements apply to the saved read-only result. It can finish without an action authorization. Its report is available in the final preview.
+- **Actions:** the builder saves an immutable bundle containing the environment, prerequisites, exact commands or steps, expected effects, verification and rollback. Validation uses safe local checks or dry runs where available; it does not execute the proposed external changes. Standard uses one fresh reviewer for the bundle. Advanced uses two. The user then authorizes that exact reviewed version. Mission Control resumes the assigned worker with the authorized steps; it is not a general shell executor. A changed bundle needs fresh checks, reviews and authorization. An uncertain send is shown for inspection, never blindly retried.
+- **Report:** the selected workflow's evidence and review requirements apply to the saved read-only result. It can finish without an action authorization. Its report is available in the final preview.
 
 OCR's code-diff coverage applies to code changes. Non-code reviewers inspect the saved bundle directly and record artifact coverage; they must not fabricate an OCR receipt.
 
@@ -51,13 +61,13 @@ On the coordinating computer, Needs you and All work cover every host its orches
 
 **All work** keeps four board columns: Up next, Working, Needs you and Done. Planning, plan checks, implementation, validation and independent reviews belong to Working until there is a real question or final decision for you.
 
-**Ready to publish** opens the existing code browser and comment tools. You can inspect changes and save file or line comments before opening the separate publication preview. If fixes are needed, use **Request fixes before continuing**. You can copy open workspace comments into the request, review the wording, then send it. An explicit request blocks publication and returns the task to its remaining repair attempts; it requires fresh implementation, validation and both reviews. Saved draft comments alone do not create a repair request. The request records the exact work, plan and displayed code comparison, so an outdated screen cannot silently request fixes against a different version.
+**Ready to publish** opens the existing code browser and comment tools. You can inspect changes and save file or line comments before opening the separate publication preview. If fixes are needed, use **Request fixes before continuing**. You can copy open workspace comments into the request, review the wording, then send it. An explicit request blocks publication and returns the task to its remaining repair attempts; it requires validation and fresh review of the revised implementation under the selected workflow. Saved draft comments alone do not create a repair request. The request records the exact work, plan and displayed code comparison, so an outdated screen cannot silently request fixes against a different version.
 
 **Ready to execute** shows the reviewed environment, actions, effects, checks and recovery steps. Request changes when needed, or authorize only the exact displayed actions. Reports do not ask you to authorize execution.
 
 ## Profiles and existing tasks
 
-Automatic mode uses the host/project/task profile mapping. It requires two different review models even if the saved manual setting requests only one reviewer. Unless a separate plan-check profile is selected, it derives the plan checker from a mapped reviewer with a different model from the planner. Models and reasoning settings are not changed by enabling the workflow.
+Standard uses the mapped planner, builder and reviewer profiles. Configure different models for planning and building. Advanced uses the host/project/task profile mapping and requires two different review models even if the saved manual setting requests only one reviewer. Unless a separate plan-check profile is selected, it derives the plan checker from a mapped reviewer with a different model from the planner. Models and reasoning settings are not changed by enabling the workflow.
 
 Existing records without a workflow mode remain manual, retaining their approval history and policy identity. You can switch an existing task to the automatic flow in three ways:
 

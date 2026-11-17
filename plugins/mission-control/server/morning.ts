@@ -24,6 +24,9 @@ import { createWorkflowInstructionsStore } from "./workflow-instructions-store.m
 import { profileKitRoot } from "./decisions";
 import { createTaskRecord, scanTaskSources, type SkippedTicket, type TaskSource } from "./tasks";
 
+import { groupMorningItems } from "../shared/morning";
+import { groupedTaskFields } from "../shared/tickets";
+
 const reportFilePattern = /^morning-\d{4}-\d{2}-\d{2}-\d{6}(?:-\d+)?\.md$/;
 const launchFile = ".morning-check-launch.json";
 
@@ -90,6 +93,7 @@ export function morningPrompt(input: { hostId: string; serverId: string; agentId
       ? "Tracker: use the test fixture. Run the report with --tracker fixture and do not read Jira or Azure DevOps or consult external systems, even when custom guidance names them."
       : "Tracker: read the user's current-sprint items with the Jira or Azure DevOps MCP tools this session has. If it has none, say so and run the report with --tracker unavailable.",
     "Read only: never create, edit, transition, assign or comment on anything in Jira or Azure DevOps. Don't create tasks or change task status; the user picks imports in Mission Control.",
+    "When tickets share a change and can ship on one branch in the same repository, recommend their keys, a shared task title, and why they belong together. Check existing coverage first. The user can accept with discovery group KEY,KEY into <workspace> | <shared task title>.",
     `Your Paseo agent ID is ${input.agentId}; pass it to the report with --agent.`,
     input.workflowInstructions ?? "",
   ].filter(Boolean).join("\n");
@@ -208,7 +212,7 @@ export function createMorningStore(overrides: Partial<Deps> = {}) {
     return status(input, paseo);
   }
 
-  async function importItems(input: { serverId: string; workspaceId: string; reportId: string; items: string[] }, paseo: PaseoApi) {
+  async function importItems(input: { serverId: string; workspaceId: string; reportId: string; items: string[] }, paseo: PaseoApi, groupTitle?: string) {
     await localHost(input.serverId);
     const workspace = await paseo.workspaces.ref(input.workspaceId).refresh();
     if (!workspace || workspace.archivingAt) throw new Error("This workspace is unavailable on this host.");
@@ -227,6 +231,20 @@ export function createMorningStore(overrides: Partial<Deps> = {}) {
       const unknown = skipped.filter(entry => !entry.ticket);
       if (unknown.length) throw new Error(`${unknown.map(entry => entry.file).join(", ")} ${unknown.length === 1 ? "is" : "are"} invalid and ${unknown.length === 1 ? "its ticket" : "their tickets"} can't be read, so importing could create a duplicate. Fix ${unknown.length === 1 ? "that file" : "those files"} in dev-vault first.`);
       const existing = compareTrackerItems(picked, [...sources.map(source => source.task), ...ticketsOf(skipped)]);
+      if (groupTitle !== undefined) {
+        const fields = groupedTaskFields(picked, groupTitle);
+        if (existing.imported.length) {
+          const sameTask = new Set(existing.imported.flatMap(match => match.taskIds));
+          const prior = sources.find(({ task }) => sameTask.has(task.taskId))?.task;
+          const members = new Map(prior?.groupedTickets?.map(item => [ticketIdentity(item), item.url]));
+          if (existing.missing.length || sameTask.size !== 1 || members.size !== picked.length || !picked.every(item => members.get(ticketIdentity(item)) === item.url) || !prior?.assignments.some(a => a.workspaceId === input.workspaceId && a.serverId === input.serverId)) {
+            throw new Error(`Some selected tickets already belong to another task or group: ${[...sameTask].join(", ")}. Inspect the existing work before grouping.`);
+          }
+          return { created: [], skipped: existing.imported.map(({ item, taskIds }) => ({ key: item.key, taskIds })) };
+        }
+        const task = await deps.createTask({ serverId: input.serverId, workspaceId: input.workspaceId, ...fields }, workspace.projectId);
+        return { created: [{ taskId: task.taskId, title: task.title, status: task.status, key: picked.map(item => item.key).join(", ") }], skipped: [] };
+      }
       const created = [];
       for (const item of existing.missing) {
         const task = await deps.createTask({ serverId: input.serverId, workspaceId: input.workspaceId, ...importedTaskFields(item) }, workspace.projectId);
@@ -260,5 +278,6 @@ export function registerMorning(server: PluginServerContext) {
   server.handle(getMorningStatus, (input, { paseo }) => morning.status(input, paseo));
   server.handle(startMorningCheck, (input, { paseo }) => morning.start(input, paseo));
   server.handle(importMorningItems, (input, { paseo }) => morning.importItems(input, paseo));
+  server.handle(groupMorningItems, (input, { paseo }) => morning.importItems(input, paseo, input.title));
   server.handle(importTicket, (input, { paseo }) => morning.importTicket(input, paseo));
 }

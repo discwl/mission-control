@@ -20,7 +20,7 @@ export async function verifyNativeStageAgent(assignment, { projectId, workflowMo
     if (!agent || agent.workspaceId !== assignment.workspaceId || agent.provider !== assignment.execution.provider || agent.model !== assignment.execution.model) throw new Error("The agent's actual provider/model does not match its stage assignment. Start a fresh stage with the configured profile.");
     let policyRevision;
     if (projectId) {
-      const policy = await client.invokePluginRpc("mission-control", "workflow.agents.read", { serverId: assignment.serverId, projectId, taskId: assignment.taskId, workflowMode });
+      const policy = await client.invokePluginRpc("mission-control", "workflow.agents.read", { serverId: assignment.serverId, projectId, taskId: assignment.taskId, workflowMode, ...(assignment.workflow ? { workflow: assignment.workflow } : {}) });
       if (policy.problem || !policy.effective?.revision) throw new Error("Cannot verify the current stage policy before recording action completion.");
       policyRevision = policy.effective.revision;
     }

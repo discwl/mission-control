@@ -17,7 +17,8 @@ import { reviewCandidate } from "./merge";
 import { runProcess } from "./process-tree";
 import { executeOcr, resolveOcrScope } from "./ocr-execution";
 import { createReviewMarkStore } from "./review-marks";
-import { assignmentSchema } from "./stage-records.mjs";
+import { transitionPlanner } from "./standard-builder";
+import { assignmentSchema, readStageAssignments } from "./stage-records.mjs";
 import { readAutomaticPlan, verifyAutomaticPlanAcceptance } from "./plan-snapshots.mjs";
 import { readActionBundle } from "./action-bundles.mjs";
 import type { z } from "zod";
@@ -55,7 +56,8 @@ export async function launchManagedStage(input: z.infer<typeof launchPipelineSta
   if (!next.dispatch || !["plan", "plan-review", "execute", "fix", "validate", "review"].includes(next.stage) || pipelineFingerprint(facts, next) !== input.fingerprint) throw new Error("Stage changed before launch.");
   const source = await assignedTask(input.serverId, input.workspaceId, input.row.taskId);
   if (!source.folder) throw new Error("A task folder is required.");
-  const policy = await effectiveAgentPolicy(store, paseo, source.task.projectId, source.task.taskId, input.row.workflowMode ?? "manual");
+  const standard = input.row.workflowMode === "automatic" && input.row.workflow === "standard";
+  const policy = await effectiveAgentPolicy(store, paseo, source.task.projectId, source.task.taskId, standard ? "standard" : input.row.workflowMode ?? "manual");
   if (!policy || policy.revision !== facts.agentPolicy?.revision) throw new Error("Choose native agent profiles on this host before launching a managed stage.");
   await requireLaunchParent(input.parent, paseo);
   const workspace = await paseo.workspaces.ref(input.workspaceId).refresh();
@@ -71,7 +73,7 @@ export async function launchManagedStage(input: z.infer<typeof launchPipelineSta
     if (!identity) throw new Error("Automatic stage requires an existing run.");
     const planInput = { taskFolder: source.folder, runFolder: join(source.folder, "runs", identity.runId), task: source.task, identity, policyRevision: policy.revision };
     submittedPlan = next.stage === "plan-review" ? await readAutomaticPlan(planInput) : await verifyAutomaticPlanAcceptance(planInput);
-    if (!submittedPlan?.currentMatch || !submittedPlan.scopeMatch || !submittedPlan.policyMatch || submittedPlan.revision !== facts.planRevision) throw new Error("The submitted plan changed before stage launch.");
+    if (!submittedPlan?.currentMatch || (submittedPlan.workflow === "standard") !== standard || !submittedPlan.scopeMatch || !submittedPlan.policyMatch || submittedPlan.revision !== facts.planRevision) throw new Error("The submitted plan changed before stage launch.");
   }
   const preparingBundle = ["plan", "plan-review", "execute", "fix"].includes(next.stage);
   const savedBundle = deliveryKind !== "code" && identity && facts.planRevision ? await readActionBundle({ taskFolder: source.folder, runFolder: join(source.folder, "runs", identity.runId), task: source.task, identity, ...(preparingBundle ? { allowStaleScope: true } : { planRevision: facts.planRevision }) }) : null;
@@ -79,17 +81,35 @@ export async function launchManagedStage(input: z.infer<typeof launchPipelineSta
   if (deliveryKind !== "code" && !preparingBundle && !bundle) throw new Error("Validation and review require an action bundle for the current plan and scope.");
   const candidate = next.stage === "plan-review" ? { head: null, tree: facts.planRevision! } : deliveryKind === "code" ? await reviewCandidate(cwd) : bundle ? { head: null, tree: bundle.revision } : null;
   if (next.stage !== "plan-review" && facts.candidate && JSON.stringify(candidate) !== JSON.stringify(facts.candidate)) throw new Error("The candidate changed before stage launch.");
-  const role = next.stage === "plan" ? "planner" : next.stage === "plan-review" ? "planReviewer" : next.stage === "validate" ? "validator" : next.stage === "review" ? missingReviewRole(facts, facts.checkpoints.find(item => item.stage === "validate" && item.verdict === "pass")?.createdAt) : "builder";
+  const role = standard && ["execute", "fix", "validate"].includes(next.stage) ? "builder" : next.stage === "plan" ? "planner" : next.stage === "plan-review" ? "planReviewer" : next.stage === "validate" ? "validator" : next.stage === "review" ? missingReviewRole(facts, facts.checkpoints.find(item => item.stage === "validate" && item.verdict === "pass")?.createdAt) : "builder";
   if (!role) throw new Error("Independent reviews are complete. The coordinator must prepare the human decision.");
   const profile = policy.profiles.find(item => item.role === role);
   if (!profile) throw new Error(`Choose a native profile for ${role} before launching.`);
   const root = await realpath(source.folder); const lockPath = join(root, ".stage-launch.lock");
   const lock = await acquireStageLock(lockPath, input.requestId);
   try {
-    const agentId = randomUUID(); const id = randomUUID();
+    let agentId = randomUUID() as string; const id = randomUUID();
     const createAgent = () => paseo.workspaces.ref(input.workspaceId).agents.create({ agentId, idempotencyKey: input.requestId, parent: input.parent, title: `${source.task.title} · ${role}`, labels: { "mission-control.task-id": source.task.taskId, "mission-control.role": role },
       config: { provider: `${profile.provider}/${profile.model}`, ...(profile.modeId ? { modeId: profile.modeId } : {}), ...(profile.thinkingOptionId ? { thinkingOptionId: profile.thinkingOptionId } : {}), ...(profile.featureValues ? { featureValues: profile.featureValues } : {}) } });
     let agent: PaseoAgentHandle | undefined;
+    let plannerTransition;
+    if (standard && role === "builder" && submittedPlan && identity) {
+      const assignments = await readStageAssignments(join(root, "runs", identity.runId), identity);
+      const prior = assignments.find(a => a.execution.role === "builder" && a.planRevision === submittedPlan.revision && a.execution.policyRevision === policy.revision);
+      if (prior) {
+        const ref = paseo.agents.ref(prior.agentId);
+        const actual = (await ref.refresh())?.agent;
+        if (!actual || actual.archivedAt || actual.workspaceId !== input.workspaceId || actual.provider !== profile.provider || actual.model !== profile.model) throw new Error("The assigned Standard builder's identity changed. Inspect its chat before continuing.");
+        agent = ref;
+      } else {
+        const planner = assignments.find(a => a.id === submittedPlan.assignmentId && a.stage === "plan" && a.agentId === submittedPlan.plannerAgentId);
+        const selected = policy.profiles.find(p => p.role === "planner");
+        if (!planner || !selected || planner.execution.profileId !== selected.id || planner.execution.model !== selected.model) throw new Error("The plan's selected planner profile changed before implementation.");
+        agent = await transitionPlanner(paseo, planner.agentId, input.workspaceId, selected, profile, () => progress("agent", { agentId: planner.agentId, runId: identity.runId })) ?? undefined;
+        if (agent) plannerTransition = { plannerAssignmentId: planner.id, fromModel: selected.model, toModel: profile.model };
+      }
+      if (agent) agentId = agent.id;
+    }
     let runId = facts.entry.run?.runId;
     const kitRoot = await profileKitRoot(defaultVaultPath, source.task.projectId);
     if (!kitRoot) throw new Error("Project kitRoot is required.");
@@ -120,25 +140,25 @@ export async function launchManagedStage(input: z.infer<typeof launchPipelineSta
       await writeFile(join(folder, manifest), content, { flag: "wx" });
     }
     const execution = { assignmentId: id, policyRevision: policy.revision, role: profile.role, profileId: profile.id, profileName: profile.name, provider: profile.provider, model: profile.model };
-    const assignment = assignmentSchema.parse({ id, agentId, requestId: input.requestId, taskId: source.task.taskId, runId, serverId: input.serverId, workspaceId: input.workspaceId, stage: next.stage, execution, workflowMode, deliveryKind, planScopeRevision: submittedPlan?.scopeRevision ?? null, planRevision: facts.planRevision, candidate, createdAt: new Date().toISOString(), reviewCount: workflowMode === "automatic" ? 2 : policy.reviewCount, manifest });
+    const assignment = assignmentSchema.parse({ id, agentId, requestId: input.requestId, taskId: source.task.taskId, runId, serverId: input.serverId, workspaceId: input.workspaceId, stage: next.stage, execution, plannerTransition, workflowMode, workflow: input.row.workflow, deliveryKind, planScopeRevision: submittedPlan?.scopeRevision ?? null, planRevision: facts.planRevision, candidate, createdAt: new Date().toISOString(), reviewCount: policy.reviewCount, manifest });
     await progress("assignment", { agentId, runId });
     await writeFile(join(actual, `${id}.json`), JSON.stringify(assignment, null, 2), { flag: "wx" });
     if (!agent) { await progress("agent", { agentId, runId }); agent = await createAgent(); }
     const { prompt } = await taskAgentPrompt(input.workspaceId, source.task.taskId);
     const stageInstructions = workflowMode === "automatic" ? [
       "This task explicitly uses the automatic workflow. This verified task policy supersedes generic profile notes requesting human plan or code-review approval; scope, Gortex and outward-action restrictions remain in effect. Submit a versioned plan and independent machine checkpoints; do not request or fabricate human plan/code approval. Existing human decisions still block work. Ask a genuine question when requirements or authority are missing. Publishing, push, draft PRs, tracker changes, deployments, production operations and executing prepared action bundles require final explicit user authorization.",
-      next.stage === "plan" ? `Use check-environment and plan-task. Investigate requirements and repository evidence through Gortex. Save a readable plan.md with scope, behavior, steps, checks, risks, non-goals and deferred work. Submit it with dev-flow submit-plan --task ${source.task.taskId} --run ${runId} --server ${input.serverId} --workspace ${input.workspaceId} --agent ${agentId} --input <plan-brief.json>. The input contains planBrief with the same readable sections as the manual plan snapshot. Record material revisions in changesSincePrevious. The separate plan reviewer will accept it or request concrete repairs; stop after submission.` : "",
+      next.stage === "plan" ? `Use check-environment and plan-task. Investigate requirements and repository evidence through Gortex. Save a readable plan.md with scope, behavior, steps, checks, risks, non-goals and deferred work. Submit it with dev-flow submit-plan --task ${source.task.taskId} --run ${runId} --server ${input.serverId} --workspace ${input.workspaceId} --agent ${agentId} --input <plan-brief.json>. The input contains planBrief with the same readable sections as the manual plan snapshot. Record material revisions in changesSincePrevious. ${standard ? "The builder will use this saved plan for implementation." : "The separate plan reviewer will accept it or request concrete repairs."} Stop after submission.` : "",
       next.stage === "plan-review" ? `You are the independent PLAN reviewer, not a code reviewer. Your role-specific instructions take precedence over any code-review wording in the selected profile. Do not invoke review-changes or OCR for this stage. Read the immutable submitted plan at ${submittedPlan ? join(folder, submittedPlan.path) : "the current plan snapshot"}, revision ${facts.planRevision}, and the task's acceptance criteria. Use Gortex to check material assumptions against the existing implementation and relevant requirements. Pass a sufficient plan; do not invent improvements, request stylistic rewrites, or expand the task. Request repair only for a concrete requirement, correctness, feasibility, validation, authority or scope defect. Use blocked only for a genuine question or missing authority. Do not edit the plan or implementation. Save your report and a dev-flow checkpoint for stage plan-review with verdict pass|repair|blocked, scope approved|needs_plan, and findings:[{title,severity,detail,file?}]. A pass requires no unresolved findings. The checkpoint binds this exact plan and scope; stop after saving it.` : "",
       deliveryKind !== "code" && ["execute", "fix"].includes(next.stage) ? `This is a ${deliveryKind} task. Prepare the exact action/report bundle without executing its external or production actions. Save it with dev-flow save-actions --task ${source.task.taskId} --run ${runId} --server ${input.serverId} --workspace ${input.workspaceId} --agent ${agentId} --input <bundle.json>. Include kind, summary, environment, prerequisites, ordered steps with instruction and effect, verification, rollback, and report when applicable. Use check-environment and execute-task (or fix-findings). A checkpoint records the saved artifact revision; no Git revision or fake code change is required.` : "",
       deliveryKind !== "code" && next.stage === "validate" ? `Validate the exact saved action/report bundle ${bundle?.revision}. Read the immutable bundle at ${join(folder, "actions", `bundle-${bundle?.revision}.json`)}. Check target/environment, prerequisites, commands or scripts, expected effects, verification and rollback against task requirements. Run only authorized safe local checks; do not execute the prepared actions. Report checks actually run and limitations. Save a validate checkpoint against this artifact; pass only when required checks are satisfied.` : "",
-      deliveryKind !== "code" && next.stage === "review" ? `Independently review every step and claim in the exact saved action/report bundle ${bundle?.revision}. Read the immutable bundle at ${join(folder, "actions", `bundle-${bundle?.revision}.json`)}. Check requirements, target/environment, side effects, prerequisites, command correctness, verification and rollback with Gortex and relevant source evidence. OCR is for code changes and is not required for this artifact review. Do not read another reviewer's report or verdict until your own report/checkpoint is saved. Do not execute actions or change the bundle. Save a review checkpoint with findings:[{title,severity,detail,file?}]; pass requires no unresolved findings. The coordinator combines both independent reviews before final user authorization.` : "",
+      deliveryKind !== "code" && next.stage === "review" ? `Independently review every step and claim in the exact saved action/report bundle ${bundle?.revision}. Read the immutable bundle at ${join(folder, "actions", `bundle-${bundle?.revision}.json`)}. Check requirements, target/environment, side effects, prerequisites, command correctness, verification and rollback with Gortex and relevant source evidence. OCR is for code changes and is not required for this artifact review. Do not read another reviewer's report or verdict until your own report/checkpoint is saved. Do not execute actions or change the bundle. Save a review checkpoint with findings:[{title,severity,detail,file?}]; pass requires no unresolved findings. The coordinator checks the required independent review evidence before final user authorization.` : "",
     ].filter(Boolean).join("\n\n") : "";
     const instructions = [prompt, pipelinePrompt(input.row, facts, next), stageInstructions,
       `You ARE the assigned ${role}, agent ${agentId}, in existing run ${runId}. Do not create another worker or run. Use ${join(kitRoot, "skills")} for the stage skill.`,
       "Stay within the approved acceptance criteria and explicit non-goals. Reuse the repository's existing patterns and dependencies. Choose the smallest useful change. Do not add speculative abstractions, infrastructure or unrelated cleanup. Ask for a revised plan if the required scope changes.",
       "Write every checkpoint summary, plan, report and question for the person using Mission Control. Lead with what changed or was checked, the practical result, actual checks and limitations, and the concrete next action or decision. Use ordinary language; explain necessary technical terms. Keep agent IDs, revision hashes, file paths and raw command output in a separate technical evidence section. Never invent a successful check, result or reassuring summary.",
       "Stop after your assigned stage, including when a later human approval arrives. The runner launches the next role; approval does not turn this agent into the next role.",
-      manifest ? `OCR has already run. Read ${join(folder, manifest)} for the exact file/status checklist, exclusions, rules and scope. Inspect every selected diff with those rules. Do not read another reviewer's report until your own review is saved. For your checkpoint include coverage:[{path,status,outcome:"reviewed"|"skipped",reason:""}] and findings:[{title,severity:"high"|"medium"|"low",detail,file}]. Account for EVERY selected file/status pair. A skipped reviewable file or unresolved finding prevents a passing review. Explicitly disclose excluded files and any acceptance-criteria gaps. Save your own report; the coordinator combines both reviewers and prepares the final authorization checkpoint. Do not request the human review decision yourself.` : "",
+      manifest ? `OCR has already run. Read ${join(folder, manifest)} for the exact file/status checklist, exclusions, rules and scope. Inspect every selected diff with those rules. Do not read another reviewer's report until your own review is saved. For your checkpoint include coverage:[{path,status,outcome:"reviewed"|"skipped",reason:""}] and findings:[{title,severity:"high"|"medium"|"low",detail,file}]. Account for EVERY selected file/status pair. A skipped reviewable file or unresolved finding prevents a passing review. Explicitly disclose excluded files and any acceptance-criteria gaps. Save your own report; the coordinator checks the required review evidence and prepares the final authorization checkpoint. Do not request the human review decision yourself.` : "",
     ].filter(Boolean).join("\n\n");
     await progress("sending", { agentId, runId });
     await agent.send(instructions, { messageId: input.requestId });

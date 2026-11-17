@@ -3,10 +3,11 @@ import { createPaseoApi } from "@getpaseo/client";
 import { readFleetHost } from "../shared/fleet";
 import { getMorningStatus, startMorningCheck, importMorningItems } from "../shared/morning";
 import { captureIntake, routeIntake } from "../shared/intake";
+import { groupMorningItems } from "../shared/morning";
 import { ticketIdentity } from "../shared/tickets";
 import { invokeChatHost, withChatHost } from "./chat-transport";
 
-export const INTAKE_CHAT_HELP = "discover [workspace] [using provider] — run read-only Discovery; asks when a destination is ambiguous\ndiscovery — latest report and agent status\ndiscovery workspaces — list destinations\ndiscovery import KEY[,KEY] into <workspace> — save selected tickets to backlog\nsave task in <workspace> | <title> | <requirements> — describe a task\nqueue task in <workspace> | <title> | <requirements> — capture and queue planning\nplan task in <workspace> | <title> | <requirements> — capture and request planning\nplan task <task ID> — request planning for a saved intake task";
+export const INTAKE_CHAT_HELP = "discover [workspace] [using provider] — run read-only Discovery; asks when a destination is ambiguous\ndiscovery — latest report and agent status\ndiscovery workspaces — list destinations\ndiscovery import KEY[,KEY] into <workspace> — save selected tickets to backlog\ndiscovery group KEY,KEY into <workspace> | <shared task title> — save one task and branch scope\nsave task in <workspace> | <title> | <requirements> — describe a task\nqueue task in <workspace> | <title> | <requirements> — capture and queue planning\nplan task in <workspace> | <title> | <requirements> — capture and request planning\nplan task <task ID> — request planning for a saved intake task";
 type Context = { local: string; target: string; agentId: string; label: string; orchestrator: boolean };
 
 export async function manageIntakeChat(command: string, context: Context): Promise<{ text: string } | null> {
@@ -41,17 +42,25 @@ export async function manageIntakeChat(command: string, context: Context): Promi
   const status = getMorningStatus.output.parse(await invokeChatHost(context.target, getMorningStatus.name, { serverId: context.target }));
   if (/^discovery(?: status)?$/i.test(command)) return { text: `${context.label} · Discovery\n${status.agent?.busy ? "Agent running; report not yet complete." : status.launch?.phase === "sending" ? "Launch unconfirmed; inspect the existing agent before another start." : "No discovery agent currently running."}\n${status.report ? `Report ${status.report.reportId} · ${status.report.createdAt}\n${status.missing.map(item => `${item.key} — ${item.title}`).join("\n") || "No new tickets in this report."}\n${status.imported.length} tickets already tracked.` : "No saved report yet. Use discover to start."}${status.reportError ? `\nReport error: ${status.reportError}` : ""}\nOpen Kanban → Intake → Discover work to inspect and import selected tickets.` };
   const importing = /^discovery import (.+?) into (.+)$/i.exec(command);
-  if (importing) {
-    const workspace = select(importing[2].trim());
+  const grouping = /^discovery group (.+?) into (.+?)\s*\|\s*([^|]+)$/i.exec(command);
+  const selection = grouping ?? importing;
+  if (selection) {
+    const workspace = select(selection[2].trim());
     if (!workspace || !status.report || status.reportError) return { text: `A readable report and exact destination are required. Nothing imported.\n${list()}` };
-    const keys = importing[1].split(",").map(key => key.trim().toLowerCase()).filter(Boolean);
+    const keys = selection[1].split(",").map(key => key.trim().toLowerCase()).filter(Boolean);
     const items: string[] = [];
     for (const key of keys) {
       const matches = status.report.items.filter(item => item.key.toLowerCase() === key || ticketIdentity(item).toLowerCase() === key);
       if (matches.length !== 1) return { text: `Ticket '${key}' is missing or ambiguous in this report. Use its exact system:key identity. Nothing imported.` };
       items.push(ticketIdentity(matches[0]));
     }
-    const result = importMorningItems.output.parse(await invokeChatHost(context.target, importMorningItems.name, { serverId: context.target, workspaceId: workspace.id, reportId: status.report.reportId, items }));
+    const input = { serverId: context.target, workspaceId: workspace.id, reportId: status.report.reportId, items };
+    if (grouping) {
+      const result = groupMorningItems.output.parse(await invokeChatHost(context.target, groupMorningItems.name, groupMorningItems.input.parse({ ...input, title: grouping[3].trim() })));
+      const id = result.created[0]?.taskId ?? result.skipped[0]?.taskIds[0];
+      return { text: `${context.label} · ${workspace.name}\n${result.created.length ? "Saved one shared backlog task" : "Already grouped"}: ${id}\n${keys.join(", ")}\nUse plan task ${id} when ready.` };
+    }
+    const result = importMorningItems.output.parse(await invokeChatHost(context.target, importMorningItems.name, input));
     return { text: `${context.label} · ${workspace.projectName} / ${workspace.name}\nSaved ${result.created.length} tasks to backlog; ${result.skipped.length} already tracked. No workers launched.\n${result.created.map(t => `${t.key}: ${t.taskId}`).join("\n")}\nUse plan task <task ID> or queue <task ID> priority 5 when ready.` };
   }
   const discover = /^discover(?:\s+(?!using\b)(.+?))?(?:\s+using\s+(\S+))?$/i.exec(command);

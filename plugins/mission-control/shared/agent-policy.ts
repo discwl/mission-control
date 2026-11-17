@@ -24,26 +24,26 @@ export const resolvedPolicySchema = z.object({
   profiles: z.array(resolvedProfileSchema),
 });
 export type ResolvedPolicy = z.infer<typeof resolvedPolicySchema>;
-export const readAgentPolicy = defineRpc({ name: "workflow.agents.read", input: z.object({ serverId: z.string(), projectId: z.string().nullable().default(null), taskId: z.string().nullable().default(null), workflowMode: z.enum(["manual", "automatic"]).default("manual") }), output: z.object({ revision: z.number(), profiles: z.array(nativeProfileSchema), policies: z.array(agentPolicySchema), effective: resolvedPolicySchema.nullable(), problem: z.string().nullable() }) });
+export const readAgentPolicy = defineRpc({ name: "workflow.agents.read", input: z.object({ serverId: z.string(), projectId: z.string().nullable().default(null), taskId: z.string().nullable().default(null), workflow: z.enum(["standard", "advanced"]).optional(), workflowMode: z.enum(["manual", "automatic"]).default("manual") }), output: z.object({ revision: z.number(), profiles: z.array(nativeProfileSchema), policies: z.array(agentPolicySchema), effective: resolvedPolicySchema.nullable(), problem: z.string().nullable() }) });
 export const saveAgentPolicy = defineRpc({ name: "workflow.agents.save", input: z.object({ serverId: z.string(), projectId: z.string().nullable(), taskId: z.string().nullable(), mapping: roleMappingSchema.nullable(), expectedRevision: z.number().int() }), output: z.object({ revision: z.number() }) });
 
 /** Profile names/provider aliases do not make the same underlying model independent. */
 export function modelIdentity(model: string): string {
   return model.toLowerCase().split("/").at(-1)!.replace(/[._-]/g, "").replace(/(?:latest|\d{8})$/, "");
 }
-export function resolveRolePolicy(policies: z.infer<typeof agentPolicySchema>[], profiles: z.infer<typeof nativeProfileSchema>[], projectId: string | null, taskId: string | null, workflowMode: "manual" | "automatic" = "manual"): ResolvedPolicy | null {
+export function resolveRolePolicy(policies: z.infer<typeof agentPolicySchema>[], profiles: z.infer<typeof nativeProfileSchema>[], projectId: string | null, taskId: string | null, workflowMode: "manual" | "automatic" | "standard" = "manual"): ResolvedPolicy | null {
   const selected = policies.find(item => taskId && item.taskId === taskId && item.projectId === projectId)
     ?? policies.find(item => projectId && item.projectId === projectId && item.taskId === null)
     ?? policies.find(item => item.projectId === null && item.taskId === null);
   if (!selected) return null;
   const mapping = selected.mapping;
-  const reviewCount = workflowMode === "automatic" ? 2 : mapping.reviewCount;
+  const reviewCount = workflowMode === "standard" ? 1 : workflowMode === "automatic" ? 2 : mapping.reviewCount;
   const planner = profiles.find(item => item.id === mapping.planner);
   const planReviewer = mapping.planReviewer ?? [mapping.reviewer, mapping.reviewer2].find(id => {
     const candidate = profiles.find(item => item.id === id);
     return candidate?.model && planner?.model && modelIdentity(candidate.model) !== modelIdentity(planner.model);
   });
-  const roles = workflowRoles.filter(role => (role !== "reviewer2" || reviewCount === 2) && (role !== "planReviewer" || workflowMode === "automatic"));
+  const roles = workflowMode === "standard" ? ["planner", "builder", "reviewer"] as const : workflowRoles.filter(role => (role !== "reviewer2" || reviewCount === 2) && (role !== "planReviewer" || workflowMode === "automatic"));
   const resolved = roles.map(role => {
     const id = role === "validator" ? mapping.validator ?? mapping.builder : role === "planReviewer" ? planReviewer : mapping[role];
     const profile = profiles.find(item => item.id === id);

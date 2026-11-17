@@ -4,7 +4,7 @@ import type { TaskRecord } from "../shared/tasks";
 import type { StageAssignment } from "./stage-records.mjs";
 type PlanInput = { taskFolder: string; runFolder: string; decision: Decision };
 type AutomaticPlanInput = { taskFolder: string; runFolder: string; task: TaskRecord; identity: { taskId: string; runId: string; serverId: string; workspaceId: string }; policyRevision?: string };
-export type AutomaticPlan = { revision: string; scopeRevision: string; plannerAgentId: string; plannerModel: string; policyRevision: string; createdAt: string; assignmentId: string; documentRevision: string; path: string; markdown: string; brief: NonNullable<DecisionPlan["brief"]>; currentMatch: boolean; scopeMatch: boolean; policyMatch: boolean };
+export type AutomaticPlan = { workflow: "standard" | "advanced"; revision: string; scopeRevision: string; plannerAgentId: string; plannerModel: string; policyRevision: string; createdAt: string; assignmentId: string; documentRevision: string; path: string; markdown: string; brief: NonNullable<DecisionPlan["brief"]>; currentMatch: boolean; scopeMatch: boolean; policyMatch: boolean };
 export function planScopeRevision(task: TaskRecord, identity: AutomaticPlanInput["identity"]): string;
 export function readAutomaticPlan(input: AutomaticPlanInput): Promise<AutomaticPlan | null>;
 export function verifyAutomaticPlanAcceptance(input: AutomaticPlanInput): Promise<AutomaticPlan>;

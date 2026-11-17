@@ -8,7 +8,7 @@ import { daemonServerId } from "./agent-names";
 import { fleetEvent, type FleetStore } from "./fleet-store";
 
 export function registerPipelineIntake(server: PluginServerContext, store: FleetStore, snapshot: () => Promise<FleetSnapshot>, invalidate: () => void) {
-  server.handle(pipelineCapabilities, async ({ serverId }) => { if (serverId !== await daemonServerId()) throw new Error("Wrong host."); return { serverId, version: 1 as const, idempotentIntake: true as const, automaticWorkflow: true as const, actionBundles: true as const, taskWorktrees: true as const, supersedeDecisions: true as const, stageLaunchReceipts: true as const }; });
+  server.handle(pipelineCapabilities, async ({ serverId }) => { if (serverId !== await daemonServerId()) throw new Error("Wrong host."); return { serverId, version: 1 as const, idempotentIntake: true as const, automaticWorkflow: true as const, actionBundles: true as const, taskWorktrees: true as const, supersedeDecisions: true as const, standardWorkflow: true as const, stageLaunchReceipts: true as const }; });
   async function verify(row: Pipeline) {
     if (row.deliveryKind !== "code" && row.workflowMode !== "automatic") throw new Error("Non-code delivery requires the automatic workflow.");
     const current = await snapshot();
@@ -17,6 +17,7 @@ export function registerPipelineIntake(server: PluginServerContext, store: Fleet
     const workspace = host?.workspaces.find(item => item.id === row.intake?.workspaceId);
     if (!host?.complete || host.warnings.length || !workspace || ["archiving", "archived", "failed"].includes(workspace.status)) throw new Error("Choose an available project workspace on a connected, fully updated host.");
     const capability = pipelineCapabilities.output.parse(await invokeChatHost(row.remoteServerId, pipelineCapabilities.name, { serverId: row.remoteServerId }));
+    if (row.workflow === "standard" && !capability.standardWorkflow) throw new Error("Update this host's Mission Control before starting a Standard workflow.");
     if (capability.serverId !== row.remoteServerId || !capability.idempotentIntake || row.workflowMode === "automatic" && (!capability.automaticWorkflow || row.deliveryKind !== "code" && !capability.actionBundles || row.deliveryKind === "code" && !capability.taskWorktrees)) throw new Error("Update this host's Mission Control before creating this task runner.");
   }
   async function finish(row: Pipeline): Promise<Pipeline> {
@@ -28,9 +29,9 @@ export function registerPipelineIntake(server: PluginServerContext, store: Fleet
       await store.update(state => {
         const current = state.pipelines.find(item => item.id === row.id); if (!current?.intake || current.intake.phase !== "pending") return;
         current.intake.phase = "created"; current.updatedAt = new Date().toISOString();
-        if (current.mode === "running") current.message = current.workflowMode === "automatic" ? "Task created. Preparing its readable plan and independent plan check." : "Task created. Preparing its readable plan for your approval.";
+        if (current.mode === "running") current.message = current.workflow === "standard" ? "Task created. The planner will prepare its plan." : current.workflowMode === "automatic" ? "Task created. Preparing its readable plan and independent plan check." : "Task created. Preparing its readable plan for your approval.";
         else if (current.mode === "blocked") current.message = "Intake confirmed. Resume this runner when ready to prepare its plan.";
-        fleetEvent(state, { coordinatorId: row.coordinatorId, remoteServerId: row.remoteServerId, taskId: task.taskId, kind: "progress", message: row.workflowMode === "automatic" ? "Intake saved. Independent plan checking is next." : "Intake saved in the existing Mission Control task store. Plan approval is next." });
+        fleetEvent(state, { coordinatorId: row.coordinatorId, remoteServerId: row.remoteServerId, taskId: task.taskId, kind: "progress", message: row.workflow === "standard" ? "Intake saved. Standard workflow planning is next." : row.workflowMode === "automatic" ? "Intake saved. Independent plan checking is next." : "Intake saved in the existing Mission Control task store. Plan approval is next." });
       });
     } catch (error) {
       await store.update(state => { const current = state.pipelines.find(item => item.id === row.id); if (!current || ["stopped", "paused"].includes(current.mode)) return;
@@ -43,11 +44,11 @@ export function registerPipelineIntake(server: PluginServerContext, store: Fleet
     const state = await store.read();
     const existing = state.pipelines.find(item => item.id === input.requestId);
     if (existing) {
-      if (existing.coordinatorId !== input.coordinatorId || existing.remoteServerId !== input.remoteServerId || existing.title !== input.title || existing.intake?.workspaceId !== input.workspaceId || existing.intake.acceptanceCriteria !== input.acceptanceCriteria || existing.workflowMode !== input.workflowMode || existing.deliveryKind !== input.deliveryKind) throw new Error("This intake request ID belongs to different details.");
+      if (existing.coordinatorId !== input.coordinatorId || existing.remoteServerId !== input.remoteServerId || existing.title !== input.title || existing.intake?.workspaceId !== input.workspaceId || existing.intake.acceptanceCriteria !== input.acceptanceCriteria || (input.workflow && existing.workflow !== input.workflow) || existing.workflowMode !== input.workflowMode || existing.deliveryKind !== input.deliveryKind) throw new Error("This intake request ID belongs to different details.");
       return existing.intake.phase === "created" || ["paused", "stopped"].includes(existing.mode) ? existing : finish(existing);
     }
     const row = pipelineSchema.parse({ id: input.requestId, coordinatorId: input.coordinatorId, remoteServerId: input.remoteServerId, taskId: `task_${input.requestId.toLowerCase()}`, title: input.title,
-      intake: { requestId: input.requestId, workspaceId: input.workspaceId, acceptanceCriteria: input.acceptanceCriteria, phase: "pending" }, mode: "running", stage: "plan", runId: null, workflowMode: input.workflowMode, deliveryKind: input.deliveryKind,
+      intake: { requestId: input.requestId, workspaceId: input.workspaceId, acceptanceCriteria: input.acceptanceCriteria, phase: "pending" }, mode: "running", stage: "plan", runId: null, workflow: input.workflowMode === "automatic" ? input.workflow ?? "standard" : undefined, workflowMode: input.workflowMode, deliveryKind: input.deliveryKind,
       message: "Saving task intake.", updatedAt: new Date().toISOString(), repairs: 0, repairIds: [], lastDispatch: null, lastSentAt: null, date: "", wakeups: 0, pending: null });
     await verify(row);
     await store.update(current => {

@@ -5,8 +5,8 @@ import type { FleetCoordinator, FleetSnapshot } from "../shared/fleet";
 import { intakePipeline } from "../shared/pipeline";
 import { CompactLink } from "./compact-link";
 import { usePageState } from "./page-state";
-type Intake = { requestId: string; coordinatorId: string; remoteServerId: string; workspaceId: string; title: string; acceptanceCriteria: string; workflowMode?: "manual" | "automatic"; deliveryKind?: "code" | "actions" | "report" };
-export function PipelineIntakeForm({ snapshot, coordinator, colors, busy, act, workflowMode = "automatic", deliveryKind = "code" }: { snapshot: FleetSnapshot; coordinator?: FleetCoordinator; colors: PluginSurfaceProps["theme"]["colors"]; busy: boolean; act: (id: string, work: () => Promise<unknown>) => void; workflowMode?: "manual" | "automatic"; deliveryKind?: "code" | "actions" | "report" }) {
+type Intake = { requestId: string; coordinatorId: string; remoteServerId: string; workspaceId: string; title: string; acceptanceCriteria: string; workflowMode?: "manual" | "automatic"; workflow?: "standard" | "advanced"; deliveryKind?: "code" | "actions" | "report" };
+export function PipelineIntakeForm({ snapshot, coordinator, colors, busy, act, workflowMode = "automatic", workflow = "standard", deliveryKind = "code" }: { snapshot: FleetSnapshot; coordinator?: FleetCoordinator; colors: PluginSurfaceProps["theme"]["colors"]; busy: boolean; act: (id: string, work: () => Promise<unknown>) => void; workflowMode?: "manual" | "automatic"; workflow?: "standard" | "advanced"; deliveryKind?: "code" | "actions" | "report" }) {
   const create = useRpc(intakePipeline);
   const [show, setShow] = useState(false); const [workspaceId, setWorkspaceId] = useState(""); const [workspaceSearch, setWorkspaceSearch] = useState("");
   const [title, setTitle] = usePageState(`pipeline-intake:${snapshot.serverId}:title`, "");
@@ -20,7 +20,7 @@ export function PipelineIntakeForm({ snapshot, coordinator, colors, busy, act, w
   const inputStyle = { color: colors.foreground, borderColor: colors.border, borderWidth: 1, borderRadius: 6, padding: 10 };
   function submit() {
     if (!coordinator || !workspace && !pending) return;
-    const request = pending ?? { requestId: globalThis.crypto.randomUUID(), coordinatorId: coordinator.agentId, remoteServerId: coordinator.remoteServerId, workspaceId, title: title.trim(), acceptanceCriteria: criteria.trim(), workflowMode, deliveryKind };
+    const request = pending ?? { requestId: globalThis.crypto.randomUUID(), coordinatorId: coordinator.agentId, remoteServerId: coordinator.remoteServerId, workspaceId, title: title.trim(), acceptanceCriteria: criteria.trim(), workflowMode, ...(workflowMode === "automatic" ? { workflow } : {}), deliveryKind };
     setPending(request);
     act(request.requestId, async () => {
       const result = await create({ ...request, expectedRevision: snapshot.state.revision });
@@ -42,7 +42,7 @@ export function PipelineIntakeForm({ snapshot, coordinator, colors, busy, act, w
       <TextInput accessibilityLabel="Task requirements and success checks" value={pending?.acceptanceCriteria ?? criteria} onChangeText={setCriteria} editable={!locked} multiline maxLength={4000} placeholder="Problem, ticket link, expected behavior and success checks" placeholderTextColor={colors.foregroundMuted} style={{ ...inputStyle, minHeight: 140, textAlignVertical: "top" }} />
       <CompactLink label={pending ? "Check and retry this same intake" : "Create task and prepare its plan"} colors={colors} disabled={busy || snapshot.state.paused || !pending && (!workspace || !title.trim() || !criteria.trim() || !remote?.complete)} onPress={submit} />
       {known ? <CompactLink label="Clear this form; keep the saved runner" colors={colors} disabled={busy} onPress={() => { setPending(null); setTitle(""); setCriteria(""); setShow(false); }} /> : null}
-      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{(pending ? pending.workflowMode ?? "manual" : workflowMode) === "automatic" ? "A different model checks the plan before work begins. Publishing or executing prepared actions waits for your final authorization." : "You approve the plan and review before the final publication or action authorization."}</Text>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{(pending ? pending.workflowMode ?? "manual" : workflowMode) === "automatic" ? `${(pending ? pending.workflow : workflow) === "advanced" ? "Advanced workflow." : pending && !pending.workflow ? "Saved automatic workflow." : "Standard workflow."} Publishing or executing prepared actions waits for your final authorization.` : "You approve the plan and review before the final publication or action authorization."}</Text>
     </View> : null}
   </View>;
 }

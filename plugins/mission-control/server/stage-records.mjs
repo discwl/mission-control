@@ -12,6 +12,8 @@ export const assignmentSchema = z.object({
   planScopeRevision: z.string().regex(/^[a-f0-9]{64}$/).nullable().default(null),
   planRevision: z.string().nullable(), candidate: candidateSchema.nullable(), createdAt: z.string(),
   reviewCount: z.union([z.literal(1), z.literal(2)]), manifest: z.string().nullable(),
+  workflow: z.enum(["standard", "advanced"]).optional(),
+  plannerTransition: z.object({ plannerAssignmentId: z.string().uuid(), fromModel: z.string().min(1), toModel: z.string().min(1) }).optional(),
   requestId: z.string().optional(),
 });
 export async function readStageJson(root, name) {

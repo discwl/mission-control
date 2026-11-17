@@ -533,7 +533,7 @@ export function createMergeService(deps: Deps) {
         add("review", "Review approved", false, `The task changed after its review was requested: ${changed.length ? `${plural(changed.length, "file")} differ (${listed(changed, 10)})` : "its files differ"}. Ask for a fresh review.`);
       } else if (!sameHead) {
         add("review", "Review approved", false, `The task branch moved from ${reviewed.head ? short(reviewed.head) : "no commit"} to ${short(taskHead)} after its review was requested. Ask for a fresh review.`);
-      } else add("review", automatic ? "Independent reviews" : "Review approved", true, automatic ? "Validation and two distinct model reviews passed for exactly these files. Final delivery still requires your authorization." : `Review approved${review?.decision.resolvedAt ? ` ${review.decision.resolvedAt.slice(0, 10)}` : ""} for exactly these files, no open findings.`);
+      } else add("review", automatic ? "Independent reviews" : "Review approved", true, automatic ? "Validation and the required independent review passed for exactly these files. Final delivery still requires your authorization." : `Review approved${review?.decision.resolvedAt ? ` ${review.decision.resolvedAt.slice(0, 10)}` : ""} for exactly these files, no open findings.`);
     }
 
     // The main checkout's own checks are Merge's alone: Open PR never touches the main checkout.

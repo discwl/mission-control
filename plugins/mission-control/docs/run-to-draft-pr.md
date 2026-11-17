@@ -1,8 +1,10 @@
 # Run to draft PR
 
-Open **Orchestrator → Run to draft PR**. Choose a coordinator and either an existing task or **Start from a ticket or new task**. New intake saves a normal Mission Control task in the selected host and workspace before planning. Retries use the same intake ID and task ID.
+Open **Orchestrator → Run a task**. Choose a coordinator and either an existing task or **Start from a ticket or new task**. New intake saves a normal Mission Control task in the selected host and workspace before planning. Retries use the same intake ID and task ID.
 
-The workflow is:
+**Standard** is selected for new automatic tasks. The planner model writes a versioned plan. The builder model implements it and validates the change. A fresh reviewer checks it before you authorize publication. Choose **Advanced** for an independent plan check, separate validation and two fresh reviews, for example when changing permissions or migrating data. An agent can explain why those additional checks are worthwhile. Existing runs retain their assigned workflow.
+
+With **Human approvals**, the runner follows these steps.
 
 1. Prepare a readable implementation plan in the task.
 2. Wait for your plan approval.
@@ -22,7 +24,7 @@ Use `adopt <task ID>` in the coordinator chat to attach an existing worker, then
 Chat controls:
 
 ```text
-run to draft PR <task ID>
+run to draft PR <task ID> [standard|advanced]
 pipeline <task ID>
 pause pipeline <task ID>
 resume pipeline <task ID>

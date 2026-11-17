@@ -27,13 +27,13 @@ export type TicketComparison<Item> = {
 /** Splits tracker items into those no task carries yet and those already imported, keeping item order. */
 export function compareTrackerItems<Item extends Pick<Ticket, "system" | "key">>(
   items: readonly Item[],
-  tasks: readonly { taskId: TaskRecord["taskId"]; ticket?: Pick<Ticket, "system" | "key"> }[],
+  tasks: readonly { taskId: TaskRecord["taskId"]; ticket?: Pick<Ticket, "system" | "key">; groupedTickets?: Pick<Ticket, "system" | "key">[] }[],
 ): TicketComparison<Item> {
   const taskIds = new Map<string, string[]>();
   for (const task of tasks) {
-    if (!task.ticket) continue;
-    const identity = ticketIdentity(task.ticket);
-    taskIds.set(identity, [...taskIds.get(identity) ?? [], task.taskId]);
+    const identities = new Set((task.groupedTickets ?? []).map(ticketIdentity));
+    if (task.ticket) identities.add(ticketIdentity(task.ticket));
+    for (const identity of identities) taskIds.set(identity, [...taskIds.get(identity) ?? [], task.taskId]);
   }
   const seen = new Set<string>();
   const result: TicketComparison<Item> = { missing: [], imported: [] };
@@ -46,6 +46,31 @@ export function compareTrackerItems<Item extends Pick<Ticket, "system" | "key">>
     else result.missing.push(item);
   }
   return result;
+}
+
+// Include the tracker instance and the project. Azure DevOps work item IDs alone give no project information.
+function trackerProject(item: TrackerItem) {
+  const url = new URL(item.url);
+  if (item.system === "jira") {
+    const project = /^([A-Z][A-Z0-9_]*)-\d+$/i.exec(item.key)?.[1];
+    const context = /^(.*?)\/browse\//i.exec(url.pathname)?.[1];
+    if (!project || context === undefined) throw new Error(`Cannot verify the Jira project for ${item.key}. Use its project issue link.`);
+    return `jira:${url.origin}${context}/${project.toUpperCase()}`;
+  }
+  const project = /^(\/.+?)\/_workitems\/edit\/\d+\/?$/i.exec(url.pathname)?.[1];
+  if (!project || (url.hostname === "dev.azure.com" && project.split("/").length < 3)) throw new Error(`Cannot verify the Azure DevOps project for ${item.key}. Use its project work item link.`);
+  return `azure-devops:${url.origin}${project.toLowerCase()}`;
+}
+
+export function groupedTaskFields(items: TrackerItem[], title: string) {
+  if (items.length < 2 || new Set(items.map(ticketIdentity)).size !== items.length) throw new Error("Select at least two distinct tickets for a group.");
+  if (new Set(items.map(trackerProject)).size !== 1) throw new Error("Choose tickets from the same tracker project for a shared task.");
+  const groupedTickets = items.map(item => ({
+    ...importedTaskFields(item).ticket, title: item.title, acceptanceCriteria: item.acceptanceCriteria.trim() || item.description.trim(),
+  }));
+  const criteria = groupedTickets.map(item => `${item.key} · ${item.title}\n${item.url}\n${item.acceptanceCriteria || "Acceptance criteria to confirm at intake."}`).join("\n\n");
+  const acceptanceCriteria = criteria.length <= criteriaLimit ? criteria : `Meet the acceptance criteria for all ${items.length} linked tickets. See groupedTickets in task.md for each source and its full criteria.`;
+  return { title, acceptanceCriteria, groupedTickets, ticket: importedTaskFields(items[0]).ticket };
 }
 
 const criteriaLimit = 4000;

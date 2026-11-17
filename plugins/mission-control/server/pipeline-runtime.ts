@@ -4,7 +4,7 @@ import type { FleetSnapshot } from "../shared/fleet";
 import { inspectPipeline, startPipeline, controlPipeline, pipelineInspectionSchema, pipelineCapabilities, prepareTaskWorktree } from "../shared/pipeline";
 import { isStartingStage, needsDispatchCheck, pipelineSchema, type Pipeline } from "../shared/pipeline-state";
 import { supersedeDecisions } from "../shared/decisions";
-import { inspectPipelineTask } from "./pipeline-inspect";
+import { inspectPipelineTask, savedRunWorkflow } from "./pipeline-inspect";
 import { invokeChatHost } from "./chat-transport";
 import { createPipelineEngine, recordDispatch } from "./pipeline-engine";
 import { registerPipelineIntake } from "./pipeline-intake";
@@ -32,18 +32,19 @@ export function registerPipelineRuntime(server: PluginServerContext, store: Flee
   const finishIntake = registerPipelineIntake(server, store, snapshot, invalidate);
   registerIntake(server, snapshot, invalidate);
   registerAgentPolicies(server, store);
-  async function inspectLocal(input: { serverId: string; workspaceId: string; taskId: string; workflowMode?: "manual" | "automatic" }, paseo: PaseoApi) {
+  async function inspectLocal(input: { serverId: string; workspaceId: string; taskId: string; workflowMode?: "manual" | "automatic"; workflow?: Pipeline["workflow"] }, paseo: PaseoApi) {
     if (input.serverId !== await daemonServerId()) throw new Error("This vault belongs to a different host.");
     const host = await collectFleetHost(paseo, input.serverId, hostDeps);
     if (!host.complete || host.warnings.length) throw new Error("A complete task snapshot is required.");
     const entry = host.tasks.find(item => item.task.taskId === input.taskId);
     if (!entry) throw new Error("Task not found on this host.");
-    let policy = await effectiveAgentPolicy(store, paseo, entry.task.projectId, entry.task.taskId, input.workflowMode ?? "manual");
-    let facts = await inspectPipelineTask(input.serverId, input.workspaceId, input.taskId, entry, paseo, policy?.revision);
-    if (!input.workflowMode && facts.workflowMode === "automatic") {
-      policy = await effectiveAgentPolicy(store, paseo, entry.task.projectId, entry.task.taskId, "automatic");
-      facts = await inspectPipelineTask(input.serverId, input.workspaceId, input.taskId, entry, paseo, policy?.revision);
-    }
+    const saved = await savedRunWorkflow(entry, input.workspaceId);
+    if (saved?.mode === "automatic" && input.workflow && input.workflow !== saved.workflow) throw new Error("The selected workflow differs from the task's existing run.");
+    const mode = input.workflowMode ?? saved?.mode ?? "manual";
+    const workflow = saved?.mode === "automatic" ? saved.workflow : input.workflow;
+    const policy = await effectiveAgentPolicy(store, paseo, entry.task.projectId, entry.task.taskId, mode === "automatic" && workflow === "standard" ? "standard" : mode);
+    const facts = await inspectPipelineTask(input.serverId, input.workspaceId, input.taskId, entry, paseo, policy?.revision);
+    if (!facts.workflow && mode === "automatic") facts.workflow = workflow;
     facts.agentPolicy = policy;
     for (const checkpoint of facts.checkpoints.filter(item => item.execution?.policyRevision === facts.agentPolicy?.revision && item.execution)) {
       const agent = (await paseo.agents.ref(checkpoint.agentId).refresh())?.agent;
@@ -67,7 +68,7 @@ export function registerPipelineRuntime(server: PluginServerContext, store: Flee
     }
     const job = (async () => {
       try {
-        const facts = await inspectLocal({ ...input, taskId: input.row.taskId, workflowMode: input.row.workflowMode }, paseo);
+        const facts = await inspectLocal({ ...input, taskId: input.row.taskId, workflowMode: input.row.workflowMode, workflow: input.row.workflow }, paseo);
         const host = await collectFleetHost(paseo, input.serverId, hostDeps);
         if (host.agents.some(agent => agent.workspaceId === input.workspaceId && (["running", "initializing"].includes(agent.status) || agent.pendingPermissions))) throw new Error("Another agent is active in this workspace.");
         const result = await launchManagedStage(input, facts, paseo, store, (step, detail) => receipts.step(input.requestId, step, detail));
@@ -119,7 +120,7 @@ export function registerPipelineRuntime(server: PluginServerContext, store: Flee
       const task = current.hosts.find(host => host.serverId === row.remoteServerId)?.snapshot?.tasks.find(entry => entry.task.taskId === row.taskId);
       const workspaceId = task?.run?.workspaceId ?? task?.task.worktree?.workspaceId ?? task?.task.assignments.find(item => item.serverId === row.remoteServerId)?.workspaceId;
       if (!workspaceId) throw new Error("Pipeline workspace is unavailable.");
-      return pipelineInspectionSchema.parse(await invokeChatHost(row.remoteServerId, inspectPipeline.name, { serverId: row.remoteServerId, workspaceId, taskId: row.taskId, workflowMode: row.workflowMode }));
+      return pipelineInspectionSchema.parse(await invokeChatHost(row.remoteServerId, inspectPipeline.name, { serverId: row.remoteServerId, workspaceId, taskId: row.taskId, workflowMode: row.workflowMode, workflow: row.workflow }));
     },
     prepareWorktree: async (row, facts) => {
       // The worktree branches off the project workspace the task was assigned to.
@@ -218,11 +219,18 @@ export function registerPipelineRuntime(server: PluginServerContext, store: Flee
     if (["closed", "delivered"].includes(task.task.status) || task.task.pullRequest) throw new Error("This task already has delivery recorded. Continue with its existing PR.");
     if (task.run && input.workflowMode !== (task.run.workflowMode ?? "manual")) throw new Error(`This task already has a run. Start its runner with the existing workflow, or switch a manual run to automatic checks in one step with "automate pipeline ${input.taskId}"; its open requests are retired without approval.`);
     if (task.run && input.deliveryKind !== (task.run.deliveryKind ?? "code")) throw new Error("An existing run must keep its recorded deliverable. Create a new task for a different deliverable.");
+    let workflow: Pipeline["workflow"];
     if (input.workflowMode === "automatic") {
+      workflow = input.workflow ?? (task.run ? undefined : "standard");
+      if (task.run) {
+        const saved = pipelineInspectionSchema.parse(await invokeChatHost(input.remoteServerId, inspectPipeline.name, { serverId: input.remoteServerId, workspaceId: task.run.workspaceId, taskId: input.taskId }));
+        workflow = saved.workflow ?? "advanced";
+        if (input.workflow && workflow !== input.workflow) throw new Error("An existing run must keep its recorded workflow.");
+      }
       const capability = pipelineCapabilities.output.parse(await invokeChatHost(input.remoteServerId, pipelineCapabilities.name, { serverId: input.remoteServerId }));
-      if (!capability.automaticWorkflow || input.deliveryKind !== "code" && !capability.actionBundles || input.deliveryKind === "code" && !task.run && !capability.taskWorktrees) throw new Error("Update this host's Mission Control before using automatic workflow.");
+      if (!capability.automaticWorkflow || workflow === "standard" && !capability.standardWorkflow || input.deliveryKind !== "code" && !capability.actionBundles || input.deliveryKind === "code" && !task.run && !capability.taskWorktrees) throw new Error("Update this host's Mission Control before using automatic workflow.");
     }
-    const row = pipelineSchema.parse({ id: randomUUID(), ...input, title: task.task.title, mode: "running", stage: "plan", runId: task.run?.runId ?? null, message: "Enrolled. Checking saved plan and stage evidence.", updatedAt: new Date().toISOString(), repairs: 0, repairIds: [], lastDispatch: null, lastSentAt: null, date: "", wakeups: 0, pending: null });
+    const row = pipelineSchema.parse({ id: randomUUID(), ...input, workflow, title: task.task.title, mode: "running", stage: "plan", runId: task.run?.runId ?? null, message: "Enrolled. Checking saved plan and stage evidence.", updatedAt: new Date().toISOString(), repairs: 0, repairIds: [], lastDispatch: null, lastSentAt: null, date: "", wakeups: 0, pending: null });
     await store.update(state => {
       if (state.paused) throw new Error("Resume fleet wake-ups before starting a task runner.");
       const active = state.pipelines.filter(item => !["stopped", "done"].includes(item.mode));
@@ -230,7 +238,7 @@ export function registerPipelineRuntime(server: PluginServerContext, store: Flee
       // Automatic runners queue per host. A manual runner drives the coordinator chat, so it stays alone.
       if (input.workflowMode !== "automatic" && active.some(item => item.workflowMode !== "automatic" && (item.remoteServerId === input.remoteServerId || item.coordinatorId === input.coordinatorId))) throw new Error("A manual runner already owns this host or coordinator. Inspect it before starting another.");
       for (const queued of state.queue.filter(item => item.taskId === row.taskId && item.remoteServerId === row.remoteServerId)) queued.enabled = false;
-      state.pipelines.push(row); fleetEvent(state, { coordinatorId: row.coordinatorId, remoteServerId: row.remoteServerId, taskId: row.taskId, kind: "settings", message: row.workflowMode === "automatic" ? "Automatic workflow enrolled. Plan checking and two independent reviews precede exact human delivery authorization." : "Run to draft PR enrolled. Human plan, code and publication gates remain active." });
+      state.pipelines.push(row); fleetEvent(state, { coordinatorId: row.coordinatorId, remoteServerId: row.remoteServerId, taskId: row.taskId, kind: "settings", message: row.workflow === "standard" ? "Standard workflow enrolled. The planner saves a plan; the builder implements and validates before one independent review." : row.workflowMode === "automatic" ? "Automatic workflow enrolled. Plan checking and two independent reviews precede exact human delivery authorization." : "Run to draft PR enrolled. Human plan, code and publication gates remain active." });
     }, input.expectedRevision);
     invalidate(); return row;
   });

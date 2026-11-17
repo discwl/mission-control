@@ -83,3 +83,10 @@ export const importMorningItems = defineRpc({
     skipped: z.array(z.object({ key: z.string(), taskIds: z.array(z.string()) })),
   }),
 });
+
+// A separate method prevents older hosts from interpreting a group as individual imports.
+export const groupMorningItems = defineRpc({
+  name: "morning.group",
+  input: importMorningItems.input.extend({ title: z.string().trim().min(1).max(200).regex(/^[^\r\n]+$/), items: z.array(z.string().min(1).max(200)).min(2).max(200) }),
+  output: importMorningItems.output,
+});

@@ -44,16 +44,19 @@ function runtime(file, initialProps, handler = async () => ({}), memory = new Ma
 
 test("new starts use automatic review and the selected host/task revision", async () => {
   const r = runtime("./pipelines.tsx", { snapshot: snapshot() }); r.render();
-  assert.equal(r.button("Automatic plan check + two reviews").selected, true);
+  assert.equal(r.button("Standard").selected, true);
+  assert.match(r.text(), /planner writes the plan.*builder implements it and runs checks/i);
   r.press("Run this task to draft PR"); await r.settle();
-  assert.deepEqual(r.calls, [{ method: "start", input: { coordinatorId: "coordinator", remoteServerId: "remote", taskId: "task_one", workflowMode: "automatic", deliveryKind: "code", expectedRevision: 8 } }]);
+  assert.deepEqual(r.calls, [{ method: "start", input: { coordinatorId: "coordinator", remoteServerId: "remote", taskId: "task_one", workflowMode: "automatic", workflow: "standard", deliveryKind: "code", expectedRevision: 8 } }]);
 });
 
 test("action bundles are explicit and changing to manual restores code delivery", async () => {
   const r = runtime("./pipelines.tsx", { snapshot: snapshot() }); r.render();
   r.press("Scripts or actions"); r.render(); r.press("Prepare reviewed actions"); await r.settle();
   assert.equal(r.calls.at(-1).input.deliveryKind, "actions");
-  r.press("Human plan and review approvals"); r.render();
+  r.press("Advanced"); r.render(); r.press("Prepare reviewed actions"); await r.settle();
+  assert.equal(r.calls.at(-1).input.workflow, "advanced");
+  r.press("Human approvals"); r.render();
   assert.ok(!r.nodes.some(node => node.props?.label === "Scripts or actions"));
   r.press("Run this task to draft PR"); await r.settle();
   assert.equal(r.calls.at(-1).input.workflowMode, "manual"); assert.equal(r.calls.at(-1).input.deliveryKind, "code");

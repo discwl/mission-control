@@ -69,6 +69,48 @@ test("automatic planner submits evidence and a different-model critic reviews th
   assert.equal(f.created.length, 2);
 });
 
+for (const crossProvider of [false, true]) test(`Standard ${crossProvider ? "hands the plan to a new provider" : "switches planner model and effort in place"}, reuses the builder and starts a fresh reviewer`, async t => {
+  const f = await fixture(t, true);
+  Object.assign(f.facts, { workflowMode: "automatic", workflow: "standard", deliveryKind: "code", planRevision: null });
+  f.row.workflow = "standard";
+  f.facts.agentPolicy.reviewCount = 1;
+  f.facts.agentPolicy.profiles = f.facts.agentPolicy.profiles.filter(p => ["planner", "builder", "reviewer"].includes(p.role));
+  const selected = f.facts.agentPolicy.profiles.find(p => p.role === "builder"); selected.thinkingOptionId = "max";
+  if (crossProvider) selected.provider = "other";
+  const { agentId } = await launchManagedStage(f.input(), f.facts, f.paseo, {});
+  assert.equal(f.created[0].labels["mission-control.role"], "planner");
+  let plannerModel = "model-0", plannerEffort = "high", builderId;
+  const switches = [];
+  t.mock.method(require("./fleet-transport.ts"), "withFleetConnection", async fn => fn({}, {
+    setAgentModel: async (id, model) => { assert.equal(id, agentId); switches.push(model); plannerModel = model; },
+    setAgentThinkingOption: async (id, level) => { assert.equal(id, agentId); switches.push(level); plannerEffort = level; },
+  }));
+  f.paseo.agents = { ref: id => ({ id, refresh: async () => ({ agent: { id, workspaceId: "work", status: "idle", currentModeId: "safe", features: [{ id: "fast", value: false }], effectiveThinkingOptionId: id === agentId ? plannerEffort : "max", provider: id === agentId ? "provider" : "other", model: id === agentId ? plannerModel : "model-1" } }), send: async (...args) => f.sent.push(args) }) };
+  const folder = join(f.root, "runs", f.runId), directory = join(folder, "stage-assignments");
+  const records = async () => Promise.all((await readdir(directory)).map(async name => JSON.parse(await readFile(join(directory, name), "utf8"))));
+  const [planner] = await records();
+  assert.equal(planner.workflow, "standard"); assert.equal(planner.reviewCount, 1);
+  const { saveAutomaticPlan } = await import("./plan-snapshots.mjs"); const { planBrief } = await import("./plan-test-data.mjs");
+  await writeFile(join(f.root, "plan.md"), "# Plan\nImplement and validate the scoped change.\n");
+  const identity = { taskId: f.row.taskId, runId: f.runId, serverId: "remote", workspaceId: "work" };
+  const plan = await saveAutomaticPlan({ taskFolder: f.root, runFolder: folder, task: f.facts.entry.task, identity, assignment: planner, brief: planBrief });
+  f.facts.planRevision = plan.revision; f.facts.submittedPlan = plan;
+  for (const stage of ["execute", "validate"]) {
+    assert.equal(nextPipelineStep(f.row, f.facts).stage, stage);
+    const continuation = await launchManagedStage(f.input(), f.facts, f.paseo, {});
+    builderId ??= continuation.agentId;
+    assert.equal(continuation.agentId, builderId); assert.equal(builderId === agentId, !crossProvider); assert.equal(f.created.length, crossProvider ? 2 : 1);
+    const assignment = (await records()).find(a => a.stage === stage);
+    if (stage === "execute" && !crossProvider) assert.deepEqual(assignment.plannerTransition, { plannerAssignmentId: planner.id, fromModel: "model-0", toModel: "model-1" });
+    f.facts.checkpoints.push({ id: assignment.id, runId: f.runId, stage, agentId: builderId, evidence: [], summary: `Saved ${stage} evidence`, execution: assignment.execution, planRevision: plan.revision, candidate: f.facts.candidate, verdict: "pass", scope: "approved", createdAt: assignment.createdAt });
+  }
+  assert.equal(nextPipelineStep(f.row, f.facts).stage, "review");
+  const reviewer = await launchManagedStage(f.input(), f.facts, f.paseo, {});
+  assert.notEqual(reviewer.agentId, agentId); assert.notEqual(reviewer.agentId, builderId);
+  assert.deepEqual(switches, crossProvider ? [] : ["model-1", "max"]);
+  assert.equal(f.created.length, crossProvider ? 3 : 2); assert.equal(f.created.at(-1).labels["mission-control.role"], "reviewer");
+});
+
 test("a new automatic code task never plans in a shared checkout: without its own worktree the launch refuses before any worker exists", async t => {
   const f = await fixture(t, true);
   Object.assign(f.facts, { workflowMode: "automatic", deliveryKind: "code", planRevision: null, candidate: null });

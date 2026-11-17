@@ -154,6 +154,37 @@ test("an imported task whose file became invalid still counts as imported, so im
   assert.equal((await readdir(join(f.vault, "Tasks"))).filter(name => name.startsWith("task_")).length, 2);
 });
 
+test("a Discovery group stays one task across single imports, replays and later reports", async t => {
+  const f = await fixture(t);
+  const { reportId } = f.runReport("--tracker", "fixture");
+  const [a, b, other] = (await f.store.status({ serverId }, f.paseo)).missing;
+  const input = { serverId, workspaceId: "wks_test", reportId, items: [a, b].map(ticketIdentity) };
+  await assert.rejects(f.store.importItems({ ...input, items: [a, other].map(ticketIdentity) }, f.paseo, "Group"), /same tracker project/);
+  const result = await f.store.importItems(input, f.paseo, "Improve ticket tracking");
+  assert.equal(result.created.length, 1);
+  const id = result.created[0].taskId;
+  const [saved] = await f.tasks.taskSources(serverId);
+  assert.equal(saved.task.ticket.key, a.key);
+  assert.deepEqual(saved.task.groupedTickets.map(({ key, url, acceptanceCriteria }) => [key, url, acceptanceCriteria]), [a, b].map(i => [i.key, i.url, i.acceptanceCriteria || i.description]));
+  const replay = await f.store.importItems({ ...input, items: [...input.items].reverse() }, f.paseo, "Improve ticket tracking");
+  assert.deepEqual(replay.created, []);
+  assert.deepEqual(replay.skipped.map(row => row.taskIds), [[id], [id]]);
+  assert.deepEqual(await f.store.importTicket({ serverId, workspaceId: "wks_test", item: b }, f.paseo), { created: null, existing: [id] });
+  await assert.rejects(f.store.importItems({ ...input, workspaceId: "wks_bare" }, f.paseo, "Other workspace"), /another task or group/);
+  assert.equal(f.runReport("--tracker", "fixture").review.imported, 2);
+  assert.equal((await f.tasks.taskSources(serverId)).length, 1);
+});
+
+test("a group overlapping an existing single task creates no partial task", async t => {
+  const f = await fixture(t);
+  const { reportId } = f.runReport("--tracker", "fixture");
+  const [a, b] = (await f.store.status({ serverId }, f.paseo)).missing;
+  const input = { serverId, workspaceId: "wks_test", reportId };
+  await f.store.importItems({ ...input, items: [ticketIdentity(a)] }, f.paseo);
+  await assert.rejects(f.store.importItems({ ...input, items: [a, b].map(ticketIdentity) }, f.paseo, "Group"), /already belong/);
+  assert.equal((await f.tasks.taskSources(serverId)).length, 1);
+});
+
 test("import refuses items outside the report, other hosts and unknown workspaces", async t => {
   const f = await fixture(t);
   const { reportId } = f.runReport("--tracker", "fixture");

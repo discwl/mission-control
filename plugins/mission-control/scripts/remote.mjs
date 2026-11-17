@@ -36,11 +36,11 @@ Commands:
   create --workspace <id> --title <title> --criteria-file <file>
                                              A task without a ticket.
   status --workspace <id> --task <id>        What Start would do, the agent, the latest run and its stage.
-  start --workspace <id> --task <id> [--kind <code|actions|report>] [--orchestrator-agent <local chat id>]
+  start --workspace <id> --task <id> [--kind <code|actions|report>] [--workflow <standard|advanced>] [--orchestrator-agent <local chat id>]
                                              A task without a run starts in the automatic workflow, owned by the
-                                             originating orchestrator chat (PASEO_AGENT_ID or --orchestrator-agent): plan,
-                                             independent plan check, build, validation, two reviews, then your final
-                                             authorization. The host's phase profiles choose models; a code task gets its
+                                             originating orchestrator chat (PASEO_AGENT_ID or --orchestrator-agent). Standard
+                                             uses the planner model, the builder model and one fresh reviewer. Advanced adds a plan check,
+                                             separate validation and a second review. You authorize publication. The host's phase profiles choose models; a code task gets its
                                              own worktree. Tasks queue per host. An existing manual run resumes or recovers
                                              as the Start button does (--provider/--thinking/--mode/--branch/--branch-type/
                                              --no-isolate apply only with --local, for this machine's own tasks).
@@ -69,7 +69,7 @@ const options = {
   to: { type: "string" }, date: { type: "string" }, clear: { type: "boolean" }, name: { type: "string" },
   report: { type: "string" }, item: { type: "string", multiple: true },
   "orchestrator-agent": { type: "string" },
-  kind: { type: "string" }, adopt: { type: "boolean" }, action: { type: "string" },
+  kind: { type: "string" }, workflow: { type: "string" }, adopt: { type: "boolean" }, action: { type: "string" },
 };
 
 const need = (values, ...names) => {
@@ -120,7 +120,7 @@ export function launchInput(binding, status, values) {
 }
 
 const runnerCommands = { status: "pipeline", pause: "pause pipeline", resume: "resume pipeline", stop: "stop pipeline", automate: "automate pipeline" };
-const runnerSummary = row => ({ id: row.id, workflow: row.workflowMode, deliverable: row.deliveryKind, stage: row.stage, mode: row.mode, message: row.message });
+const runnerSummary = row => ({ id: row.id, workflow: row.workflowMode, ...(row.workflowMode === "automatic" ? { reviewWorkflow: row.workflow ?? "advanced" } : {}), deliverable: row.deliveryKind, stage: row.stage, mode: row.mode, message: row.message });
 
 /**
  * Runs one command. `rpc(method, input)` calls the host's Mission Control; `localRpc` calls this machine's, which owns
@@ -172,6 +172,10 @@ export async function runCommand(command, values, rpc, localRpc) {
     case "start": {
       const target = binding();
       const status = await rpc("tasks.launch.status", target);
+      if (values.workflow !== undefined) {
+        if (!["standard", "advanced"].includes(values.workflow)) throw new Error("--workflow must be standard or advanced.");
+        if (values.adopt || values.local || status.action !== "start") throw new Error("--workflow applies only to a new automatic task.");
+      }
       if (values.adopt) {
         // One guarded step, so no manual stage can start in between; open plan/review requests are retired, never approved.
         const chat = originChat();
@@ -190,7 +194,7 @@ export async function runCommand(command, values, rpc, localRpc) {
         if (!["code", "actions", "report"].includes(kind)) throw new Error("--kind must be code, actions or report.");
         const chat = originChat();
         const fleet = await coordinatorFleet(chat);
-        const row = await localRpc("pipeline.start", { coordinatorId: chat, remoteServerId: serverId, taskId: values.task, workflowMode: "automatic", deliveryKind: kind, expectedRevision: fleet.state.revision });
+        const row = await localRpc("pipeline.start", { coordinatorId: chat, remoteServerId: serverId, taskId: values.task, workflowMode: "automatic", workflow: values.workflow ?? "standard", deliveryKind: kind, expectedRevision: fleet.state.revision });
         return { started: true, runner: runnerSummary(row), next: `Follow it with: runner --workspace ${values.workspace} --task ${values.task}` };
       }
       if (!["start", "resume", "recover"].includes(status.action)) return { started: false, ...describeLaunch(status), ...((values.provider || values.thinking || values.mode) ? { configurationApplied: false, configurationMessage: "No launch occurred. Requested model, reasoning and permission settings were not applied to the existing worker." } : {}) };

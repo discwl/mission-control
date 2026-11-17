@@ -58,6 +58,7 @@ export function TaskLauncher({ binding, colors, navigation }: Props) {
   const manualStart = status?.action === "start" && fleet.isSuccess && !automaticStart;
   const [deliveryKind, setDeliveryKind] = useState<"code" | "actions" | "report">("code");
   const [coordinatorId, setCoordinatorId] = useState<string | null>(null);
+  const [workflow, setWorkflow] = useState<"standard" | "advanced">("standard");
   const coordinator = coordinators.find(item => item.agentId === coordinatorId) ?? coordinators[0];
   // A task agent that another agent started says whose it is.
   const online = useHosts().some(candidate => candidate.serverId === binding.serverId && candidate.status === "online");
@@ -95,7 +96,7 @@ export function TaskLauncher({ binding, colors, navigation }: Props) {
     if (!coordinator || !fleet.data || pending.current) return;
     pending.current = true; setBusy(true); setError(null);
     try {
-      const input = { coordinatorId: coordinator.agentId, remoteServerId: binding.serverId, taskId: binding.taskId, workflowMode: "automatic" as const, deliveryKind, expectedRevision: fleet.data.fleet.state.revision };
+      const input = { coordinatorId: coordinator.agentId, remoteServerId: binding.serverId, taskId: binding.taskId, workflowMode: "automatic" as const, workflow, deliveryKind, expectedRevision: fleet.data.fleet.state.revision };
       // The runner belongs to the copy whose orchestrator manages this host: this one, or the coordinating computer's.
       if (fleet.data.copy) await fleet.data.copy.rpc(startPipeline.name, input);
       else await startRunner(input);
@@ -166,11 +167,12 @@ export function TaskLauncher({ binding, colors, navigation }: Props) {
       {automaticStart ? <View style={{ gap: 9 }}>
         <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}>Automatic workflow</Text>
         {runner ? <>
-          <Text style={{ color: colors.foreground, fontSize: 13 }}>Started · {runner.stage} · {runner.mode}</Text>
+          <Text style={{ color: colors.foreground, fontSize: 13 }}>{runner.workflowMode === "automatic" ? runner.workflow === "standard" ? "Standard" : "Advanced" : "Human approvals"} · {runner.stage} · {runner.mode}</Text>
           <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>{runner.message}</Text>
           <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>Follow it in Orchestrator → Run a task. Questions and the final publishing decision come to you there and in Needs you.</Text>
         </> : <>
-          <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>Plan → independent plan check by a second model → build → validation → two independent reviews → your final authorization. A code task first gets its own worktree and branch. The host's phase profiles choose the models; tasks wait in the host's queue in the order they start.</Text>
+          <ChoiceRow label="Workflow" choices={[{ id: "standard", label: "Standard" }, { id: "advanced", label: "Advanced" }]} selected={workflow} onSelect={id => setWorkflow(id === "advanced" ? "advanced" : "standard")} disabled={busy} colors={colors} button={button} hint={workflow === "standard" ? "The planner writes the plan. The builder implements it and runs checks. One fresh reviewer checks the result." : "A second model checks the plan. A validator runs checks and two independent reviewers examine the result."} />
+          <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>Code tasks get their own branch and worktree. You authorize publication or execution of prepared actions.</Text>
           {coordinators.length > 1 ? <ChoiceRow label="Orchestrator" choices={coordinators.map(item => ({ id: item.agentId, label: item.name.length > 40 ? `${item.name.slice(0, 40)}…` : item.name }))} selected={coordinator?.agentId ?? null} onSelect={setCoordinatorId} disabled={busy} colors={colors} button={button} /> : null}
           <ChoiceRow label="Deliverable" choices={[{ id: "code", label: "Code and draft PR" }, { id: "actions", label: "Scripts or actions" }, { id: "report", label: "Read-only report" }]} selected={deliveryKind} onSelect={id => setDeliveryKind(id === "actions" ? "actions" : id === "report" ? "report" : "code")} disabled={busy} colors={colors} button={button} />
           <Pressable accessibilityRole="button" disabled={busy || query.isError || !coordinator || fleet.data?.fleet.state.paused} onPress={() => void startAutomatic()} style={{ ...button, alignSelf: "flex-start", backgroundColor: colors.accent, opacity: busy || query.isError || !coordinator || fleet.data?.fleet.state.paused ? 0.5 : 1 }}>

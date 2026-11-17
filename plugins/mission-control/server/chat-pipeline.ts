@@ -1,9 +1,9 @@
 import { readFleet } from "../shared/fleet";
 import { startPipeline, controlPipeline } from "../shared/pipeline";
 import { invokeChatHost } from "./chat-transport";
-export const PIPELINE_CHAT_HELP = "run to draft PR <task ID> — plan, independent plan check, build, validation and two model reviews; exact publication approval remains. Tasks queue per host; each host runs one stage at a time\npipeline <task ID> — show its stage and next action\npause pipeline <task ID> | resume pipeline <task ID> | stop pipeline <task ID> — control future stages\nautomate pipeline <task ID> — switch a task's manual run to automatic checks; its open plan/review requests are retired without approval";
+export const PIPELINE_CHAT_HELP = "run to draft PR <task ID> [standard|advanced] — start a task with Standard by default. Standard uses one fresh reviewer. Advanced adds an independent plan check, separate validation and a second reviewer. You authorize publication. Tasks queue per host; each host runs one stage at a time\npipeline <task ID> — show its stage and next action\npause pipeline <task ID> | resume pipeline <task ID> | stop pipeline <task ID> — control future stages\nautomate pipeline <task ID> — switch a task's manual run to automatic checks; its open plan/review requests are retired without approval";
 export async function managePipelineChat(command: string, context: { local: string; target: string; agentId: string; label: string; orchestrator: boolean }): Promise<{ text: string } | null> {
-  const start = /^run to draft pr\s+(task_[a-f0-9-]+)$/i.exec(command);
+  const start = /^run to draft pr\s+(task_[a-f0-9-]+)(?:\s+(standard|advanced))?$/i.exec(command);
   const control = /^(?:(pause|resume|stop|automate)\s+)?pipeline\s+(task_[a-f0-9-]+)$/i.exec(command);
   if (!start && !control) return null;
   if (!context.orchestrator) return { text: "Use this in the coordinator chat whose workspace has the host folder binding." };
@@ -15,9 +15,11 @@ export async function managePipelineChat(command: string, context: { local: stri
     if (existing) return { text: `${context.label} · ${existing.title}\nAlready enrolled · ${existing.stage} · ${existing.mode}\n${existing.message}\nUse pipeline ${taskId} to inspect it.` };
     const task = fleet.hosts.find(host => host.serverId === context.target)?.snapshot?.tasks.find(item => item.task.taskId === taskId);
     const workflowMode = task?.run ? task.run.workflowMode ?? "manual" : "automatic";
+    if (task?.run && start[2]) return { text: `This task already has a run. Use run to draft PR ${taskId} to continue its saved workflow.` };
+    const requestedWorkflow = start[2]?.toLowerCase() === "advanced" ? "advanced" : "standard";
     const deliveryKind = task?.run?.deliveryKind ?? "code";
-    const result = startPipeline.output.parse(await invokeChatHost(context.local, startPipeline.name, { coordinatorId: context.agentId, remoteServerId: context.target, taskId, workflowMode, deliveryKind, expectedRevision: fleet.state.revision }));
-    const workflow = result.workflowMode === "automatic" ? "Plan → Independent plan check → Build → Validation → Two independent model reviews → Final authorization." : `This existing run keeps its human plan and code-review approvals. To switch it to automatic checks, pause pipeline ${taskId}, then automate pipeline ${taskId}.`;
+    const result = startPipeline.output.parse(await invokeChatHost(context.local, startPipeline.name, { coordinatorId: context.agentId, remoteServerId: context.target, taskId, workflowMode, ...(!task?.run ? { workflow: requestedWorkflow } : {}), deliveryKind, expectedRevision: fleet.state.revision }));
+    const workflow = result.workflowMode === "automatic" ? (result.workflow === "standard" ? "Standard: plan, build and checks, one fresh review, then final authorization." : "Advanced: plan, independent plan check, build, validation, two independent reviews, then final authorization.") : `This existing run keeps its human plan and code-review approvals. To switch it to automatic checks, pause pipeline ${taskId}, then automate pipeline ${taskId}.`;
     return { text: `${context.label} · ${result.title}\nTask runner enrolled.\n${workflow}\nThe task, run and existing work are preserved. No plan, code or external action was approved.\nStatus: pipeline ${taskId}` };
   }
   const requested = control?.[1]?.toLowerCase();
@@ -33,5 +35,5 @@ export async function managePipelineChat(command: string, context: { local: stri
   if (!row) return { text: "No runner for that task in this chat. Use run to draft PR <task ID> to enroll it, or automate pipeline <task ID> to switch its manual run." };
   const action = (requested === "automate" ? "adopt-automatic" : requested) as "pause" | "resume" | "stop" | "adopt-automatic" | undefined;
   const result = action ? controlPipeline.output.parse(await invokeChatHost(context.local, controlPipeline.name, { id: row.id, action, expectedRevision: fleet.state.revision })) : row;
-  return { text: `${context.label} · ${result.title}\n${result.stage} · ${result.mode}\n${result.message}\nRepairs: implementation ${result.repairs}/2; plan ${result.planRepairs}/2\n${result.pending ? "This dispatch is unconfirmed. Inspect the coordinator and acknowledge its delivery in Orchestrator → Run to draft PR before resuming." : result.workflowMode === "automatic" ? "Questions remain in Mission Control. Planning and both model reviews use saved evidence; publishing or external actions still require exact authorization." : "Questions and plan/code approvals remain in Mission Control. Publishing still requires the exact draft PR proposal."}` };
+  return { text: `${context.label} · ${result.title}\n${result.stage} · ${result.mode}\n${result.message}\nRepairs: implementation ${result.repairs}/2; plan ${result.planRepairs}/2\n${result.pending ? "This dispatch is unconfirmed. Inspect the coordinator and acknowledge its delivery in Orchestrator → Run to draft PR before resuming." : result.workflowMode === "automatic" ? "Questions remain in Mission Control. Planning and review use saved evidence. Publishing or external actions require exact authorization." : "Questions and plan/code approvals remain in Mission Control. Publishing still requires the exact draft PR proposal."}` };
 }

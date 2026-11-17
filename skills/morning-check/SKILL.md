@@ -38,7 +38,7 @@ Write the items to a temporary UTF-8 JSON file (use the Write tool: shell heredo
 
 ## 3. Write the report
 
-Optionally write a short notes file: which tools and queries you used, how many items each returned, and any errors. Then run one of:
+Keep one input row per tracker item so each source retains its own identity. Compare related items and existing Mission Control tasks. When several tickets can ship as one change on one branch in the same repository, include a grouping suggestion in the notes and the chat summary. Give the proposed task outcome, ticket links, shared acceptance check and any existing task that covers the work. Distinguish a suggested group from a confirmed assignment. Keep independently releasable items separate. Include relevant tool errors in the notes. Then run one of:
 
 ```powershell
 $kit = '<kitRoot>'

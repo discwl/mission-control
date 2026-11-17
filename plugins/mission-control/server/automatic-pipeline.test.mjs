@@ -11,6 +11,34 @@ const { taskWorkflow, withPipelineProjection } = require("../shared/fleet-model.
 const { pipelineSchema } = require("../shared/pipeline-state.ts");
 const { resolveRolePolicy } = require("../shared/agent-policy.ts");
 
+test("Standard runs one builder from plan through validation, then one fresh reviewer on the same candidate", () => {
+  for (const kind of ["code", "actions", "report"]) {
+    const { row, facts } = automaticFixture(kind);
+    row.workflow = facts.workflow = "standard";
+    const [, implementation, validation, review] = facts.checkpoints;
+    facts.agentPolicy.profiles = facts.agentPolicy.profiles.filter(p => ["planner", "builder", "reviewer"].includes(p.role));
+    facts.agentPolicy.reviewCount = 1;
+    assert.notEqual(facts.submittedPlan.plannerAgentId, implementation.agentId);
+    validation.execution = { ...implementation.execution, assignmentId: validation.execution.assignmentId };
+    validation.agentId = implementation.agentId;
+    facts.checkpoints = [];
+    assert.equal(nextPipelineStep(row, facts).stage, "execute", kind);
+    facts.checkpoints.push(implementation);
+    assert.equal(nextPipelineStep(row, facts).stage, "validate");
+    facts.checkpoints.push(validation);
+    assert.equal(nextPipelineStep(row, facts).stage, "review");
+    facts.checkpoints.push(review);
+    assert.equal(automaticDeliveryReadiness(facts).ready, true, kind);
+    assert.equal(nextPipelineStep(row, facts).mode, "ready");
+    assert.equal(nextPipelineStep({ ...row, workflow: "advanced" }, facts).mode, "blocked");
+    validation.agentId = "another-builder";
+    assert.equal(automaticDeliveryReadiness(facts).ready, false, "another agent's validation cannot be borrowed");
+    validation.agentId = implementation.agentId;
+    review.agentId = implementation.agentId;
+    assert.equal(automaticDeliveryReadiness(facts).ready, false, "the builder cannot review its own work");
+  }
+});
+
 function finalFeedback(facts, at) {
   return { schemaVersion: 1, id: "ba155a66-4f85-46e4-80af-668e300f242d", taskId: facts.entry.task.taskId, runId: facts.entry.run.runId, serverId: facts.entry.run.serverId, workspaceId: facts.entry.run.workspaceId, candidate: { ...facts.candidate }, planRevision: facts.planRevision, policyRevision: facts.agentPolicy.revision, scopeRevision: facts.submittedPlan.scopeRevision, note: "Handle the empty response without adding a new abstraction.", requestedAt: at(10), requestedBy: "human" };
 }
@@ -233,6 +261,8 @@ test("automatic roles derive from existing mappings while legacy policy revision
   const { facts } = automaticFixture(); const profiles = facts.agentPolicy.profiles.filter(p => p.role !== "planReviewer").map(({ role, ...profile }) => profile);
   const mapping = { planner: "planner", builder: "builder", validator: "validator", reviewer: "reviewer", reviewer2: "reviewer2", reviewCount: 1 };
   const saved = [{ projectId: null, taskId: null, mapping, updatedAt: "unchanged" }];
+  const standard = resolveRolePolicy(saved, profiles.filter(p => ["planner", "builder", "reviewer"].includes(p.id)), null, null, "standard");
+  assert.deepEqual(standard.profiles.map(p => p.role), ["planner", "builder", "reviewer"]); assert.equal(standard.reviewCount, 1);
   const manual = resolveRolePolicy(saved, profiles, null, null);
   assert.equal(manual.revision, JSON.stringify(["unchanged", ["planner", "builder", "validator", "reviewer"].map(role => ({ ...profiles.find(p => p.id === mapping[role]), role }))]));
   const automatic = resolveRolePolicy(saved, profiles, null, null, "automatic"); assert.equal(automatic.reviewCount, 2); assert.equal(automatic.profiles.find(p => p.role === "planReviewer").id, "reviewer");

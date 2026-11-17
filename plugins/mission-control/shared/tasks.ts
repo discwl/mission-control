@@ -57,6 +57,8 @@ export const taskSchema = z.object({
   }).optional(),
   // Set when the task was imported from Jira or Azure DevOps. Tasks without it stay valid.
   ticket: ticketSchema.optional(),
+  // A grouped import retains a source and acceptance check for every member, including the primary ticket.
+  groupedTickets: z.array(ticketSchema.extend({ title: z.string().max(300), acceptanceCriteria: z.string().max(20_000) })).min(2).max(200).optional(),
   // Set when Mission Control opened the task's draft pull request (Open PR in Attention).
   pullRequest: pullRequestRecordSchema.optional(),
   // When the task is due; tasks without one have no deadline.

@@ -6,7 +6,7 @@ const sameCandidate = (item: PipelineInspection["checkpoints"][number], facts: P
 const assignedExecution = (item: PipelineInspection["checkpoints"][number], facts: PipelineInspection, role?: string) => Boolean(item.execution && item.execution.policyRevision === facts.agentPolicy?.revision && (!role || item.execution.role === role) && facts.agentPolicy?.profiles.some(profile => profile.role === item.execution!.role && profile.id === item.execution!.profileId && profile.provider === item.execution!.provider && profile.model === item.execution!.model));
 export function verifiedReviews(facts: PipelineInspection, since = "") {
   const policy = facts.agentPolicy;
-  const implementers = new Set([facts.entry.run?.agentId, ...facts.checkpoints.filter(item => ["execute", "fix"].includes(item.stage)).map(item => item.agentId)]);
+  const implementers = new Set([facts.entry.run?.agentId, facts.submittedPlan?.plannerAgentId, ...facts.checkpoints.filter(item => ["execute", "fix"].includes(item.stage)).map(item => item.agentId)]);
   return facts.checkpoints.filter(item => item.stage === "review" && item.createdAt >= since && afterDeliveryFeedback(item, facts) && sameCandidate(item, facts) && !implementers.has(item.agentId) && (!policy || Boolean((currentKind(facts) === "code" ? item.ocr : item.artifactReview?.revision === facts.candidate?.tree) && assignedExecution(item, facts) && ["reviewer", "reviewer2"].includes(item.execution!.role)))).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 export function missingReviewRole(facts: PipelineInspection, since = "") {
@@ -65,6 +65,9 @@ function manualPipelineStep(pipeline: Pipeline, facts: PipelineInspection): Pipe
 }
 export function automaticPolicyProblem(facts: PipelineInspection): string | null {
   const policy = facts.agentPolicy;
+  if (facts.workflow === "standard") {
+    return policy?.reviewCount === 1 && ["planner", "builder", "reviewer"].every(role => policy.profiles.some(profile => profile.role === role)) ? null : "Standard workflow requires a planner, a builder and a reviewer profile.";
+  }
   const planner = policy?.profiles.find(item => item.role === "planner");
   const critic = policy?.profiles.find(item => item.role === "planReviewer");
   const reviewers = ["reviewer", "reviewer2"].map(role => policy?.profiles.find(item => item.role === role));
@@ -92,7 +95,7 @@ function afterDeliveryFeedback(item: PipelineInspection["checkpoints"][number], 
 function automaticEvidence(facts: PipelineInspection) {
   const current = facts.checkpoints.filter(item => sameCandidate(item, facts) && afterDeliveryFeedback(item, facts)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const implementation = current.find(item => ["execute", "fix"].includes(item.stage) && item.verdict === "pass" && item.scope === "approved" && assignedExecution(item, facts, "builder"));
-  const validation = implementation && current.find(item => item.stage === "validate" && item.verdict === "pass" && item.scope === "approved" && item.createdAt >= implementation.createdAt && assignedExecution(item, facts, "validator"));
+  const validation = implementation && current.find(item => item.stage === "validate" && item.verdict === "pass" && item.scope === "approved" && item.createdAt >= implementation.createdAt && (facts.workflow === "standard" ? item.agentId === implementation.agentId && assignedExecution(item, facts, "builder") : assignedExecution(item, facts, "validator")));
   const reviews = validation ? verifiedReviews(facts, validation.createdAt) : [];
   return { current, implementation, validation, reviews };
 }
@@ -108,11 +111,13 @@ export function automaticDeliveryReadiness(facts: PipelineInspection): { ready: 
   const policyProblem = automaticPolicyProblem(facts); if (policyProblem) return refuse(policyProblem);
   const feedbackProblem = deliveryFeedbackProblem(facts); if (feedbackProblem) return refuse(feedbackProblem);
   const plan = verifiedPlanReview(facts);
-  if (!plan || plan.verdict !== "pass" || plan.scope !== "approved" || plan.planReview!.findings.length) return refuse("The current plan needs a passing independent check.");
+  if (facts.workflow === "standard" && (!facts.submittedPlan || facts.submittedPlan.revision !== facts.planRevision || facts.submittedPlan.policyRevision !== facts.agentPolicy?.revision)) return refuse("The current scope requires a submitted plan from its planner.");
+  if (facts.workflow !== "standard" && (!plan || plan.verdict !== "pass" || plan.scope !== "approved" || plan.planReview!.findings.length)) return refuse("The current plan needs a passing independent check.");
   if (currentKind(facts) !== "code" && (!facts.actionBundle || facts.actionBundle.revision !== facts.candidate.tree || facts.actionBundle.kind !== currentKind(facts))) return refuse("The current action bundle must match the reviewed candidate.");
   const { validation, reviews } = automaticEvidence(facts);
-  if (!validation) return refuse(facts.deliveryFeedback ? "Your final change request requires a fresh implementation and validation before both reviews run again." : "Current implementation and passing validation evidence are required.");
-  if (missingReviewRole(facts, validation.createdAt) || reviews.some(item => item.verdict !== "pass" || item.scope !== "approved" || (item.ocr?.findings ?? item.artifactReview?.findings ?? []).length > 0)) return refuse("Two independent reviews must pass for the exact validated candidate.");
+  if (!validation) return refuse(facts.deliveryFeedback ? "Your final change request requires a fresh implementation and validation before the required review runs again." : "Current implementation and passing validation evidence are required.");
+  if (missingReviewRole(facts, validation.createdAt) || reviews.some(item => item.verdict !== "pass" || item.scope !== "approved" || (item.ocr?.findings ?? item.artifactReview?.findings ?? []).length > 0)) return refuse(facts.workflow === "standard" ? "One independent review must pass for the exact validated candidate." : "Two independent reviews must pass for the exact validated candidate.");
+  if (facts.workflow === "standard") return { ready: true, reason: "The builder's validation and one independent review passed. Ready for the final delivery step." };
   return { ready: true, reason: currentKind(facts) === "code" ? "Validated implementation and both independent reviews passed. Ready for exact draft PR authorization." : currentKind(facts) === "report" ? "The report passed validation and both independent reviews. Ready to save the final report receipt." : "Prepared actions and both independent reviews passed. Ready for your final authorization." };
 }
 function automaticPipelineStep(pipeline: Pipeline, facts: PipelineInspection): PipelineStep {
@@ -123,7 +128,7 @@ function automaticPipelineStep(pipeline: Pipeline, facts: PipelineInspection): P
   const decisions = entry.decisions.filter(item => !run || item.decision.runId === run.runId).sort((a, b) => b.decision.requestedAt.localeCompare(a.decision.requestedAt));
   if (decisions.some(item => item.decision.status === "open")) return step(pipeline.stage, "waiting", "An existing human decision is still open. Resolve it explicitly; automatic workflow cannot approve it for you.");
   if (["plan", "review"].some(kind => ["blocked", "changes_requested"].includes(decisions.find(item => item.decision.kind === kind)?.decision.status ?? ""))) return step(pipeline.stage, "blocked", "Resolve the existing human stop or change request before continuing automatically.");
-  if (currentKind(facts) === "report" && facts.reportCompletion?.revision === facts.candidate?.tree && facts.reportCompletion?.planRevision === facts.planRevision && facts.reportCompletion?.policyRevision === facts.agentPolicy?.revision && automaticDeliveryReadiness(facts).ready) return step("delivery", "done", "The validated report and both reviews are preserved in its verified completion receipt.");
+  if (currentKind(facts) === "report" && facts.reportCompletion?.revision === facts.candidate?.tree && facts.reportCompletion?.planRevision === facts.planRevision && facts.reportCompletion?.policyRevision === facts.agentPolicy?.revision && automaticDeliveryReadiness(facts).ready) return step("delivery", "done", "The validation and review evidence is preserved in its verified completion receipt.");
   const feedbackProblem = deliveryFeedbackProblem(facts); if (feedbackProblem) return step(pipeline.stage, "blocked", feedbackProblem);
   if (facts.actionAuthorization) {
     if (facts.actionAuthorization.phase === "completed") return step("delivery", "done", "Actual authorized action execution is recorded with verified completion evidence.");
@@ -134,11 +139,11 @@ function automaticPipelineStep(pipeline: Pipeline, facts: PipelineInspection): P
   const policyProblem = automaticPolicyProblem(facts); if (policyProblem) return step(pipeline.stage, "blocked", policyProblem);
   if (pipeline.stage === "delivery" && pipeline.mode === "ready" && !(facts.deliveryFeedback && !automaticEvidence(facts).implementation) && !automaticDeliveryReadiness(facts).ready) return step("delivery", "blocked", "The prepared delivery changed. Inspect its current evidence before resuming; no publication or action is retried automatically.");
   if (facts.workflowMode === "automatic" && currentKind(facts) !== pipeline.deliveryKind) return step(pipeline.stage, "blocked", "The recorded delivery kind differs from this runner. Inspect the workflow transition.");
-  if (!run || !facts.planRevision || !facts.submittedPlan) return step("plan", "running", "Save a readable versioned plan for an independent model check.", true);
+  if (!run || !facts.planRevision || !facts.submittedPlan) return step("plan", "running", facts.workflow === "standard" ? "Save the planner's scoped task plan." : "Save a readable versioned plan for an independent model check.", true);
   const checked = verifiedPlanReview(facts);
-  if (!checked) return step("plan-review", "running", "Independently check the saved plan for concrete gaps and unnecessary scope. Passing a sufficient plan is expected.", true);
-  if (checked.scope === "needs_plan" || checked.verdict === "blocked" || checked.verdict === "pass" && checked.planReview!.findings.length) return step("plan-review", "blocked", checked.summary);
-  if (checked.verdict === "repair") {
+  if (!checked && facts.workflow !== "standard") return step("plan-review", "running", "Independently check the saved plan for concrete gaps and unnecessary scope. Passing a sufficient plan is expected.", true);
+  if (checked && (checked.scope === "needs_plan" || checked.verdict === "blocked" || checked.verdict === "pass" && checked.planReview!.findings.length)) return step("plan-review", "blocked", checked.summary);
+  if (checked?.verdict === "repair") {
     if (pipeline.planRepairIds.includes(checked.id)) return step("plan", "running", "Waiting for the planner's revised plan submission.");
     if (pipeline.planRepairs >= 2) return step("plan-review", "blocked", "Two plan repair attempts are used. Resolve the remaining concrete issue before continuing.");
     return { ...step("plan", "running", "Repair the concrete plan findings within the task's existing scope, then submit a new version for independent checking.", true), planFailureId: checked.id };
@@ -154,26 +159,27 @@ function automaticPipelineStep(pipeline: Pipeline, facts: PipelineInspection): P
   if (failed) {
     if (pipeline.repairIds.includes(failed.id)) return step("fix", "running", "Waiting for the dispatched repair and its new evidence.");
     if (pipeline.repairs >= 2) return step("fix", "blocked", "Two repair attempts are used. Resolve the remaining concrete issue before continuing.");
-    return step("fix", "running", "Repair substantiated findings, validate the changed candidate and obtain both independent reviews again.", true, failed.id);
+    return step("fix", "running", "Repair substantiated findings, validate the changed candidate and repeat the required independent review.", true, failed.id);
   }
   if (!implementation && facts.deliveryFeedback) {
     const request = facts.deliveryFeedback;
-    if (pipeline.repairIds.includes(request.id)) return step("fix", "running", "Your requested fixes were dispatched. Waiting for new implementation evidence, validation and both reviews.");
+    if (pipeline.repairIds.includes(request.id)) return step("fix", "running", "Your requested fixes were dispatched. Waiting for new implementation, validation and review evidence.");
     if (pipeline.repairs >= 2) return step("fix", "blocked", "Your change request is saved and publication is blocked. Both repair attempts are used; resolve the remaining issue explicitly before continuing.");
-    return step("fix", "running", "Address the user's final change request within the checked plan. Save fresh implementation evidence, then repeat validation and both independent reviews.", true, request.id);
+    return step("fix", "running", "Address the user's final change request within the checked plan. Save fresh implementation evidence, then repeat validation and the required independent review.", true, request.id);
   }
-  if (!implementation) return step("execute", "running", currentKind(facts) === "code" ? "Implement the independently checked plan and record actual evidence." : "Prepare the reviewed plan's exact scripts or actions. External mutations wait for final authorization.", true);
+  if (!implementation) return step("execute", "running", currentKind(facts) === "code" ? "Implement the submitted plan and record actual evidence." : "Prepare the reviewed plan's exact scripts or actions. External mutations wait for final authorization.", true);
   if (!validation) return step("validate", "running", "Run the relevant permitted checks or safe dry runs and save actual results for this candidate.", true);
-  if (missingReviewRole(facts, validation.createdAt)) return step("review", "running", "Run both independent reviews with different models on the exact validated candidate.", true);
+  if (missingReviewRole(facts, validation.createdAt)) return step("review", "running", facts.workflow === "standard" ? "Run one fresh independent review on the exact validated candidate." : "Run both independent reviews with different models on the exact validated candidate.", true);
   const readiness = automaticDeliveryReadiness(facts);
   return step("delivery", readiness.ready ? "ready" : "blocked", readiness.reason);
 }
 /** Automatic code work always happens in the task's own worktree: draft PRs are published from its branch. */
 export const sharedCheckoutMessage = "This task's run works in the shared project checkout, so it can't publish a draft PR from there. Finish it on the old flow, or close it and start a new automatic task.";
 export function nextPipelineStep(pipeline: Pipeline, facts: PipelineInspection): PipelineStep {
+  if (pipeline.workflowMode === "automatic" && (pipeline.workflow === "standard") !== (facts.workflow === "standard")) return step(pipeline.stage, "blocked", "The host and runner disagree on this task's workflow. Check the host version and the saved run.");
   return pipeline.workflowMode === "automatic" ? automaticPipelineStep(pipeline, facts) : manualPipelineStep(pipeline, facts);
 }
 export function pipelineFingerprint(facts: PipelineInspection, next: PipelineStep): string {
-  return JSON.stringify([facts.entry.task.taskId, facts.entry.run?.runId, facts.planRevision, facts.candidate, next.stage, next.failureId ?? null, next.planFailureId ?? null, facts.workflowMode ?? "manual", facts.deliveryKind ?? "code", facts.submittedPlan,
+  return JSON.stringify([...(facts.workflow === "standard" ? ["standard"] : []), facts.entry.task.taskId, facts.entry.run?.runId, facts.planRevision, facts.candidate, next.stage, next.failureId ?? null, next.planFailureId ?? null, facts.workflowMode ?? "manual", facts.deliveryKind ?? "code", facts.submittedPlan,
     facts.agentPolicy?.revision, facts.deliveryFeedback ?? null, facts.checkpoints.map(item => item.id), facts.entry.decisions.map(item => [item.decision.decisionId, item.decision.status, item.revision]), facts.entry.questions.map(item => [item.question.questionId, item.question.status])]);
 }

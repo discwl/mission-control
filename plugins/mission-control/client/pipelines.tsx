@@ -22,6 +22,7 @@ export function PipelineBoard({ snapshot, coordinators, colors, busy, act, openA
   const [coordinatorId, setCoordinatorId] = useState(() => ordered[0]?.agentId ?? ""); const [search, setSearch] = useState("");
   const [workflowMode, setWorkflowMode] = useState<"manual" | "automatic">("automatic");
   const [deliveryKind, setDeliveryKind] = useState<"code" | "actions" | "report">("code");
+  const [workflow, setWorkflow] = useState<"standard" | "advanced">("standard");
   const coordinator = ordered.find(item => item.agentId === coordinatorId) ?? ordered[0];
   const host = snapshot.hosts.find(item => item.serverId === coordinator?.remoteServerId)?.snapshot;
   const owned = coordinator && host ? new Set(managedTasks(snapshot.serverId, coordinator, host).map(item => item.task.taskId)) : new Set<string>();
@@ -35,8 +36,8 @@ export function PipelineBoard({ snapshot, coordinators, colors, busy, act, openA
   return <View style={{ gap: 16 }}>
     <View style={card}>
       <Text accessibilityRole="header" style={{ color: colors.foreground, fontWeight: "700", fontSize: 20 }}>Run a task</Text>
-      <Text style={{ color: colors.foreground }}>A second model checks the plan, then two independent models review the validated result. You answer unresolved questions and authorize the final publication or prepared actions.</Text>
-      <Text style={{ color: colors.foregroundMuted }}>Plan → Plan check → Build → Validate → Review A → Review B → Ready for you</Text>
+      <Text style={{ color: colors.foreground }}>You answer open questions and authorize publication or execution of prepared actions.</Text>
+
       <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Runs while this computer and Paseo are awake, including weekends. Tasks wait in their host's queue in the order you start them: each host runs one stage at a time, and hosts run in parallel. Checks every 30 seconds; a task's stages are dispatched at least 5 minutes apart, up to 24 per day. Up to two plan repairs and two implementation repairs. A code task gets its own worktree and branch before planning. Existing tasks keep their plans, history, workspaces and PRs.</Text>
     </View>
     {!rows.length ? <Text style={{ color: colors.foregroundMuted }}>No task runners yet. Start with one task below.</Text> : null}
@@ -52,7 +53,7 @@ export function PipelineBoard({ snapshot, coordinators, colors, busy, act, openA
         <Text style={{ color: ["blocked", "waiting"].includes(row.mode) ? colors.statusWarning : colors.accent }}>{phaseLabel} · {row.mode === "blocked" ? "Needs attention" : row.mode === "ready" ? "Ready for you" : row.mode}</Text>
         <Text style={{ color: colors.foreground }}>{row.message}</Text>
         {remote?.error ? <Text style={{ color: colors.statusWarning }}>Host is unavailable. Future stages wait for its connection.</Text> : null}
-        <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{row.workflowMode === "automatic" ? `Automatic · ${row.planRepairs ?? 0}/2 plan repairs · ` : "Manual approvals · "}{row.repairs}/2 implementation repairs · Updated {formatDateTime(row.updatedAt)}</Text>
+        <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{row.workflowMode === "automatic" ? (row.workflow === "standard" ? "Standard · " : `Advanced · ${row.planRepairs ?? 0}/2 plan repairs · `) : "Manual approvals · "}{row.repairs}/2 implementation repairs · Updated {formatDateTime(row.updatedAt)}</Text>
         {row.workflowMode === "automatic" && row.deliveryKind !== "code" && row.stage === "delivery" ? <RemoteActionDeliveryCard serverId={row.remoteServerId} taskId={row.taskId} actorId="human-ui" colors={colors} /> : null}
         <View style={buttonRow}>
           {row.lastWorker ? <CompactLink label="Open current stage agent" colors={colors} onPress={() => openAgent(row.remoteServerId, row.lastWorker!.agentId)} /> : null}
@@ -77,10 +78,11 @@ export function PipelineBoard({ snapshot, coordinators, colors, busy, act, openA
       <Text style={{ color: colors.foreground, fontSize: 17, fontWeight: "600" }}>Start one task</Text>
       <View style={buttonRow}>{ordered.map(item => <CompactLink key={item.agentId} accessibilityLabel={`${item.hostLabel} · ${item.name}`} label={`${item.hostLabel} · ${item.name.length > 45 ? `${item.name.slice(0, 45)}…` : item.name}`} colors={colors} selected={coordinator?.agentId === item.agentId} onPress={() => setCoordinatorId(item.agentId)} />)}</View>
       <Text style={{ color: colors.foreground, fontWeight: "600" }}>Workflow</Text>
-      <View style={buttonRow}>{(["automatic", "manual"] as const).map(value => <CompactLink key={value} label={value === "automatic" ? "Automatic plan check + two reviews" : "Human plan and review approvals"} colors={colors} selected={workflowMode === value} disabled={busy} onPress={() => { setWorkflowMode(value); if (value === "manual") setDeliveryKind("code"); }} />)}</View>
+      <View style={buttonRow}>{(["standard", "advanced", "manual"] as const).map(value => <CompactLink key={value} label={value === "standard" ? "Standard" : value === "advanced" ? "Advanced" : "Human approvals"} colors={colors} selected={value === (workflowMode === "manual" ? "manual" : workflow)} disabled={busy} onPress={() => { setWorkflowMode(value === "manual" ? "manual" : "automatic"); if (value === "manual") setDeliveryKind("code"); else setWorkflow(value); }} />)}</View>
+      <Text style={{ color: colors.foregroundMuted }}>{workflowMode === "manual" ? "You approve the plan and review." : workflow === "standard" ? "The planner writes the plan. The builder implements it and runs checks. One fresh reviewer checks the result." : "A second model checks the plan. A validator runs checks and two independent reviewers examine the result."}</Text>
       <Text style={{ color: colors.foreground, fontWeight: "600" }}>Deliverable</Text>
       <View style={buttonRow}>{(workflowMode === "automatic" ? ["code", "actions", "report"] as const : ["code"] as const).map(value => <CompactLink key={value} label={value === "code" ? "Code and draft PR" : value === "actions" ? "Scripts or actions" : "Read-only report"} colors={colors} selected={deliveryKind === value} disabled={busy} onPress={() => setDeliveryKind(value)} />)}</View>
-      <PipelineIntakeForm snapshot={snapshot} coordinator={coordinator} colors={colors} busy={busy} act={act} workflowMode={workflowMode} deliveryKind={deliveryKind} />
+      <PipelineIntakeForm snapshot={snapshot} coordinator={coordinator} colors={colors} busy={busy} act={act} workflowMode={workflowMode} workflow={workflow} deliveryKind={deliveryKind} />
       {coordinator ? <AgentPolicyEditor key={coordinator.remoteServerId} serverId={coordinator.remoteServerId} label={coordinator.hostLabel} colors={colors} /> : null}
       <TextInput accessibilityLabel="Find a task for Run to draft PR" value={search} onChangeText={setSearch} placeholder="Find an existing task" placeholderTextColor={colors.foregroundMuted} style={{ padding: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 6, color: colors.foreground }} />
       <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>The choices above apply to tasks without a run. An older task's manual run can switch in one step: “Switch to automatic” retires its open plan or review requests without approving them, then reruns the plan check, validation and both reviews. A run that works in the shared project checkout can't switch; finish it on the old flow or start a new task. Continuing with human approvals needs this coordinator to manage the task (“adopt &lt;task ID&gt;” in its chat).</Text>
@@ -95,7 +97,7 @@ export function PipelineBoard({ snapshot, coordinators, colors, busy, act, openA
           <Text style={{ color: colors.foreground }}>{item.task.title}</Text>
           <View style={buttonRow}>
             {manualRun ? <CompactLink label="Switch to automatic (retires open approvals)" colors={colors} disabled={blocked} onPress={() => act(item.task.taskId, () => start({ coordinatorId: coordinator!.agentId, remoteServerId: coordinator!.remoteServerId, taskId: item.task.taskId, workflowMode: "automatic", deliveryKind: item.run!.deliveryKind ?? "code", expectedRevision: snapshot.state.revision, adoptExisting: true }))} /> : null}
-            <CompactLink label={item.run ? manualRun ? "Continue with human approvals" : "Continue existing automatic workflow" : deliveryKind === "code" ? "Run this task to draft PR" : deliveryKind === "actions" ? "Prepare reviewed actions" : "Prepare reviewed report"} colors={colors} disabled={blocked || (manualRun || (!item.run && workflowMode === "manual")) && manualBusy || Boolean(item.run) && !owned.has(item.task.taskId)} onPress={() => act(item.task.taskId, () => start({ coordinatorId: coordinator!.agentId, remoteServerId: coordinator!.remoteServerId, taskId: item.task.taskId, workflowMode: item.run ? item.run.workflowMode ?? "manual" : workflowMode, deliveryKind: item.run ? item.run.deliveryKind ?? "code" : deliveryKind, expectedRevision: snapshot.state.revision }))} />
+            <CompactLink label={item.run ? manualRun ? "Continue with human approvals" : "Continue existing automatic workflow" : deliveryKind === "code" ? "Run this task to draft PR" : deliveryKind === "actions" ? "Prepare reviewed actions" : "Prepare reviewed report"} colors={colors} disabled={blocked || (manualRun || (!item.run && workflowMode === "manual")) && manualBusy || Boolean(item.run) && !owned.has(item.task.taskId)} onPress={() => act(item.task.taskId, () => start({ coordinatorId: coordinator!.agentId, remoteServerId: coordinator!.remoteServerId, taskId: item.task.taskId, workflowMode: item.run ? item.run.workflowMode ?? "manual" : workflowMode, ...(!item.run && workflowMode === "automatic" ? { workflow } : {}), deliveryKind: item.run ? item.run.deliveryKind ?? "code" : deliveryKind, expectedRevision: snapshot.state.revision }))} />
           </View>
           {running ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>This task already has a runner above.</Text> : null}
         </View>;

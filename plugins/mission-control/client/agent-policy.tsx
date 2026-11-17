@@ -52,7 +52,7 @@ export function AgentPolicyEditor({ serverId, projectId = null, taskId = null, l
       <Text style={{ color: colors.foregroundMuted }}>Scope: {taskId ? "This task" : projectId ? "This project" : "Host default"}. Task settings override project settings, which override the host default.</Text>
       {!data && !error ? <Text style={{ color: colors.foregroundMuted }}>Loading profiles…</Text> : null}
       {data ? <>
-        <Text style={{ color: colors.foregroundMuted }}>Automatic workflows require a plan checker using a different model from the planner, and two independent review models. One-review settings apply only to manual workflows.</Text>
+        <Text style={{ color: colors.foregroundMuted }}>Standard uses the planner model for the plan and a different builder model for implementation, fixes and checks. One fresh reviewer checks the result. Advanced requires a different model for the plan check and two independent review models.</Text>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>{([1, 2] as const).map(count => <CompactLink key={count} label={count === 1 ? "One reviewer (manual only)" : "Two different models"} colors={colors} selected={draft.reviewCount === count} disabled={busy} onPress={() => setDraft(value => ({ ...value, reviewCount: count }))} />)}</View>
         {workflowRoles.map(role => {
           const profile = data.profiles.find(item => item.id === draft[role]);

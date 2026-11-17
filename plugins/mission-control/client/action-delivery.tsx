@@ -43,7 +43,7 @@ export function ActionDeliveryCard({ serverId, taskId, actorId, colors, renderFe
   return <View style={{ gap: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 8, padding: 12 }}>
     <CompactLink label="Review final actions or report" colors={colors} expanded={expanded} onPress={() => setExpanded(value => !value)} />
     {expanded ? <>
-      {!preview && !message ? <Text style={{ color: colors.foregroundMuted }}>Checking the saved version and both reviews…</Text> : null}
+      {!preview && !message ? <Text style={{ color: colors.foregroundMuted }}>Checking the saved version and review evidence…</Text> : null}
       {preview ? <Text style={{ color: preview.ready || preview.completed ? colors.foreground : colors.statusWarning }}>{preview.reason}</Text> : null}
       {bundle && preview?.plan ? <>
         <Text style={{ color: colors.foreground, fontWeight: "600" }}>{bundle.summary}</Text>

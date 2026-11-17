@@ -454,10 +454,13 @@
 </ol>
 <p>Tasks can also come from Jira or Azure DevOps through the <a href="#morning-check">Morning check</a>; those carry their ticket and an <span class="ui">Open ticket</span> link.</p>
 
+<p>Use one task and branch for tickets that address the same change and can ship together. In the orchestrator chat, enter <code>/mc discovery group KEY,KEY into &lt;workspace&gt; | &lt;shared task title&gt;</code> with the ticket keys from discovery. Keep each ticket's source and success checks with the shared task. Tickets with separate release dates or independent fixes can stay separate.</p>
+
 <h3 id="due-dates">Due dates</h3>
 <p>Open a task and enter a <strong>Due date</strong> as YYYY-MM-DD, then press <span class="ui">Save</span>; <span class="ui">Clear</span> removes it. Cards show <em>Due tomorrow</em>, <em>Due Oct 22</em> or <em>Overdue</em>, highlighted when the date is three days away or closer, and tasks with the earliest due date come first in each list and column. An agent started or resumed on the task is told the date and asked to say early if it can't finish in time. Due dates aren't imported from the tracker yet, and sprint forecasting is still planned.</p>
 
 <h3 id="start-task">Starting an agent</h3>
+<p>For a new automatic task, open <strong>Agent workflow</strong> on the task or <strong>Orchestrator → Run a task</strong>. <strong>Standard</strong> is selected by default. The planner writes the plan. The builder implements it and runs checks, then a fresh reviewer examines the result. If the builder can use the planner’s chat, Mission Control switches to the builder model there. Otherwise the builder receives the saved plan in a new chat. Select <strong>Advanced</strong> for a separate plan check, a validator and two independent reviewers. In the orchestrator chat, <code>/mc run to draft PR &lt;task ID&gt; advanced</code> makes the same selection. Existing runs follow their saved workflow. Reviewers examine the current revision and you authorize publication.</p>
 <p>Open a task in the Tasks tab to manage its criteria, status and <strong>Agent workflow</strong> launcher. The compact <span class="ui">Task details</span> / <span class="ui">View full details</span> actions open its activity, decisions and artifacts; that reading view is separate from launching an agent.</p>
 <figure class="narrow">
   <img src="screenshots/task-details.png" alt="Task details showing the workspace path and acceptance criteria">
@@ -468,7 +471,7 @@
   <figcaption>The launcher: its own worktree, the branch it will create, and the agent's provider, model, effort and permissions.</figcaption>
 </figure>
 <ol>
-  <li>Keep <span class="ui">Work in its own worktree</span> ticked (the default for Git projects). The task gets its own branch and folder, and Review then shows only its work. The <strong>Branch</strong> line shows the exact name first; it follows your <a href="#branch-names">branch name</a> templates.</li>
+  <li>For a manual start, keep <span class="ui">Work in its own worktree</span> ticked (the default for Git projects). The task gets its own branch and folder, and Review then shows only its work. The <strong>Branch</strong> line shows the exact name first; it follows your <a href="#branch-names">branch name</a> templates.</li>
   <li>Choose the <strong>provider</strong> (claude, codex, copilot or opencode) and <strong>model</strong>.</li>
   <li>Choose the <strong>effort</strong> (how hard the model thinks) and the <strong>permissions</strong>. <em>Bypass</em> and <em>Full Access</em> skip permission prompts and are shown in amber as a reminder.</li>
   <li>Press <span class="ui">Start task</span>. The first message gives the agent the task, the project's profile, and the Development Flow skills it follows.</li>

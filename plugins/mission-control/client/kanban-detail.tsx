@@ -164,7 +164,7 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
             openWorkspace={navigation ? () => navigation.openWorkspace({ serverId: row.serverId, workspaceId: workspace.id }) : undefined}
             brief={(live, stale, selectFile) => automatic ? <View style={{ gap: 10, paddingVertical: 12 }}>
               <Text style={{ color: colors.foreground, fontWeight: "600", fontSize: 17 }}>Checks and independent reviews</Text>
-              <Text style={{ color: colors.foregroundMuted, lineHeight: 22 }}>Validation runs before two reviews by different models. Any code change requires fresh validation and both reviews.</Text>
+              <Text style={{ color: colors.foregroundMuted, lineHeight: 22 }}>Standard requires validation and one fresh review. Advanced requires two reviews by different models. A code change requires fresh checks and review.</Text>
               <PipelineReviewEvidence serverId={row.serverId} workspaceId={workspace.id} taskId={row.entry.task.taskId} colors={colors} openAgent={openAgent} />
               <CompactLink label="Read saved results and reports" colors={colors} onPress={() => evidence()} />
               {tab === "Delivery" && finalReady && row.entry.run ? <FinalChangeRequest key={`${row.serverId}:${row.entry.task.taskId}:${row.entry.run.runId}:${live?.fingerprint}`} serverId={row.serverId} workspaceId={workspace.id} taskId={row.entry.task.taskId} runId={row.entry.run.runId} stale={stale || !live} reviewFingerprint={live?.fingerprint} colors={colors} onSaved={() => { setRequestedCycle(cycle); refresh(); }} /> : null}
@@ -172,7 +172,7 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
             </View> : <ReviewReport entry={row.entry} serverId={row.serverId} workspace={{ ...workspace, hostLabel: row.hostLabel }} snapshot={live} stale={stale || row.staleReview} colors={colors} selectFile={selectFile} openAgent={id => openAgent(row.serverId, id)} onEvidence={() => evidence()} />}
             readiness={(live, stale) => automatic ? null : <ReviewReadiness entry={row.entry} serverId={row.serverId} workspaceId={workspace.id} online snapshot={live} stale={stale} complete={row.host.complete} colors={colors} onEvidence={evidence} onDecision={() => setTab("Decision")} />} />
         </View> : <Text style={{ color: colors.statusWarning }}>The task's owning workspace is unavailable. Open its worker conversation to recover the workspace before reviewing code.</Text> : null}
-        {fixesRequested ? <Text style={{ color: colors.foreground }}>Your fixes are requested. Publishing stays blocked until the work has fresh validation and two passing reviews.</Text> : null}
+        {fixesRequested ? <Text style={{ color: colors.foreground }}>Your fixes are requested. Publishing stays blocked until the revised work passes validation and independent review.</Text> : null}
         {tab === "Delivery" && !nonCode && finalReady && !row.staleReview && !fixesRequested && workspace ? <View style={{ gap: 10, paddingTop: 16, borderTopWidth: 1, borderTopColor: colors.border }}>
           <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 18, fontWeight: "600" }}>Publish only when you are ready</Text>
           <Text style={{ color: colors.foregroundMuted, lineHeight: 22 }}>If you need fixes, use Request fixes above and wait for updated checks and reviews. Opening the publication preview does not publish anything.</Text>

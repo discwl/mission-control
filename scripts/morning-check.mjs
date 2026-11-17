@@ -54,9 +54,9 @@ function ticketIdentity(ticket) {
 function compareTrackerItems(items, tasks) {
   const taskIds = new Map();
   for (const task of tasks) {
-    if (!task.ticket || !systems.has(task.ticket.system) || typeof task.ticket.key !== "string") continue;
-    const identity = ticketIdentity(task.ticket);
-    taskIds.set(identity, [...taskIds.get(identity) ?? [], task.taskId]);
+    const tickets = [task.ticket, ...(Array.isArray(task.groupedTickets) ? task.groupedTickets : [])];
+    const identities = new Set(tickets.filter(ticket => ticket && systems.has(ticket.system) && typeof ticket.key === "string").map(ticketIdentity));
+    for (const identity of identities) taskIds.set(identity, [...taskIds.get(identity) ?? [], task.taskId]);
   }
   const seen = new Set();
   const result = { missing: [], imported: [] };

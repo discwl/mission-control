@@ -146,7 +146,11 @@ export async function readPlanSnapshot({ taskFolder, runFolder, decision }) {
 
 const automaticName = /^([a-f0-9-]{36})\.([a-f0-9]{64})\.json$/;
 export function planScopeRevision(task, identity) {
-  return hash(JSON.stringify([identity.taskId, identity.runId, identity.serverId, identity.workspaceId, task.hostId, task.projectId, task.title, task.acceptanceCriteria]));
+  const scope = [identity.taskId, identity.runId, identity.serverId, identity.workspaceId, task.hostId, task.projectId, task.title, task.acceptanceCriteria];
+  for (const ticket of task.groupedTickets ?? []) {
+    scope.push([ticket.system, ticket.key, ticket.url, ticket.title, ticket.acceptanceCriteria]);
+  }
+  return hash(JSON.stringify(scope));
 }
 
 /** Machine submissions are separate evidence: they never create a human decision or approval. */
@@ -171,7 +175,7 @@ export async function readAutomaticPlan({ taskFolder, runFolder, task: record, i
       || Date.parse(saved.createdAt) < Date.parse(assignment.createdAt)) throw new Error("Automatic plan provenance is invalid.");
     const brief = normalizePlanBrief(saved.brief);
     if (!brief) throw new Error("Automatic plans require a readable brief.");
-    history.push({ ...saved, brief, revision: match[2], documentRevision: hash(saved.markdown), path: `automatic-plans/${name}` });
+    history.push({ ...saved, workflow: assignment.workflow ?? "advanced", brief, revision: match[2], documentRevision: hash(saved.markdown), path: `automatic-plans/${name}` });
   }
   history.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.submissionId.localeCompare(a.submissionId));
   const saved = history[0];
@@ -184,6 +188,7 @@ export async function readAutomaticPlan({ taskFolder, runFolder, task: record, i
 export async function verifyAutomaticPlanAcceptance(input) {
   const plan = await readAutomaticPlan(input);
   if (!plan || !plan.currentMatch || !plan.scopeMatch || !plan.policyMatch) throw new Error("Submit the current scoped plan before implementation.");
+  if (plan.workflow === "standard") return plan;
   const { readPipelineCheckpoints } = await import("./pipeline-records.mjs");
   const checkpoints = await readPipelineCheckpoints(input.runFolder, input.identity);
   const assignments = await readStageAssignments(input.runFolder, input.identity);
@@ -218,7 +223,7 @@ export async function saveAutomaticPlan({ taskFolder, runFolder, task: record, i
   if (!inside(run, directory)) throw new Error("Automatic plans escape the run.");
   const name = `${saved.submissionId}.${revision}.json`;
   await writeFile(join(directory, name), raw, { flag: "wx" });
-  return { ...saved, revision, documentRevision: current.documentRevision, path: `automatic-plans/${name}`, currentMatch: true, scopeMatch: true, policyMatch: true };
+  return { ...saved, workflow: actual.workflow ?? "advanced", revision, documentRevision: current.documentRevision, path: `automatic-plans/${name}`, currentMatch: true, scopeMatch: true, policyMatch: true };
 }
 
 export async function verifyPlanApproval(input, expectedPlanRevision) {

@@ -37,7 +37,7 @@ export function FinalChangeRequest({ serverId, workspaceId, taskId, runId, stale
     sending.current = true; setBusy(true); setMessage("");
     try {
       await save(request.current);
-      setSaved(true); setMessage("Your requested fixes are saved. The final action is blocked. The task will return to the builder, then run validation and both reviews again. If its repair limit has been reached, it will ask for your attention."); onSaved();
+      setSaved(true); setMessage("Your requested fixes are saved. The final action is blocked. The task will return to the builder, then repeat validation and independent review. If its repair limit has been reached, it will ask for your attention."); onSaved();
     } catch (error) {
       setMessage(`The request could not be confirmed. Refresh the task to check its status, or retry this same request safely. ${String(error instanceof Error ? error.message : error)}`);
     } finally { sending.current = false; setBusy(false); }

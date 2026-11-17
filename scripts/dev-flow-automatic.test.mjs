@@ -44,9 +44,9 @@ async function fixture(t, deliveryKind = "code") {
   const started=invoke("start",["--agent","agent-planner"]); assert.equal(started.status,0,started.stderr); const runId=JSON.parse(started.stdout).run.runId, runFolder=join(folder,"runs",runId), identity={taskId,runId,serverId,workspaceId};
   const args={taskFolder:folder,runFolder,task,identity};
   async function command(command,agentId,input){const inputPath=join(root,`input-${randomUUID()}.json`);await writeFile(inputPath,JSON.stringify(input));return invoke(command,["--run",runId,"--agent",agentId,"--input",inputPath]);}
-  async function assign(role,stage,{candidate=null,planRevision=null,scopeRevision=null}={}) {
-    const profile=policy.profiles.find(item=>item.role===role);assert.ok(profile,role);const id=randomUUID(),agentId=`agent-${id}`;
-    const assignment=assignmentSchema.parse({id,...identity,agentId,stage,workflowMode:"automatic",deliveryKind,planRevision,planScopeRevision:scopeRevision,candidate,createdAt:new Date().toISOString(),reviewCount:2,manifest:stage==="review"&&deliveryKind==="code"?`ocr-${id}.json`:null,execution:{assignmentId:id,policyRevision:policy.revision,role,profileId:profile.id,profileName:profile.name,provider:profile.provider,model:profile.model}});
+  async function assign(role,stage,{candidate=null,planRevision=null,scopeRevision=null,workflow,plannerTransition,agentId:reuseAgent}={}) {
+    const profile=policy.profiles.find(item=>item.role===role);assert.ok(profile,role);const id=randomUUID(),agentId=reuseAgent ?? `agent-${id}`;
+    const assignment=assignmentSchema.parse({id,...identity,agentId,stage,workflowMode:"automatic",workflow,plannerTransition,deliveryKind,planRevision,planScopeRevision:scopeRevision,candidate,createdAt:new Date().toISOString(),reviewCount:2,manifest:stage==="review"&&deliveryKind==="code"?`ocr-${id}.json`:null,execution:{assignmentId:id,policyRevision:policy.revision,role,profileId:profile.id,profileName:profile.name,provider:profile.provider,model:profile.model}});
     await mkdir(join(runFolder,"stage-assignments"),{recursive:true});await writeFile(join(runFolder,"stage-assignments",`${id}.json`),JSON.stringify(assignment));
     if(assignment.manifest)await writeFile(join(runFolder,assignment.manifest),JSON.stringify({assignmentId:id,candidate,files:[{path:"work.js",status:"A"}],excluded:[]}));
     native.agents[agentId]={workspaceId,provider:profile.provider,model:profile.model};await writeFile(nativePath,JSON.stringify(native));return assignment;
@@ -59,6 +59,36 @@ async function fixture(t, deliveryKind = "code") {
   async function acceptedPlan(){const plan=await submit();const critic=await assign("planReviewer","plan-review",{planRevision:plan.revision,scopeRevision:plan.scopeRevision,candidate:{head:null,tree:plan.revision}});await checkpoint(critic);return plan;}
   return{root,vault,repo,folder,runFolder,identity,args,task,policy,native,nativePath,nativeLog,command,assign,submit,checkpoint,currentRun,facts,row,acceptedPlan};
 }
+
+test("Standard preserves planner provenance across a model change and records validation by the builder", async t => {
+  const f = await fixture(t);
+  const plannerProfile = f.policy.profiles.find(profile => profile.role === "planner");
+  const builderProfile = f.policy.profiles.find(profile => profile.role === "builder");
+  plannerProfile.provider = builderProfile.provider;
+  plannerProfile.model = "planning-model";
+  const planner = await f.assign("planner", "plan", { workflow: "standard" });
+  const submitted = await f.command("submit-plan", planner.agentId, { planBrief });
+  assert.equal(submitted.status, 0, submitted.stderr);
+  const { revision } = JSON.parse(submitted.stdout).plan;
+  const assignment = { workflow: "standard", agentId: planner.agentId, planRevision: revision };
+  const builder = await f.assign("builder", "execute", {
+    ...assignment,
+    plannerTransition: { plannerAssignmentId: planner.id, fromModel: planner.execution.model, toModel: builderProfile.model },
+  });
+  const built = await f.checkpoint(builder);
+  const validator = await f.assign("builder", "validate", { ...assignment, candidate: built.candidate });
+  const validated = await f.checkpoint(validator);
+  const plan = await readAutomaticPlan(f.args);
+  assert.equal(plan.plannerModel, planner.execution.model);
+  assert.notEqual(plan.plannerModel, validated.execution.model);
+  assert.equal(plan.plannerAgentId, validated.agentId);
+  assert.equal(validated.agentId, built.agentId);
+  assert.deepEqual(validated.candidate, built.candidate);
+  await writeFile(join(f.folder, "plan.md"), "# Changed scope\n");
+  const rejected = await f.command("checkpoint", builder.agentId, { stage: "execute" });
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /current scoped plan/);
+});
 
 test("action completion rejects an authorized bundle from a superseded accepted plan before writing an event", async t => {
   const f = await fixture(t, "actions");

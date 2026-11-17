@@ -18,6 +18,7 @@ function fixture() {
     if (method === "orchestrator.host.snapshot") return host;
     if (method === "morning.status") return status;
     if (method === "morning.start") return status;
+    if (method === "morning.group") return { created: [{ taskId: "shared-task", title: input.title, key: "1, 2", status: "inbox" }], skipped: [] };
     if (method === "intake.capture") return { taskId: `task_${input.requestId}`, title: input.title, action: input.action, completed: true, message: "Saved" };
     if (method === "intake.route") return { taskId: input.taskId, title: "Saved task", action: input.action, completed: true, message: "Planning requested" };
     throw new Error(`Unexpected operation: ${method}`);
@@ -26,6 +27,17 @@ function fixture() {
   new Function("require", "module", "exports", compile(readFileSync(new URL("./chat-intake.ts", import.meta.url), "utf8")))(name => name === "@getpaseo/client" ? { createPaseoApi: () => api } : name === "./chat-transport" ? { invokeChatHost: invoke, withChatHost: async (server, action) => { assert.equal(server, "remote"); return action({}); } } : require(name), module, module.exports);
   return { host, status, calls, api, locations, catalogCalls, workspaceCalls, command: (text, overrides) => module.exports.manageIntakeChat(text, { ...context, ...overrides }) };
 }
+test("group command sends one explicit grouped import to the owning host", async () => {
+  const f = fixture();
+  const reportId = "morning-2026-11-17-090000";
+  f.status.report = { schemaVersion: 1, hostId: "host", serverId: "remote", reportId, file: "daily", body: "", agentId: null, createdAt: "today", since: "yesterday",
+    tracker: { mode: "read", systems: ["azure-devops"] }, review: { missing: 2, imported: 0, handoffs: 0, openDecisions: 0, blocked: 0, idle: 0, unreadable: 0 },
+    items: ["1", "2"].map(key => ({ system: "azure-devops", key, title: `Item ${key}`, url: `https://dev.azure.com/org/project/_workitems/edit/${key}`, taskIds: [] })) };
+  const reply = await f.command("discovery group 1,2 into w1 | Fix the shared query");
+  assert.match(reply.text, /shared-task/);
+  assert.deepEqual(f.calls.filter(c => ["morning.group", "morning.import"].includes(c.method)), [{ serverId: "remote", method: "morning.group", input: { serverId: "remote", workspaceId: "w1", reportId, items: ["azure-devops:1", "azure-devops:2"], title: "Fix the shared query" } }]);
+});
+
 test("discovery asks for an exact workspace and provider instead of guessing", async () => {
   const f = fixture();
   assert.match((await f.command("discover")).text, /Choose where Discovery/);

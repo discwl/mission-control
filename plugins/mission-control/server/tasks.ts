@@ -110,6 +110,8 @@ function lenientTicket(taskId: string, file: string, markdown: string): SkippedT
     catch { fields.set(line.slice(0, at), undefined); }
   }
   const imported = /Imported from (Jira|Azure DevOps) ([^\s:][^\r\n:]*): /.exec(markdown);
+  // A malformed group may contain additional ticket IDs beyond the readable primary. Block imports until repaired.
+  if (fields.has("groupedTickets")) return { taskId, file, title: null, ticket: null };
   if (!fields.has("ticket") && !imported) return null;
   const title = typeof fields.get("title") === "string" && fields.get("title") ? fields.get("title") as string : null;
   const read = ticketIdentitySchema.safeParse(fields.get("ticket"));
@@ -191,7 +193,7 @@ export async function listTaskRecords(serverId: string, workspaceId: string): Pr
 }
 
 export async function createTaskRecord(
-  input: { serverId: string; workspaceId: string; title: string; acceptanceCriteria: string; ticket?: Ticket; requestId?: string },
+  input: { serverId: string; workspaceId: string; title: string; acceptanceCriteria: string; ticket?: Ticket; groupedTickets?: TaskRecord["groupedTickets"]; requestId?: string },
   projectId: string,
 ): Promise<TaskRecord> {
   const { directory, hostId } = await taskLocation(input.serverId);
@@ -210,6 +212,7 @@ export async function createTaskRecord(
     createdAt: now,
     updatedAt: now,
     ...(input.ticket ? { ticket: input.ticket } : {}),
+    ...(input.groupedTickets ? { groupedTickets: input.groupedTickets } : {}),
   });
   const folder = join(directory, task.taskId);
   try { await mkdir(folder); }

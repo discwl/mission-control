@@ -326,8 +326,8 @@ async function submitPlan(args) {
     await verifyNativeStageAgent(assigned);
     const plan = await saveAutomaticPlan({ taskFolder: bound.folder, runFolder: folder, task: bound.task, identity, assignment: assigned, brief: input.planBrief });
     await appendEvent(bound, folder, { ...current, workflowMode: assigned.workflowMode, deliveryKind: assigned.deliveryKind }, {
-      stage: "plan", outcome: "completed", summary: "Saved a versioned plan for independent model critique. This is not a human approval.",
-      nextAction: "The runner launches the independent plan checker; implementation waits for its passing result.", evidence: [plan.path],
+      stage: "plan", outcome: "completed", summary: "Saved a versioned plan for the automatic workflow.",
+      nextAction: assigned.workflow === "standard" ? "The runner will assign implementation to the configured builder model." : "The runner launches the independent plan checker; implementation waits for its passing result.", evidence: [plan.path],
     }, agentId);
     return { plan };
   });

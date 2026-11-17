@@ -4,6 +4,10 @@ Install this plugin on the `personal` Paseo daemon. Its full surface opens on **
 
 The roster uses Paseo's configured host connections. A host can appear in the desktop client without this plugin installed there. Online rosters refresh every 20 seconds. Each request uses Paseo's 200-item page limit and warns if more entries remain. Offline cached data is marked as last observed. **Attention** reflects Paseo's agent flag only; it is not a workflow approval or decision record.
 
+## Starting an automatic task
+
+On a managed host, the task launcher and **Orchestrator → Run a task** default to **Standard**. The configured planner writes the plan. The builder model implements it, runs validation and handles fixes. A fresh reviewer checks the result. Choose **Advanced** for an independent plan check, separate validation and two reviewers. In the orchestrator chat, `/mc run to draft PR <task ID> advanced` selects it for a new run. Both workflows require your authorization to publish. [Automatic task workflow](../../docs/automatic-workflow.md)
+
 ## Pilot task records
 
 The inspector lists linked tasks for a selected local workspace. The **Tasks** workspace panel can add and reopen a manual task with acceptance criteria. The daemon adapter writes `task.md`, `status.md`, and `notes.md` in a task folder under `C:\dev-vault\Tasks` on `personal`. The Docs tab also reads recent run and handoff evidence from that folder. `C:\dev-vault\host.json` declares that host's stable `hostId` and Paseo `serverId`; RPC calls must match it, and task creation checks that the workspace exists on the local daemon. The pilot task is linked to the `development-flow` workspace. Creating a record does not create an agent or change a workspace.

@@ -3,11 +3,11 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 
-function render(run, workflowMode = "automatic", deliveryKind = "actions") {
+function render(run, workflowMode = "automatic", deliveryKind = "actions", workflow) {
   const calls = []; let hook = 0;
   const jsx = (type, props) => ({ type, props });
   const modules = {
-    react: { useState: initial => { const index = hook++; return [index === 2 ? workflowMode : index === 3 ? deliveryKind : typeof initial === "function" ? initial() : initial, () => {}]; } },
+    react: { useState: initial => { const index = hook++; return [index === 2 ? workflowMode : index === 3 ? deliveryKind : index === 4 && workflow ? workflow : typeof initial === "function" ? initial() : initial, () => {}]; } },
     "react-native": { Text: "Text", TextInput: "TextInput", View: "View" },
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "@getpaseo/plugin/client": { useRpc: contract => async input => { calls.push({ method: contract.name, input }); return input; } },
@@ -27,11 +27,20 @@ function render(run, workflowMode = "automatic", deliveryKind = "actions") {
   return { nodes, calls };
 }
 
+test("Advanced applies to a new intake and to a new runner when explicitly selected", async () => {
+  const f = render(null, "automatic", "code", "advanced");
+  assert.equal(f.nodes.find(node => node.type === "PipelineIntakeForm").props.workflow, "advanced");
+  assert.equal(f.nodes.find(node => node.props?.label === "Advanced").props.selected, true);
+  await f.nodes.find(node => node.props?.label === "Run this task to draft PR").props.onPress();
+  assert.equal(f.calls[0].input.workflow, "advanced");
+});
+
 test("existing manual task button preserves manual code settings despite new-task automatic action selection", async () => {
   const f = render({ runId: "legacy" });
   const button = f.nodes.find(node => node.props?.label === "Continue with human approvals"); assert.ok(button); await button.props.onPress();
   assert.equal(f.calls[0].method, "pipeline.start"); assert.equal(f.calls[0].input.workflowMode, "manual"); assert.equal(f.calls[0].input.deliveryKind, "code");
   assert.equal(f.calls[0].input.expectedRevision, 4);
+  assert.equal(f.calls[0].input.workflow, undefined);
 });
 
 test("existing automatic task retains deliverable and new task uses selected automatic defaults", async () => {
@@ -39,5 +48,7 @@ test("existing automatic task retains deliverable and new task uses selected aut
   await existing.nodes.find(node => node.props?.label === "Continue existing automatic workflow").props.onPress();
   assert.equal(existing.calls[0].input.workflowMode, "automatic"); assert.equal(existing.calls[0].input.deliveryKind, "report");
   const fresh = render(null); await fresh.nodes.find(node => node.props?.label === "Prepare reviewed actions").props.onPress();
+  assert.equal(existing.calls[0].input.workflow, undefined);
+  assert.equal(fresh.calls[0].input.workflow, "standard");
   assert.equal(fresh.calls[0].input.workflowMode, "automatic"); assert.equal(fresh.calls[0].input.deliveryKind, "actions");
 });

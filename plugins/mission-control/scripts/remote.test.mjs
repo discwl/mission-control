@@ -65,7 +65,7 @@ function fakeLocal({ coordinators = [{ agentId: "chat-1", remoteServerId: "srv_x
   const localRpc = async (method, input) => {
     calls.push([method, input]);
     if (method === "orchestrator.fleet.read") return { coordinators, state: { revision }, hosts: [{ serverId: "srv_x", snapshot: { tasks } }] };
-    if (method === "pipeline.start") return { id: "row-1", workflowMode: input.workflowMode, deliveryKind: input.deliveryKind, stage: "plan", mode: "running", message: "Enrolled." };
+    if (method === "pipeline.start") return { id: "row-1", workflowMode: input.workflowMode, workflow: input.workflow, deliveryKind: input.deliveryKind, stage: "plan", mode: "running", message: "Enrolled." };
     if (method === "chat.native-command") return { text: `ran: ${input.text}` };
     throw new Error(`unexpected local ${method}`);
   };
@@ -76,7 +76,11 @@ test("start on another host's new task enrolls an automatic runner owned by the 
   const host = fakeHost({ "tasks.launch.status": status() });
   const local = fakeLocal();
   const result = await runCommand("start", { workspace: "wks_a", task: "task_1", "orchestrator-agent": "chat-1", kind: "report" }, host.rpc, local.localRpc);
-  assert.deepEqual(local.calls.at(-1), ["pipeline.start", { coordinatorId: "chat-1", remoteServerId: "srv_x", taskId: "task_1", workflowMode: "automatic", deliveryKind: "report", expectedRevision: 7 }]);
+  assert.deepEqual(local.calls.at(-1), ["pipeline.start", { coordinatorId: "chat-1", remoteServerId: "srv_x", taskId: "task_1", workflowMode: "automatic", workflow: "standard", deliveryKind: "report", expectedRevision: 7 }]);
+  assert.equal(result.runner.reviewWorkflow, "standard");
+  const advanced = await runCommand("start", { workspace: "wks_a", task: "task_1", "orchestrator-agent": "chat-1", workflow: "advanced" }, host.rpc, local.localRpc);
+  assert.equal(local.calls.at(-1)[1].workflow, "advanced");
+  assert.equal(advanced.runner.reviewWorkflow, "advanced");
   assert.equal(result.started, true); assert.equal(result.runner.workflow, "automatic"); assert.equal(result.runner.deliverable, "report");
   assert.ok(!host.calls.some(([method]) => method === "tasks.launch.dispatch"), "the manual launcher is not used for a new task on another host");
 });
