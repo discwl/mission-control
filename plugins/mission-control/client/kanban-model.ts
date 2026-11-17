@@ -63,14 +63,24 @@ export function kanbanHasRequest(row: V2Task): boolean {
 }
 
 export function kanbanWorkflow(entry: FleetTask, pending?: FleetSnapshot["state"]["pipelines"][number]) {
-  if (!entry.run) return pending?.workflowMode === "automatic" ? pending.workflow ?? "advanced" : pending ? "manual" : "unselected";
-  if (entry.pipeline?.runId === entry.run.runId) return entry.pipeline.workflow ?? (entry.runWorkflow === "manual" ? "automatic" : entry.runWorkflow) ?? "automatic";
-  return entry.runWorkflow ?? entry.run.workflowMode ?? "unknown";
+  const run = entry.run;
+  if (!run) {
+    if (pending) return pending.workflowMode === "automatic" ? pending.workflow ?? "advanced" : "manual";
+    if (entry.problem) return "unknown";
+    return ["inbox", "ready"].includes(entry.task.status) ? "unselected" : "noRun";
+  }
+  if (entry.pipeline?.runId === run.runId) return entry.pipeline.workflow ?? (entry.runWorkflow === "manual" ? "automatic" : entry.runWorkflow) ?? "automatic";
+  if (entry.runWorkflow || run.workflowMode) return entry.runWorkflow ?? run.workflowMode!;
+  // A bound human approval identifies the older manual flow. Adopted automatic runs were resolved above.
+  const manual = entry.decisions.some(({ decision }) => decision.status !== "superseded"
+    && (decision.kind === "plan" || decision.kind === "review") && decision.taskId === entry.task.taskId
+    && decision.serverId === run.serverId && decision.workspaceId === run.workspaceId && decision.runId === run.runId);
+  return manual ? "manual" : "unknown";
 }
 
 export const workflowLabels = {
   standard: "Standard workflow", advanced: "Advanced workflow", manual: "Manual workflow",
-  automatic: "Automatic workflow · level not recorded", unknown: "Workflow not recorded", unselected: "Workflow not selected",
+  automatic: "Automatic workflow", unknown: "", noRun: "", unselected: "Workflow selected at start",
 } as const;
 
 export const planningNext = {
@@ -79,6 +89,7 @@ export const planningNext = {
   automatic: "The runner continues with the checks configured for this task.",
   manual: "A saved plan request will tell you when your approval is needed.",
   unknown: "The linked conversation and saved plan show what happens next.",
+  noRun: "This task has no saved Mission Control run. Check the linked conversation for its history.",
   unselected: "The workflow is selected when the task starts.",
 } as const;
 

@@ -101,6 +101,8 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
     ? { title: "Review the exact actions and their effects", steps: ["Read what will run, where it will run, how success will be checked and how to recover if it fails.", "Authorize only the displayed actions. A report by itself does not run anything."] }
     : tab === "Plan" && !row.entry.decisions.some(entry => entry.decision.kind === "plan" && entry.decision.status === "open")
     ? { title: "Read the saved plan", steps: ["This plan is available for reference. No plan approval is waiting for you."] }
+    : tab === "Code review" && !row.entry.decisions.some(entry => entry.decision.kind === "review" && entry.decision.status === "open")
+    ? { title: "Read the saved review", steps: ["Inspect the changes and validation evidence. No code approval is waiting for you."] }
     : tab === "Decision" && item.tab === "Decision" ? next
     : tab === "Decision" && !hasRequest ? { title: "No decision is waiting", steps: ["Return to Next step for the current blocker or progress. Open the linked conversation if a new request is needed."] }
     : guidance[tab];
@@ -114,7 +116,7 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
       <Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: compact ? 19 : 23, lineHeight: compact ? 26 : 31, fontWeight: "600" }}>{row.entry.task.title}</Text>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12 }}>
         <Text style={{ color: item.needsYou || row.state === "Unconfirmed" ? colors.statusWarning : colors.foregroundMuted }}>{item.label}</Text>
-        <Text style={{ color: colors.foregroundMuted }}>{workflowLabels[workflow]}</Text>
+        {workflowLabels[workflow] ? <Text style={{ color: colors.foregroundMuted }}>{workflowLabels[workflow]}</Text> : null}
       </View>
       {deliveredQuestion && hasRequest && tab !== "Decision" ? <View style={{ gap: 4 }}>
         <Text selectable style={{ color: colors.foreground }}>{deliveredQuestion.plain?.need || deliveredQuestion.question}</Text>
@@ -134,6 +136,7 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
     </View>
     <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: compact ? 12 : 24, gap: 18 }}>
       {error ? <Text accessibilityRole="alert" style={{ color: colors.statusWarning }}>{error}</Text> : null}
+      {tab === "Evidence" && (workflow === "unknown" || workflow === "noRun" || workflow === "automatic") ? <Text style={{ color: colors.foregroundMuted }}>{workflow === "noRun" ? "This task has no saved Mission Control run." : workflow === "automatic" ? "The saved run identifies an automatic workflow but does not record its level." : row.entry.run ? "The saved run does not identify its workflow." : "Workflow details are unavailable."}</Text> : null}
       {task.pullRequest || task.deliveryHistory?.length ? <View style={{ gap: 8 }}>
         {task.pullRequest ? <CompactExternalLink colors={colors} href={task.pullRequest.url} label={`Open ${task.pullRequest.repository} PR #${task.pullRequest.number}`} /> : null}
         {task.deliveryHistory?.map(previous => <View key={previous.reopenedAt} style={{ gap: 4 }}>

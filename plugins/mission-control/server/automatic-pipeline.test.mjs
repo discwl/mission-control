@@ -169,6 +169,18 @@ test("prepared final evidence drift stops, and second-review prompt does not rev
   assert.equal(nextPipelineStep({ ...row, stage: "delivery", mode: "ready" }, facts).mode, "blocked"); assert.notEqual(pipelineFingerprint(facts, nextPipelineStep(row, facts)), before);
 });
 
+test("legacy manual runner attribution requires the exact host, task, run and reopened generation", () => {
+  const { row, facts } = automaticFixture();
+  const entry = { ...facts.entry, run: { ...facts.entry.run, workflowMode: undefined }, runWorkflow: undefined };
+  const manual = { ...row, runId: entry.run.runId, workflowMode: "manual" };
+  const project = (rows, source = entry) => withPipelineProjection({ hosts: [{ serverId: row.remoteServerId, snapshot: { tasks: [source] } }], state: { pipelines: rows } }).hosts[0].snapshot.tasks[0];
+  assert.equal(project([manual]).runWorkflow, "manual");
+  assert.equal(project([manual]).pipeline, undefined);
+  for (const field of ["remoteServerId", "taskId", "runId", "reopenedAt"]) assert.equal(project([{ ...manual, [field]: "foreign" }]).runWorkflow, undefined);
+  assert.equal(project([manual], { ...entry, runWorkflow: "standard" }).runWorkflow, "standard");
+  assert.equal(project([manual, { ...manual, workflowMode: "automatic", workflow: "standard" }]).pipeline.workflow, "standard");
+});
+
 test("fleet projection shows final authorization, action execution and verified completion from matching runner", () => {
   const { row, facts } = automaticFixture(); const snapshot = { hosts: [{ serverId: "remote", snapshot: { tasks: [facts.entry] } }], state: { pipelines: [{ ...row, stage: "delivery", mode: "ready", message: "Approve exact draft PR" }] } };
   const projected = state => withPipelineProjection(snapshot, state ?? snapshot.state).hosts[0].snapshot.tasks[0];

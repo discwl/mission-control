@@ -69,7 +69,9 @@ export function withPipelineProjection(snapshot: FleetSnapshot, state = snapshot
     const { pipeline: _prior, ...clean } = entry;
     // A just-switched task's runner has no run of its own until its first automatic stage, which continues the task's run.
     const owns = (row: typeof state.pipelines[number]) => Boolean(entry.run) && (row.runId === entry.run!.runId || row.runId === null && row.retiredWorkerIds !== undefined && !["done", "stopped"].includes(row.mode));
-    const row = [...state.pipelines].filter(row => row.workflowMode === "automatic" && row.remoteServerId === host.serverId && row.taskId === entry.task.taskId && row.reopenedAt === entry.task.deliveryHistory?.at(-1)?.reopenedAt && owns(row)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    const matching = state.pipelines.filter(row => row.remoteServerId === host.serverId && row.taskId === entry.task.taskId && row.reopenedAt === entry.task.deliveryHistory?.at(-1)?.reopenedAt && owns(row)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const row = matching.find(row => row.workflowMode === "automatic");
+    if (!row && entry.run && !entry.runWorkflow && !entry.run.workflowMode && matching.some(row => row.workflowMode === "manual" && row.runId === entry.run!.runId)) return { ...clean, runWorkflow: "manual" as const };
     return row && entry.run ? { ...clean, pipeline: { runId: entry.run.runId, workflowMode: "automatic" as const, workflow: row.workflow ?? "advanced", deliveryKind: row.deliveryKind, stage: row.stage, mode: row.mode, message: row.message,
       ...(row.retiredWorkerIds ? { retiredWorkerIds: row.retiredWorkerIds, freshSwitch: row.lastSentAt === null } : {}) } } : clean;
   }) } : null })) };

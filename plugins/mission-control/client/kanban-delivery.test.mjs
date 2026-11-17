@@ -55,9 +55,26 @@ test('workflow appears beside status and the plan and review instructions match 
     assert.match(JSON.stringify(nodes(render({ workflow }))), review);
     assert.ok(nodes(render({ tierOnHost: workflow, projection: false })).some(node => node.props.children === label));
   }
-  for (const [runMode, label] of [['manual', 'Manual workflow'], ['automatic', 'Automatic workflow · level not recorded'], [undefined, 'Workflow not recorded']]) {
+  for (const [runMode, label] of [['manual', 'Manual workflow'], ['automatic', 'Automatic workflow']]) {
     assert.ok(nodes(render({ runMode, projection: false })).some(node => node.props.children === label));
   }
+  assert.doesNotMatch(JSON.stringify(nodes(render({ projection: false }))), /Workflow not recorded|Standard workflow|Advanced workflow/);
+  assert.match(JSON.stringify(nodes(render({ projection: false, tab: 'Evidence' }))), /The saved run does not identify its workflow/);
+});
+test('historical approval evidence identifies Manual only on the exact run with no automatic ownership', () => {
+  const run = { taskId: 't', serverId: 's', workspaceId: 'w', runId: 'r' };
+  const entry = { task: { taskId: 't', status: 'in_progress' }, run, decisions: [] };
+  const decide = overrides => ({ decision: { ...run, kind: 'review', status: 'approved', ...overrides } });
+  const resolve = (decisions, overrides = {}) => model.exports.kanbanWorkflow({ ...entry, decisions, ...overrides });
+  assert.equal(resolve([decide({})]), 'manual');
+  for (const key of ['taskId', 'serverId', 'workspaceId', 'runId']) assert.equal(resolve([decide({ [key]: 'other' })]), 'unknown');
+  assert.equal(resolve([decide({ status: 'superseded' })]), 'unknown');
+  assert.equal(resolve([decide({})], { pipeline: { runId: 'r', workflow: 'advanced' } }), 'advanced');
+  assert.equal(resolve([decide({})], { run: { ...run, workflowMode: 'automatic' } }), 'automatic');
+  for (const status of ['delivered', 'in_progress', 'closed']) assert.equal(resolve([], { run: null, task: { status } }), 'noRun');
+  for (const status of ['inbox', 'ready']) assert.equal(resolve([], { run: null, task: { status } }), 'unselected');
+  assert.equal(resolve([], { run: null, task: { status: 'ready' }, problem: 'Read failed' }), 'unknown');
+  assert.equal(model.exports.kanbanWorkflow({ ...entry, run: null }, { workflowMode: 'automatic', workflow: 'standard' }), 'standard');
 });
 test('reopen targets the source workspace on its owning host and keeps earlier PRs visible offline', () => {
   const tree = nodes(render({ delivered: true }));
