@@ -61,13 +61,12 @@ test('delivered tasks and hosts whose records are out of date show no badge', ()
   assert.equal(rowBadges(stale, 'remote', now).size, 0, "last-known state isn't shown as current");
 });
 
-test("a coordinating computer counts each orchestrator workspace's tasks that need the user, and badges no other host's rows", () => {
+test('remote waiting tasks badge their own workspaces and leave the local orchestrator row clear', () => {
   const waiting = entry('task_a'); waiting.run = run('task_a'); waiting.decisions = [openReview('task_a')];
   const second = entry('task_b', 'second'); second.run = run('task_b', 'second'); second.decisions = [openReview('task_b', 'second')];
   const snapshot = coordinating([waiting, second], [coordinator('chat_one', 'orchestrator'), coordinator('chat_two', 'orchestrator')]);
-  const badges = rowBadges(snapshot, 'personal', now);
-  assert.deepEqual([...badges.keys()], ['orchestrator'], "the remote host's task rows belong to that host's own Mission Control");
-  assert.equal(badges.get('orchestrator').label, '2 need you');
-  assert.equal(rowBadges(coordinating([waiting], [coordinator('chat_one', 'orchestrator')]), 'personal', now).get('orchestrator').label, '1 needs you');
-  assert.equal(rowBadges(coordinating([], [coordinator('chat_one', 'orchestrator')]), 'personal', now).size, 0, 'nothing to show when no task needs the user');
+  assert.equal(rowBadges(snapshot, 'personal', now).size, 0);
+  const badges = rowBadges(own([waiting, second]), 'remote', now);
+  assert.equal(badges.get('owned').label, 'Needs you');
+  assert.equal(badges.get('second').label, 'Needs you');
 });

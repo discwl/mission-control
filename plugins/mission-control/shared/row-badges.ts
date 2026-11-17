@@ -35,9 +35,7 @@ function taskWorkspace(task: V2Task): string | null {
 
 /**
  * Badges for the sidebar rows of `hostId`'s own workspaces, from that host's fleet snapshot (the same model as All work
- * and Needs you). A task's workspace shows its most urgent state. On a coordinating computer, a workspace holding
- * orchestrator chats shows how many of their hosts' tasks need you. A coordinating computer's own tasks aren't in its
- * fleet snapshot, so they get no badge.
+ * and Needs you). Each workspace shows the most urgent state among tasks assigned to it on this host.
  */
 export function rowBadges(snapshot: FleetSnapshot, hostId: string, now: number): Map<string, RowBadge> {
   const tasks = buildV2Tasks(snapshot, { now });
@@ -48,19 +46,6 @@ export function rowBadges(snapshot: FleetSnapshot, hostId: string, now: number):
     if (!badge || !workspaceId) continue;
     const current = best.get(workspaceId);
     if (!current || urgency[task.state] > current.urgency) best.set(workspaceId, { urgency: urgency[task.state], badge });
-  }
-  if (snapshot.serverId === hostId) {
-    const hostsByWorkspace = new Map<string, Set<string>>();
-    for (const coordinator of snapshot.coordinators) {
-      const hosts = hostsByWorkspace.get(coordinator.workspaceId) ?? new Set<string>();
-      hosts.add(coordinator.remoteServerId); hostsByWorkspace.set(coordinator.workspaceId, hosts);
-    }
-    for (const [workspaceId, hosts] of hostsByWorkspace) {
-      const waiting = tasks.filter(task => hosts.has(task.serverId) && task.state === "Needs you").length;
-      if (!waiting || best.has(workspaceId)) continue;
-      best.set(workspaceId, { urgency: urgency["Needs you"], badge: { label: `${waiting} need${waiting === 1 ? "s" : ""} you`, tone: "warning", icon: "CircleHelp",
-        accessibilityLabel: `${waiting} task${waiting === 1 ? "" : "s"} on this orchestrator's host${hosts.size === 1 ? "" : "s"} need${waiting === 1 ? "s" : ""} you` } });
-    }
   }
   return new Map([...best].map(([workspaceId, value]) => [workspaceId, value.badge]));
 }
