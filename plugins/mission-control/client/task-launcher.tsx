@@ -10,6 +10,7 @@ import { useRef, useState } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import type { BranchType } from "../shared/branch-names";
 import { getTaskLaunch, launchTask, type TaskBinding } from "../shared/launch";
+import { isRequestTimeout } from "../shared/request-timeout";
 import { formatDateTime } from "./date-time";
 import { ProviderIcon } from "./provider-icons";
 import { findAgent, useRoster } from "./roster";
@@ -121,7 +122,7 @@ export function TaskLauncher({ binding, colors, navigation }: Props) {
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason);
       // The server replies before Paseo's RPC timeout, so a timeout here means a slow host, not a failed launch.
-      if (!message.startsWith("Plugin RPC timed out")) setError(message);
+      if (!message.startsWith("Plugin RPC timed out") && !isRequestTimeout(reason)) setError(message);
       await query.refetch();
     } finally { pending.current = false; setBusy(false); }
   }

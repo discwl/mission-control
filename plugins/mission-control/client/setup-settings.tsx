@@ -118,11 +118,13 @@ function helpHint(item: SetupItem) {
 }
 
 function ItemRow({ item, colors, installer, hostLabel, action }: { item: SetupItem; colors: Colors; installer: Installer; hostLabel: string; action?: SetupAction }) {
-  const canInstall = !!action && item.installable && (item.status === "missing" || item.status === "outdated");
+  // OCR can always be brought to its newest version: it normally updates itself, but not on every host.
+  const toNewest = action?.kind === "ocr-cli" && item.status !== "missing";
+  const canInstall = !!action && item.installable && (item.status === "missing" || item.status === "outdated" || (toNewest && item.status === "installed"));
   const link = item.help.link ? <CompactExternalLink colors={colors} label={"Open link"} href={item.help.link} accessibilityLabel={`${item.name}: how to install or update`} /> : null;
   return <>
     {canInstall
-      ? <SettingsAction label={`${item.name} · ${setupStatusLabels[item.status]}`} hint={helpHint(item)} actionLabel={item.status === "missing" ? "Install…" : "Update…"}
+      ? <SettingsAction label={`${item.name} · ${setupStatusLabels[item.status]}`} hint={helpHint(item)} actionLabel={item.status === "missing" ? "Install…" : toNewest ? "Update to newest…" : "Update…"}
           disabled={installer.busy} onPress={() => installer.request(item.id, action!)} />
       : <SettingsRow label={item.name} hint={helpHint(item)}><Status status={item.status} optional={item.optional} colors={colors}>{link}</Status></SettingsRow>}
     {item.signIn ? <SettingsRow label={`${item.name} · ${item.signIn.signedIn ? "Signed in" : "Not signed in"}`} hint={item.signIn.detail}>
@@ -169,7 +171,7 @@ function SkillGroupRows({ group, colors, installer, hostLabel }: { group: SkillG
 
 /**
  * Settings → Plugins → Mission Control → Setup: each dependency's status on the selected host. The only changes it makes,
- * each after a confirmation, are skill links, the pinned OCR CLI and OCR rule files.
+ * each after a confirmation, are skill links, the OCR CLI and OCR rule files.
  */
 export function SetupSettings({ host, theme }: PluginSurfaceProps) {
   const read = useRpc(readSetup);
@@ -177,8 +179,9 @@ export function SetupSettings({ host, theme }: PluginSurfaceProps) {
   const report = useQuery({
     queryKey: ["mission-control", "setup", host.id], queryFn: () => read({}),
     retry: false, refetchOnWindowFocus: false, staleTime: 60_000,
-    // While an install runs on this host, from this screen or another, keep checking until it finishes.
-    refetchInterval: query => followingInstall || query.state.data?.running ? 5000 : false,
+    // While an install runs on this host, from this screen or another, keep checking until it finishes. Checks that
+    // outlast the server's reply window carry on there; asking again returns their report once they finish.
+    refetchInterval: query => query.state.error ? false : followingInstall || query.state.data?.running ? 5000 : query.state.data?.checking ? 2000 : false,
   });
   const installer = useSetupAction({ data: report.data }, () => void report.refetch());
   useEffect(() => { setFollowingInstall(!!installer.following); }, [installer.following]);
@@ -187,10 +190,12 @@ export function SetupSettings({ host, theme }: PluginSurfaceProps) {
   const rules = data?.tools.find(item => item.id === "ocr-rules");
 
   return <>
-    <SettingsSection title="Setup" info={`What Mission Control needs on ${host.label}, and whether each piece is there. It changes only four things, each after you confirm: skill links, the OpenCode Review CLI at its pinned version, OCR rule files, and moving project profiles onto the stable kit path. Everything else shows its version and the command or link to use yourself. Nothing is started or signed in to.`}>
-      <SettingsAction label={report.isFetching ? "Checking this host…" : data ? `Checked ${formatDateTime(data.checkedAt)}` : "Not checked yet"}
-        hint={`Reads files and runs version commands (node, git, gh, az, gortex, Paseo) on ${host.label}, plus gh auth status, az account show and a prompt-free git credential lookup for bitbucket.org, which only report whether you're signed in.`} error={errorText(report.error)}
-        actionLabel={report.isFetching ? "Checking…" : "Check again"} disabled={report.isFetching || installer.working} onPress={() => void report.refetch()} />
+    <SettingsSection title="Setup" info={`What Mission Control needs on ${host.label}, and whether each piece is there. It changes only four things, each after you confirm: skill links, the OpenCode Review CLI at its newest version, OCR rule files, and moving project profiles onto the stable kit path. Everything else shows its version and the command or link to use yourself. Nothing is started or signed in to.`}>
+      <SettingsAction label={data?.checking ? (data.partial ? "Still checking this host · showing what's checked so far" : `Still checking this host · showing the check from ${formatDateTime(data.checkedAt)}`)
+          : report.isFetching ? "Checking this host…" : data ? `Checked ${formatDateTime(data.checkedAt)}` : "Not checked yet"}
+        hint={[`Reads files and runs version commands (node, git, gh, az, gortex, Paseo) on ${host.label}, plus gh auth status, az account show and a prompt-free git credential lookup for bitbucket.org, which only report whether you're signed in.`,
+          data?.checking && "Some commands are slow on this host, so the checks carry on there and this page updates when they finish."].filter(Boolean).join(" ")} error={errorText(report.error)}
+        actionLabel={report.isFetching || data?.checking ? "Checking…" : "Check again"} disabled={report.isFetching || !!data?.checking || installer.working} onPress={() => void report.refetch()} />
       {data?.running && !installer.following ? <SettingsRow label={`Installing on ${host.label}: ${data.running.title}`} hint={`Started ${formatDateTime(data.running.startedAt)}. Other installs wait until it finishes; this page checks every few seconds.`} /> : null}
     </SettingsSection>
     {data ? <>
@@ -207,7 +212,7 @@ export function SetupSettings({ host, theme }: PluginSurfaceProps) {
       </SettingsSection>
       <SettingsSection title="Vault">
         <SettingsRow label={data.vault.root} hint={data.vault.exists ? "Task, run and decision records." : "Create it from Mission Control's Docs page."}>
-          <Status status={data.vault.exists ? "installed" : "missing"} colors={colors} />
+          <Status status={data.vault.exists ? "installed" : data.partial && data.vault.hostJson.status === "unknown" ? "unknown" : "missing"} colors={colors} />
         </SettingsRow>
         <SettingsRow label="host.json" hint={data.vault.hostJson.detail}><Status status={data.vault.hostJson.status} colors={colors} /></SettingsRow>
       </SettingsSection>

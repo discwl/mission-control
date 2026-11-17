@@ -95,11 +95,11 @@
       "name": "OpenCode Review (OCR) CLI",
       "section": "tools",
       "detect": { "kind": "npm-package", "package": "@alibaba-group/open-code-review" },
-      "minimum": null,
-      "pinned": "1.12.9",
+      "minimum": "1.13.10",
+      "pinned": null,
       "install": "mission-control",
       "optional": false,
-      "help": { "text": "The review-changes skill runs ocr delegate preview and ocr delegate rule.", "command": "npm install -g @alibaba-group/open-code-review@1.12.9", "link": null }
+      "help": { "text": "The review-changes skill runs ocr delegate preview and ocr delegate rule. OCR updates itself to its newest version each time it runs; Mission Control needs 1.13.10 or later, the release its review skill is written for.", "command": "npm install -g @alibaba-group/open-code-review@latest", "link": null }
     },
     {
       "id": "ocr-rules",
@@ -181,7 +181,7 @@
   ],
   "ocr": {
     "package": "@alibaba-group/open-code-review",
-    "version": "1.12.9",
+    "minimum": "1.13.10",
     "home": ".opencodereview",
     "files": [
       { "path": "rule.json", "source": "docs/ocr-kit/global-rule.json" },
@@ -192,7 +192,7 @@
   },
   "skills": {
     "kitFolder": "skills",
-    "delegate": { "name": "open-code-review-delegate", "source": "docs/ocr-kit/open-code-review-delegate", "version": "OCR v1.12.9" },
+    "delegate": { "name": "open-code-review-delegate", "source": "docs/ocr-kit/open-code-review-delegate", "version": "OCR v1.13.11" },
     "providers": [
       { "id": "claude", "name": "Claude Code", "folder": ".claude/skills" },
       { "id": "codex", "name": "Codex", "folder": ".codex/skills" },

@@ -34,7 +34,8 @@ import { azSignIn, bitbucketAuth, credentialFill, findAz, findGh, ghSignIn, pars
 // Settings → Setup (task 20). Reading changes nothing and runs only the version commands in the manifest. The three
 // installs run only after the user confirms a plan whose fingerprint still matches:
 // - skill links: junctions in each provider's skills folder, recorded in MARKER; anything else with that name is left alone;
-// - the OCR CLI at its pinned version, through npm's own JavaScript entry point (no npm.cmd, no shell);
+// - the OCR CLI at its newest version, never older than what's installed or the manifest's minimum, through npm's own
+//   JavaScript entry point (no npm.cmd, no shell). OCR then keeps itself current: it updates itself each time it runs;
 // - OCR rule files, written only when missing or still exactly as Mission Control last wrote them (by SHA-256).
 // Commands run without a shell, only as .exe files on Windows, with timeouts; output is scrubbed before it is kept.
 
@@ -45,6 +46,8 @@ const AZ_TIMEOUT_MS = 45_000;
 const INSTALL_TIMEOUT_MS = 5 * 60_000;
 // Well inside Paseo's plugin request timeout; a slower install replies "still running" (see apply).
 const REPLY_WITHIN_MS = 20_000;
+// The same for the checks: slower ones finish in the background, and the screen asks again (see read).
+const READ_WITHIN_MS = 20_000;
 const LOG_LIMIT = 100;
 const LOG_SHOWN = 10;
 const OUTPUT_LIMIT = 2000;
@@ -285,6 +288,20 @@ function versionStatus(dependency: SetupDependency, version: string | null): Set
   if (dependency.pinned) return compareVersions(version, dependency.pinned) === 0 ? "installed" : "outdated";
   if (dependency.minimum && compareVersions(version, dependency.minimum) < 0) return "outdated";
   return "installed";
+}
+
+/** The lowest OCR an install may leave: the manifest's minimum, or the installed version when that is newer. */
+export function ocrFloor(ocr: Pick<SetupManifest["ocr"], "minimum">, installed: string | null): string {
+  const floor = installed && compareVersions(installed, ocr.minimum) > 0 ? installed : ocr.minimum;
+  return parseVersion(floor) ?? ocr.minimum;
+}
+
+/**
+ * npm's spec for Setup's OCR install: the newest release, never one older than the floor. npm picks the `latest` tag
+ * when it satisfies the range, otherwise the newest version that does, and fails without changing anything when none does.
+ */
+export function ocrInstallSpec(ocr: Pick<SetupManifest["ocr"], "package" | "minimum">, installed: string | null): string {
+  return `${ocr.package}@>=${ocrFloor(ocr, installed)}`;
 }
 
 async function versionCommand(host: SetupHost, dependency: SetupDependency, file: string, args: string[], env?: Record<string, string | undefined>): Promise<SetupItem> {
@@ -625,7 +642,16 @@ async function appendLog(host: SetupHost, entry: SetupLogEntry) {
 
 // ---------- the service ----------
 
-export function createSetupService(host: SetupHost, manifest: SetupManifest = setupManifest, options: { replyWithinMs: number } = { replyWithinMs: REPLY_WITHIN_MS }) {
+const STILL_CHECKING = "Still checking…";
+
+/** The promise's value when it settles within `ms`, otherwise null. A rejection within `ms` rejects. */
+async function within<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try { return await Promise.race([promise, new Promise<null>(done => { timer = setTimeout(() => done(null), ms); })]); }
+  finally { clearTimeout(timer); }
+}
+
+export function createSetupService(host: SetupHost, manifest: SetupManifest = setupManifest, options: { replyWithinMs: number; readWithinMs?: number } = { replyWithinMs: REPLY_WITHIN_MS }) {
   let running: SetupReport["running"] = null;
   let lastResult: SetupFinished | null = null;
 
@@ -647,26 +673,77 @@ export function createSetupService(host: SetupHost, manifest: SetupManifest = se
     return { vault, kit, skills, rules, nodeExe, prefix, providers };
   }
 
-  async function read(providerSnapshot?: ProviderSnapshot, forgesInUse?: ForgesInUse): Promise<SetupReport> {
-    const current = await state(providerSnapshot);
-    const ocrRules = { folder: current.rules.folder, files: current.rules.files.map(({ path, source, status, note }) => ({ path, source, status, note })) };
-    // Forge tools only for forges this host's projects use; all of them when that can't be read.
-    const inUse = forgesInUse ? await forgesInUse().catch(() => null) : null;
-    const shown = manifest.dependencies.filter(dependency => !inUse || !forgeTools[dependency.id] || inUse.forges.has(forgeTools[dependency.id].forge));
-    const hiddenTools = manifest.dependencies.filter(dependency => !shown.includes(dependency))
-      .map(dependency => ({ id: dependency.id, name: dependency.name, reason: `No project on this host uses ${forgeTools[dependency.id].label}.` }));
-    const context: DetectContext = { host, manifest, nodeExe: current.nodeExe, prefix: current.prefix, providers: current.providers, ocrRules, githubHosts: inUse?.githubHosts ?? [], azureOrganizations: inUse?.azureOrganizations ?? [] };
-    const items = await Promise.all(shown.map(dependency => detect(context, dependency)));
+  /** What one run of the checks has found so far; read() reports it when the checks outlast its reply window. */
+  type Progress = {
+    current?: Awaited<ReturnType<typeof state>>;
+    shown?: SetupDependency[];
+    hiddenTools?: SetupReport["hiddenTools"];
+    items: Map<string, SetupItem>;
+  };
+  let checking: Promise<SetupReport> | null = null;
+  let progress: Progress = { items: new Map() };
+  let lastReport: SetupReport | null = null;
+
+  /** The parts of a report that change without a check: installs and their log. */
+  async function live() {
+    return { running, lastResult, log: (await readLog(host)).slice(-LOG_SHOWN).reverse() };
+  }
+
+  /** A report from what `found` holds. A check that hasn't finished shows each item it hasn't reached as Unknown, "Still checking…". */
+  async function assemble(found: Progress, partial: boolean): Promise<SetupReport> {
+    const current = found.current;
+    const shown = found.shown ?? manifest.dependencies;
+    const items = shown.map(dependency => found.items.get(dependency.id) ?? item(dependency, "unknown", null, STILL_CHECKING));
     const bySection = (section: SetupDependency["section"]) => items.filter((_, index) => shown[index].section === section);
+    const ocrRules = current
+      ? { folder: current.rules.folder, files: current.rules.files.map(({ path, source, status, note }) => ({ path, source, status, note })) }
+      : { folder: join(host.home, manifest.ocr.home), files: [] };
     return {
       checkedAt: host.now().toISOString(), home: host.home,
       paseo: bySection("paseo")[0] ?? { id: "paseo", name: "Paseo", status: "unknown", version: null, expected: null, detail: "Not in the manifest.", help: { text: "", command: null, link: null }, optional: false, installable: false },
-      vault: current.vault, kit: current.kit,
-      skills: current.skills.map(entry => entry.group),
+      vault: current?.vault ?? { root: host.vaultRoot, exists: false, hostJson: { status: "unknown", detail: STILL_CHECKING } },
+      kit: current?.kit ?? { profiles: [], root: null, rootNote: STILL_CHECKING },
+      skills: current ? current.skills.map(entry => entry.group) : [],
       tools: bySection("tools"), ocrRules, providers: bySection("providers"),
-      log: (await readLog(host)).slice(-LOG_SHOWN).reverse(),
-      running, lastResult, hiddenTools,
+      ...await live(), hiddenTools: found.hiddenTools ?? [],
+      checking: partial, partial,
     };
+  }
+
+  /** One full run of the checks, recording each finding in `into` as it arrives. */
+  async function check(into: Progress, providerSnapshot?: ProviderSnapshot, forgesInUse?: ForgesInUse): Promise<SetupReport> {
+    // Forge tools only for forges this host's projects use; all of them when that can't be read.
+    const [current, inUse] = await Promise.all([state(providerSnapshot), forgesInUse ? forgesInUse().catch(() => null) : Promise.resolve(null)]);
+    into.current = current;
+    const shown = manifest.dependencies.filter(dependency => !inUse || !forgeTools[dependency.id] || inUse.forges.has(forgeTools[dependency.id].forge));
+    into.shown = shown;
+    into.hiddenTools = manifest.dependencies.filter(dependency => !shown.includes(dependency))
+      .map(dependency => ({ id: dependency.id, name: dependency.name, reason: `No project on this host uses ${forgeTools[dependency.id].label}.` }));
+    const ocrRules = { folder: current.rules.folder, files: current.rules.files.map(({ path, source, status, note }) => ({ path, source, status, note })) };
+    const context: DetectContext = { host, manifest, nodeExe: current.nodeExe, prefix: current.prefix, providers: current.providers, ocrRules, githubHosts: inUse?.githubHosts ?? [], azureOrganizations: inUse?.azureOrganizations ?? [] };
+    await Promise.all(shown.map(async dependency => { into.items.set(dependency.id, await detect(context, dependency)); }));
+    return assemble(into, false);
+  }
+
+  /**
+   * Runs the checks, or joins the run already going, and answers within readWithinMs: Paseo ends a plugin call after
+   * 30 seconds, and a cold `az` alone can take most of that. Checks that outlast the window carry on; the answer is then
+   * the last finished report, or what this run has found so far (`partial`), with `checking` set, and the screen asks
+   * again until a finished report comes back.
+   */
+  async function read(providerSnapshot?: ProviderSnapshot, forgesInUse?: ForgesInUse): Promise<SetupReport> {
+    if (!checking) {
+      const into: Progress = { items: new Map() };
+      progress = into;
+      const run = check(into, providerSnapshot, forgesInUse).then(report => { lastReport = report; return report; });
+      checking = run;
+      // A run that fails after the reply is retried by the next read; one that fails in time is reported to its caller.
+      void run.catch(() => {}).finally(() => { if (checking === run) checking = null; });
+    }
+    const finished = await within(checking, options.readWithinMs ?? READ_WITHIN_MS);
+    if (finished) return { ...finished, ...await live() };
+    if (lastReport) return { ...lastReport, ...await live(), checking: true, partial: false };
+    return assemble(progress, true);
   }
 
   /** The plan for one action plus the private details apply needs. The fingerprint covers everything apply relies on. */
@@ -699,16 +776,17 @@ export function createSetupService(host: SetupHost, manifest: SetupManifest = se
       return finish({ action, title: "Point project profiles at the stable kit path", command: null, changes, blocked }, { moving: moving.map(profile => [profile.file, profile.kitRoot]), stable: stable && [stable.path, stable.target] });
     }
     const ocr = manifest.ocr;
-    const spec = `${ocr.package}@${ocr.version}`;
-    const command = `npm install -g ${spec}`;
     const installed = current.prefix ? await packageVersion(join(globalModules(current.prefix, host.platform), ...ocr.package.split("/"), "package.json")) : null;
+    const spec = ocrInstallSpec(ocr, installed);
+    // Shown quoted, because a shell would read ">" as a redirect; the install itself runs without a shell.
+    const command = `npm install -g "${spec}"`;
     const npm = current.nodeExe ? npmCli(current.nodeExe, host.platform) : null;
     const npmFound = npm ? await isFile(npm.cli) : false;
-    const blocked = !current.nodeExe ? "Node.js wasn't found on this host's PATH." : !npmFound ? `npm wasn't found beside Node (${npm!.cli}).`
-      : installed === ocr.version ? `OCR ${ocr.version} is already installed.` : null;
-    const changes: SetupChange[] = npm && current.nodeExe ? [{ path: current.nodeExe, change: "run-command", detail: `"${current.nodeExe}" "${npm.cli}" install -g ${spec}` }] : [];
-    const title = installed ? `Change OCR ${installed} to ${ocr.version}` : `Install OCR ${ocr.version}`;
-    return finish({ action, title, command, changes, blocked }, { installed, nodeExe: current.nodeExe, npm: npm?.cli ?? null });
+    // Offered whenever OCR is installed too: it normally updates itself, but a host where that doesn't happen can catch up here.
+    const blocked = !current.nodeExe ? "Node.js wasn't found on this host's PATH." : !npmFound ? `npm wasn't found beside Node (${npm!.cli}).` : null;
+    const changes: SetupChange[] = npm && current.nodeExe ? [{ path: current.nodeExe, change: "run-command", detail: `"${current.nodeExe}" "${npm.cli}" install -g "${spec}"` }] : [];
+    const title = installed ? `Update OCR ${installed} to the newest version` : "Install the newest OCR";
+    return finish({ action, title, command, changes, blocked }, { installed, spec, nodeExe: current.nodeExe, npm: npm?.cli ?? null });
   }
 
   async function plan(action: SetupAction): Promise<SetupPlan> {
@@ -792,14 +870,18 @@ export function createSetupService(host: SetupHost, manifest: SetupManifest = se
   async function applyOcrCli(plan: SetupPlan, current: Awaited<ReturnType<typeof state>>) {
     const ocr = manifest.ocr;
     const npm = npmCli(current.nodeExe!, host.platform);
-    // Fixed arguments from the manifest only; nothing from the client reaches the command line.
-    const result = await host.run(current.nodeExe!, [npm.cli, "install", "-g", `${ocr.package}@${ocr.version}`], { timeoutMs: INSTALL_TIMEOUT_MS });
-    const installed = current.prefix ? await packageVersion(join(globalModules(current.prefix, host.platform), ...ocr.package.split("/"), "package.json")) : null;
+    const packageJson = current.prefix ? join(globalModules(current.prefix, host.platform), ...ocr.package.split("/"), "package.json") : null;
+    const before = packageJson ? await packageVersion(packageJson) : null;
+    const spec = ocrInstallSpec(ocr, before);
+    // Fixed arguments from the manifest and the installed version only; nothing from the client reaches the command line.
+    const result = await host.run(current.nodeExe!, [npm.cli, "install", "-g", spec], { timeoutMs: INSTALL_TIMEOUT_MS });
+    const installed = packageJson ? await packageVersion(packageJson) : null;
     const output = scrubOutput(`${result.stdout}\n${result.stderr}`);
-    const ok = result.code === 0 && installed === ocr.version;
+    const floor = ocrFloor(ocr, before);
+    const ok = result.code === 0 && !!installed && compareVersions(installed, floor) >= 0;
     return {
-      done: ok ? [plan.command!] : [], failed: ok ? [] : [`${plan.command}: ${result.code === 0 ? `npm finished, but OCR ${installed ?? "isn't"} installed where Mission Control looks` : `exit code ${result.code}`}`],
-      output, summary: ok ? `Installed OCR ${ocr.version}.` : `OCR ${ocr.version} wasn't installed.`,
+      done: ok ? [plan.command!] : [], failed: ok ? [] : [`${plan.command}: ${result.code === 0 ? `npm finished, but OCR ${installed ?? "isn't"} installed where Mission Control looks${installed ? ` (needs ${floor} or later)` : ""}` : `exit code ${result.code}`}`],
+      output, summary: !ok ? "OCR wasn't installed." : before && installed === before ? `OCR ${installed} is already the newest version.` : `Installed OCR ${installed}.`,
     };
   }
 

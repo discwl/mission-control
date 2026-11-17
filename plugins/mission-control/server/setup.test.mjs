@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 const ts = require("typescript");
 require.extensions[".ts"] = (module, file) => module._compile(ts.transpileModule(readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText, file);
-const { MARKER, assertRunnable, compareVersions, createSetupService, findExecutable, parseVersion, runExecutable, samePath, scrubOutput } = require("./setup.ts");
+const { MARKER, assertRunnable, compareVersions, createSetupService, findExecutable, ocrInstallSpec, parseVersion, runExecutable, samePath, scrubOutput } = require("./setup.ts");
 const { setupManifest } = require("../shared/setup.ts");
 
 // Everything below happens in temporary folders; nothing on this machine is installed or changed.
@@ -169,7 +169,7 @@ test("detection reports each dependency's status and version", async t => {
   assert.equal(byId(tools, "gh").status, "missing");
   assert.equal(byId(tools, "gh").help.command, "winget install --id GitHub.cli");
   assert.deepEqual([byId(tools, "gortex").status, byId(tools, "gortex").version], ["installed", "0.64.5"]);
-  assert.deepEqual([byId(tools, "ocr").status, byId(tools, "ocr").version, byId(tools, "ocr").expected], ["outdated", "1.12.8", "pinned 1.12.9"]);
+  assert.deepEqual([byId(tools, "ocr").status, byId(tools, "ocr").version, byId(tools, "ocr").expected], ["outdated", "1.12.8", "≥ 1.13.10"]);
   assert.equal(byId(tools, "ocr").installable, true);
   assert.equal(byId(tools, "ocr-rules").status, "missing");
   assert.deepEqual([byId(tools, "obsidian").status, byId(tools, "obsidian").version], ["installed", "1.13.7"]);
@@ -502,30 +502,69 @@ test("OCR rule files: a file edited between the check and the write is left alon
 
 // ---------- OCR CLI ----------
 
-test("OCR CLI: installs the pinned version through npm's JavaScript entry point, then logs scrubbed output", async t => {
+test("OCR CLI: installs the newest version, never below the minimum, through npm's JavaScript entry point, then logs scrubbed output", async t => {
   const { bin, globals, host, service, calls } = fixture(t);
   host.install = async () => {
-    write(join(globals, "@alibaba-group", "open-code-review", "package.json"), JSON.stringify({ version: "1.12.9" }));
+    write(join(globals, "@alibaba-group", "open-code-review", "package.json"), JSON.stringify({ version: "1.13.11" }));
     return { code: 0, stdout: "changed 1 package in 3s\n//registry.npmjs.org/:_authToken=npm_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789\n", stderr: "" };
   };
   const plan = await service.plan({ kind: "ocr-cli" });
   assert.equal(plan.blocked, null);
-  assert.equal(plan.command, "npm install -g @alibaba-group/open-code-review@1.12.9");
-  assert.equal(plan.title, "Change OCR 1.12.8 to 1.12.9");
+  assert.equal(plan.command, 'npm install -g "@alibaba-group/open-code-review@>=1.13.10"');
+  assert.equal(plan.title, "Update OCR 1.12.8 to the newest version");
   const result = await service.apply({ kind: "ocr-cli" }, plan.fingerprint);
   assert.equal(result.ok, true);
   const install = calls.find(call => call.args.includes("install"));
   assert.equal(install.file, join(bin, "node.exe"));
-  assert.deepEqual(install.args, [join(bin, "node_modules", "npm", "bin", "npm-cli.js"), "install", "-g", "@alibaba-group/open-code-review@1.12.9"]);
+  assert.deepEqual(install.args, [join(bin, "node_modules", "npm", "bin", "npm-cli.js"), "install", "-g", "@alibaba-group/open-code-review@>=1.13.10"]);
   assert.equal(install.options.timeoutMs, 300_000);
   assert.doesNotMatch(result.output, /npm_AbCd/);
   const log = readFileSync(join(host.dataDir, "setup-log.jsonl"), "utf8");
   assert.doesNotMatch(log, /npm_AbCd/);
-  assert.match(log, /Installed OCR 1\.12\.9/);
+  assert.match(log, /Installed OCR 1.13.11/);
 
-  const again = await service.plan({ kind: "ocr-cli" });
-  assert.match(again.blocked, /already installed/);
   assert.equal(byId((await service.read()).tools, "ocr").status, "installed");
+  // Installed and current, Setup still offers the newest version, never below what's there.
+  const again = await service.plan({ kind: "ocr-cli" });
+  assert.equal(again.blocked, null);
+  assert.equal(again.title, "Update OCR 1.13.11 to the newest version");
+  assert.equal(again.command, 'npm install -g "@alibaba-group/open-code-review@>=1.13.11"');
+  const same = await service.apply({ kind: "ocr-cli" }, again.fingerprint);
+  assert.equal(same.ok, true);
+  assert.equal(same.summary, "OCR 1.13.11 is already the newest version.");
+});
+
+test("OCR CLI: 1.13.10 or later is Installed, older is Outdated, and either can be updated to the newest", async t => {
+  for (const [version, status] of [["1.12.9", "outdated"], ["1.13.9", "outdated"], ["1.13.10", "installed"], ["1.13.11", "installed"], ["2.0.0", "installed"]]) {
+    const { service } = fixture(t, { ocrVersion: version });
+    const ocr = byId((await service.read()).tools, "ocr");
+    assert.deepEqual([ocr.status, ocr.version, ocr.expected], [status, version, "≥ 1.13.10"], version);
+    const plan = await service.plan({ kind: "ocr-cli" });
+    assert.equal(plan.blocked, null, version);
+    assert.equal(plan.title, `Update OCR ${version} to the newest version`);
+    assert.equal(plan.command, `npm install -g "@alibaba-group/open-code-review@>=${status === "installed" ? version : "1.13.10"}"`);
+  }
+});
+
+test("OCR CLI: an install that leaves an older version than it started with is reported as failed", async t => {
+  const { globals, host, service } = fixture(t, { ocrVersion: "1.12.8" });
+  host.install = async () => {
+    write(join(globals, "@alibaba-group", "open-code-review", "package.json"), JSON.stringify({ version: "1.12.7" }));
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const plan = await service.plan({ kind: "ocr-cli" });
+  const result = await service.apply({ kind: "ocr-cli" }, plan.fingerprint);
+  assert.equal(result.ok, false);
+  assert.match(result.changes[0], /OCR 1\.12\.7 installed where Mission Control looks \(needs 1\.13\.10 or later\)/);
+  assert.equal(result.summary, "OCR wasn't installed.");
+});
+
+test("OCR CLI: the install spec never asks for less than what's installed or the minimum", () => {
+  const ocr = { package: "@alibaba-group/open-code-review", minimum: "1.12.9" };
+  assert.equal(ocrInstallSpec(ocr, null), "@alibaba-group/open-code-review@>=1.12.9");
+  assert.equal(ocrInstallSpec(ocr, "1.10.0"), "@alibaba-group/open-code-review@>=1.12.9");
+  assert.equal(ocrInstallSpec(ocr, "1.13.3"), "@alibaba-group/open-code-review@>=1.13.3");
+  assert.equal(ocrInstallSpec(ocr, "1.14.0-beta.2"), "@alibaba-group/open-code-review@>=1.14.0");
 });
 
 test("OCR CLI: a slow install replies 'still running', and read() reports it until its result arrives", async t => {
@@ -533,7 +572,7 @@ test("OCR CLI: a slow install replies 'still running', and read() reports it unt
   let release;
   host.install = () => new Promise(resolvePromise => {
     release = () => {
-      write(join(globals, "@alibaba-group", "open-code-review", "package.json"), JSON.stringify({ version: "1.12.9" }));
+      write(join(globals, "@alibaba-group", "open-code-review", "package.json"), JSON.stringify({ version: "1.13.11" }));
       resolvePromise({ code: 0, stdout: "changed 1 package\n", stderr: "" });
     };
   });
@@ -544,7 +583,7 @@ test("OCR CLI: a slow install replies 'still running', and read() reports it unt
   assert.doesNotMatch(reply.summary, /Nothing was installed|failed/);
 
   const during = await service.read();
-  assert.deepEqual(during.running, { action: { kind: "ocr-cli" }, title: "Change OCR 1.12.8 to 1.12.9", startedAt: reply.startedAt });
+  assert.deepEqual(during.running, { action: { kind: "ocr-cli" }, title: "Update OCR 1.12.8 to the newest version", startedAt: reply.startedAt });
   assert.equal(during.lastResult, null);
   const rules = await service.plan({ kind: "ocr-rules" });
   await assert.rejects(service.apply({ kind: "ocr-rules" }, rules.fingerprint), /Another install is running/);
@@ -555,8 +594,8 @@ test("OCR CLI: a slow install replies 'still running', and read() reports it unt
   assert.equal(after.running, null);
   assert.equal(after.lastResult.startedAt, reply.startedAt, "the screen matches the result to the install it followed");
   assert.equal(after.lastResult.ok, true);
-  assert.equal(after.lastResult.summary, "Installed OCR 1.12.9.");
-  assert.equal(after.log[0].summary, "Installed OCR 1.12.9.");
+  assert.equal(after.lastResult.summary, "Installed OCR 1.13.11.");
+  assert.equal(after.log[0].summary, "Installed OCR 1.13.11.");
   assert.equal(byId(after.tools, "ocr").status, "installed");
 });
 
@@ -576,7 +615,8 @@ test("OCR CLI: a failed npm run is reported and logged, not claimed as installed
   const { host, service } = fixture(t, { ocrVersion: null });
   host.install = async () => ({ code: 1, stdout: "", stderr: "npm error code E404\n" });
   const plan = await service.plan({ kind: "ocr-cli" });
-  assert.equal(plan.title, "Install OCR 1.12.9");
+  assert.equal(plan.title, "Install the newest OCR");
+  assert.equal(plan.command, 'npm install -g "@alibaba-group/open-code-review@>=1.13.10"');
   const result = await service.apply({ kind: "ocr-cli" }, plan.fingerprint);
   assert.equal(result.ok, false);
   assert.match(result.changes[0], /exit code 1/);
@@ -624,7 +664,11 @@ test("the manifest lists every dependency from the report, and only three kinds 
   const ids = setupManifest.dependencies.map(entry => entry.id);
   for (const id of ["paseo", "node", "npm", "git", "gh", "az", "bitbucket", "gortex", "ocr", "ocr-rules", "obsidian", "obsidian-cli", "claude", "codex", "opencode", "copilot"]) assert.ok(ids.includes(id), id);
   assert.deepEqual(setupManifest.dependencies.filter(entry => entry.install === "mission-control").map(entry => entry.id), ["ocr", "ocr-rules"]);
-  assert.equal(setupManifest.dependencies.find(entry => entry.id === "ocr").pinned, setupManifest.ocr.version);
+  // OCR updates itself, so it has a minimum rather than a pin, and the install action uses the same minimum.
+  const ocr = setupManifest.dependencies.find(entry => entry.id === "ocr");
+  assert.equal(ocr.pinned, null);
+  assert.equal(ocr.minimum, setupManifest.ocr.minimum);
+  assert.doesNotMatch(ocr.help.command, /@\d/, "the manual command doesn't name an older version");
   assert.deepEqual(setupManifest.skills.providers.map(entry => entry.id), ["claude", "codex", "opencode", "copilot"]);
   for (const file of setupManifest.ocr.files) assert.ok(existsSync(join(REPO, file.source)), file.source);
   assert.ok(existsSync(join(REPO, setupManifest.skills.delegate.source, "SKILL.md")));
@@ -721,4 +765,80 @@ test("Setup shows the forge tools only for forges this host's projects use, and 
   const unknown = await service.read(undefined, async () => null);
   assert.deepEqual(unknown.hiddenTools, []);
   assert.ok(["gh", "az", "bitbucket"].every(id => unknown.tools.some(item => item.id === id)));
+});
+
+// ---------- answering within Paseo's time limit ----------
+
+/** A fixture whose git.exe answers only when released, with a service that answers reads within 50 ms. */
+function slowGit(t) {
+  const f = fixture(t);
+  let release = () => {};
+  let gate = new Promise(done => { release = done; });
+  const run = f.host.run.bind(f.host);
+  const started = { git: 0 };
+  f.host.run = async (file, args, options) => { if (file.endsWith("git.exe")) { started.git++; await gate; } return run(file, args, options); };
+  const service = createSetupService(f.host, setupManifest, { replyWithinMs: 20_000, readWithinMs: 50 });
+  return { ...f, service, started, release: () => release(), block: () => { gate = new Promise(done => { release = done; }); } };
+}
+
+test("a slow first check answers in time with what it has found so far, then the finished report", async t => {
+  const f = slowGit(t);
+  const early = await f.service.read();
+  assert.equal(early.checking, true);
+  assert.equal(early.partial, true);
+  const git = byId(early.tools, "git");
+  assert.deepEqual([git.status, git.version, git.detail], ["unknown", null, "Still checking…"]);
+  assert.deepEqual([byId(early.tools, "node").status, byId(early.tools, "node").version], ["installed", "22.14.0"], "finished items are shown");
+  assert.equal(early.vault.exists, true);
+
+  // Asking again joins the same run rather than starting another.
+  const gitRuns = f.started.git;
+  const again = await f.service.read();
+  assert.equal(again.checking, true);
+  assert.equal(f.started.git, gitRuns);
+
+  f.release();
+  const done = await f.service.read();
+  assert.equal(done.checking, false);
+  assert.equal(done.partial, false);
+  assert.deepEqual([byId(done.tools, "git").status, byId(done.tools, "git").version], ["installed", "2.35.3"]);
+});
+
+test("a later slow check answers with the last finished report, marked as still checking", async t => {
+  const f = slowGit(t);
+  f.release();
+  let first = await f.service.read();
+  for (let attempt = 0; first.checking && attempt < 100; attempt++) first = await f.service.read();
+  assert.equal(first.checking, false);
+
+  f.block();
+  const stale = await f.service.read();
+  assert.equal(stale.checking, true);
+  assert.equal(stale.partial, false);
+  assert.equal(stale.checkedAt, first.checkedAt);
+  assert.equal(byId(stale.tools, "git").version, "2.35.3", "the last finished report, not Still checking");
+  f.release();
+  let after = await f.service.read();
+  for (let attempt = 0; after.checking && attempt < 100; attempt++) after = await f.service.read();
+  assert.equal(after.checking, false);
+});
+
+test("a fast check answers with the finished report, and failing provider or forge reads don't fail it", async t => {
+  const { service } = fixture(t);
+  const report = await service.read();
+  assert.equal(report.checking, false);
+  assert.equal(report.partial, false);
+  const degraded = await service.read(async () => { throw new Error("Paseo busy"); }, async () => { throw new Error("vault unreadable"); });
+  assert.equal(degraded.checking, false);
+  assert.deepEqual(degraded.hiddenTools, []);
+});
+
+test("a check that fails within the window is reported to the caller, and the next read starts a fresh one", async t => {
+  const f = fixture(t);
+  let fail = true;
+  const read = f.host.now;
+  f.host.now = () => { if (fail) throw new Error("clock unavailable"); return read(); };
+  await assert.rejects(f.service.read(), /clock unavailable/);
+  fail = false;
+  assert.equal((await f.service.read()).checking, false);
 });

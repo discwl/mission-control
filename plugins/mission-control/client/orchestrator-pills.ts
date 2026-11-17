@@ -1,5 +1,5 @@
 import type { PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
-import { listIncludingBackground, ownHost } from "../shared/background";
+import { agentPageOrder, followAgentList, listAgentPages, ownHost } from "../shared/background";
 import { hostAttentionCount, hostAttentionLabel, noAttentionReads, type HostAttentionReads } from "./host-attention";
 import { hostAgentsLabel, runningAgentsCount } from "./host-review-model";
 import { requestHostDestination, takeHostDestination } from "./host-review-request";
@@ -23,7 +23,7 @@ type Entry = {
 };
 
 /**
- * In a workspace that orchestrates a remote host (its folder has a host file), each active chat gets
+ * In a workspace that orchestrates a remote host (its folder has a host file), each unarchived chat gets
  * bubbles: "<host> agents" opens the Host agents tab, Review opens this chat's review dialog, and
  * "Attention · N", shown only while something blocks an agent there, opens its Attention dialog. Their counts
  * come from the remote host, read at most once a minute; an unreachable host keeps its last counts.
@@ -40,8 +40,11 @@ export function startOrchestratorPills(client: Pick<PluginClientContext, "paseo"
   const entries = new Map<string, Entry>();
   const counts = new Map<string, HostCounts>();
   const reading = new Set<string>();
+  // Every unarchived chat with a workspace in the last list: the change filter.
+  let listed: ReadonlyMap<string, string> = new Map();
   let stopped = false;
   let running = false;
+  let again = false;
 
   function openDialog(workspaceId: string, agentId: string, serverId: string, kind: "review" | "attention") {
     const entry = entries.get(agentId);
@@ -131,14 +134,18 @@ export function startOrchestratorPills(client: Pick<PluginClientContext, "paseo"
     } finally { reading.delete(serverId); }
   }
 
-  async function sync() {
-    if (running || stopped) return;
+  async function sync(changed = false) {
+    if (stopped) return;
+    // A list change during a reconciliation runs another one after it; a poll then has nothing to add.
+    if (running) { again ||= changed; return; }
     running = true;
     try {
       // Chats in a background workspace (Paseo 0.12) get bubbles too; they're left out of lists unless asked for.
-      const { entries: listed } = await listIncludingBackground(ownHost, {}, filter => client.paseo.agents.list({ filter, page: { limit: 200 } }));
-      const active = listed.map(entry => entry.agent).filter(agent => agent.workspaceId && !agent.archivedAt && agent.status !== "closed");
-      const bindings = await lookUp([...new Set(active.map(agent => agent.workspaceId!))].slice(0, 100));
+      // A chat Paseo released after an idle hour ("closed") keeps its bubbles: it still exists, and a message wakes it.
+      const { entries: page } = await listAgentPages(ownHost, {}, (filter, cursor) => client.paseo.agents.list({ filter, sort: agentPageOrder, page: { limit: 200, ...(cursor ? { cursor } : {}) } }));
+      const active = page.map(entry => entry.agent).filter(agent => agent.workspaceId && !agent.archivedAt);
+      listed = new Map(active.map(agent => [agent.id, agent.workspaceId!]));
+      const bindings = await lookUp([...new Set(active.map(agent => agent.workspaceId!))].slice(0, 200));
       if (stopped) return;
       const seen = new Set<string>();
       for (const agent of active) {
@@ -156,14 +163,20 @@ export function startOrchestratorPills(client: Pick<PluginClientContext, "paseo"
       for (const serverId of new Set([...entries.values()].map(entry => entry.serverId))) void refreshHost(serverId);
     } catch {
       // Keep the current bubbles; the next poll retries.
-    } finally { running = false; }
+    } finally {
+      running = false;
+      if (again) { again = false; void sync(true); }
+    }
   }
 
   void sync();
   const timer = setInterval(() => void sync(), intervalMs);
+  // A new, moved or archived chat updates its bubbles within a moment instead of at the next poll.
+  const stopFollowing = followAgentList(filter => client.paseo.agents.list({ filter, subscribe: {} }), agentId => listed.get(agentId), () => void sync(true));
   return () => {
     stopped = true;
     clearInterval(timer);
+    stopFollowing();
     for (const agentId of [...entries.keys()]) remove(agentId);
   };
 }

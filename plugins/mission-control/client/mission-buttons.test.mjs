@@ -99,3 +99,16 @@ test("initial vault failure still provides Mission navigation and live native pe
   f.state.fail = false; await f.tick();
   assert.equal(f.buttons.get("work").button.label, "1 needs you");
 });
+test("a chat Paseo released after an idle hour keeps its Mission button and bubble; one resting over 14 days doesn't", async t => {
+  const layout = compactLayout();
+  const f = await fixture(t, false, layout);
+  const daysAgo = days => new Date(Date.now() - days * 86_400_000).toISOString();
+  Object.assign(f.state.entries[0].agent, { status: "closed", updatedAt: daysAgo(3) });
+  await f.tick();
+  assert.ok(f.buttons.has("work"), "the workspace keeps its header button");
+  assert.equal(f.pills.get("agent")?.workspaceId, "work", "the chat keeps its bubble");
+  f.state.entries[0].agent.updatedAt = daysAgo(15);
+  await f.tick();
+  assert.equal(f.buttons.has("work"), false);
+  assert.equal(f.pills.size, 0);
+});

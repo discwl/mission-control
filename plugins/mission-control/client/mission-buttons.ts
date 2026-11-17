@@ -1,5 +1,5 @@
 import type { PluginButtonRegistration, PluginClientContext } from "@getpaseo/plugin/client";
-import { listIncludingBackground, ownHost } from "../shared/background";
+import { keepsChatButtons, listIncludingBackground, ownHost } from "../shared/background";
 import { getMissionSummary } from "../shared/mission";
 import { listWaiting } from "../shared/questions";
 import { waitingCards } from "./attention-model";
@@ -44,10 +44,11 @@ export function startMissionButtons(client: PluginClientContext, intervalMs = 15
   }
 
   /** One bubble per active chat of a workspace that has a header button, while the layout is compact. */
-  function syncPills(agents: { id: string; workspaceId?: string | null; archivedAt?: string | null; status: string }[], labels: ReadonlyMap<string, string | null>) {
+  function syncPills(agents: { id: string; workspaceId?: string | null; archivedAt?: string | null; status: string; updatedAt?: string | null }[], labels: ReadonlyMap<string, string | null>) {
     const wanted = new Map<string, string>();
+    const now = Date.now();
     if (layout.compact()) for (const agent of agents) {
-      if (agent.workspaceId && labels.has(agent.workspaceId) && !agent.archivedAt && agent.status !== "closed") wanted.set(agent.id, agent.workspaceId);
+      if (agent.workspaceId && labels.has(agent.workspaceId) && !agent.archivedAt && keepsChatButtons(agent, now)) wanted.set(agent.id, agent.workspaceId);
     }
     for (const [agentId, pill] of pills) {
       // Registration targets are immutable; a chat that moved needs a new bubble.
@@ -75,8 +76,11 @@ export function startMissionButtons(client: PluginClientContext, intervalMs = 15
       // Workspaces in the background (Paseo 0.12) count too; they're left out of lists unless asked for.
       const { entries } = await listIncludingBackground(ownHost, {}, filter => client.paseo.agents.list({ filter, page: { limit: 200 } }));
       const permissions = new Map<string, number>();
+      // A chat Paseo released after an idle hour ("closed") keeps its workspace's Mission button, unless it has rested
+      // for over 14 days (keepsChatButtons).
+      const now = Date.now();
       for (const { agent } of entries) {
-        if (!agent.workspaceId || agent.archivedAt || agent.status === "closed") continue;
+        if (!agent.workspaceId || agent.archivedAt || !keepsChatButtons(agent, now)) continue;
         permissions.set(agent.workspaceId, (permissions.get(agent.workspaceId) ?? 0) + (agent.pendingPermissions?.length ?? 0));
       }
       const workspaceIds = [...permissions.keys()].slice(0, 100);

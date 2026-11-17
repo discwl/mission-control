@@ -634,7 +634,8 @@
   <li><strong>The file list</strong> is sorted by risk: HIGH, MEDIUM, LOW and INFO, with a filter for each. Every file shows its change blocks and lines added and removed.</li>
   <li><strong>A file</strong> shows why it was flagged (for example new export, security-sensitive, error handling, file writes), then its change blocks or the full file. Step through blocks with the arrows.</li>
   <li><span class="ui">Mark reviewed</span> ticks off a block, and <span class="ui">Mark file reviewed</span> a whole file; the header counts your progress. <span class="ui">Next to review</span> jumps to the next file.</li>
-  <li><strong>Comments:</strong> tap a line number to comment on it, or use <span class="ui">Comment on file</span>. Comments collect as unsent, and you send them to the agent together once it's idle.</li>
+  <li><strong>Comments:</strong> tap a line number to comment on it, or use <span class="ui">Comment on file</span>. Comments collect as unsent, and you send them to the agent together once it's idle. A chat Paseo released after an idle hour (listed as closed) can receive them too: sending wakes it.</li>
+  <li><strong>Which chats have the bubble:</strong> each chat with a workspace gets its Review bubble, including chats Paseo released after an idle hour, as long as they were used in the last 14 days (at most the 300 most recent chats). A chat that has rested for more than a day shows a plain <span class="ui">Review</span> without counts, which keeps the work of counting small; the counts come back once the chat is used again. A new chat, or an old one you wake with a message, gets its bubble within a moment.</li>
   <li><strong>Slow hosts:</strong> where every Git command starts slowly (for example, security software inspecting each launch), Review keeps reading in the background. The bubble shows <span class="ui">Review · counting…</span> and the tab shows <span class="ui">READING CHANGES</span> until the scan finishes; workspaces on the same checkout share one scan. <span class="ui">Review · unavailable</span> means Mission Control itself couldn't be reached, for example during a plugin reload.</li>
   <li><strong>A workspace opened at a subfolder</strong> of a repository is reviewed as the whole repository, with every path given from the repository's root. Preview, Discard and Reveal act on exactly the file listed, even when the subfolder and the root both have a file with that name.</li>
   <li><strong>Paseo's own review comments:</strong> comments sent with <span class="ui">Send feedback</span> in Paseo 0.12's diff pane go straight to the agent and are kept by the app. They don't appear in Mission Control's Review, and Mission Control's comments don't appear there.</li>
@@ -681,7 +682,7 @@
   <figcaption>The Mission panel inside a workspace.</figcaption>
 </figure>
 <p>Inside any Paseo workspace with agents, the <span class="ui">Mission</span> button in the header opens the Mission tab in Paseo's right-hand panel. The button reads <strong>N need you</strong> when a prompt or decision is waiting. You can also type <code>/mission</code> in a chat.</p>
-<p><strong>On a phone</strong>, or in any window narrower than 720 pixels, Paseo 0.12 shows no plugin buttons in the header and has no right-hand panel. Each active chat there gets a <span class="ui">Mission</span> bubble above the message box instead, with the same count, and Mission opens as a tab. So do its <span class="ui">Open Review</span> and <span class="ui">Open Agents</span> links and <code>/mission</code>. This hasn't been checked on a phone yet.</p>
+<p><strong>On a phone</strong>, or in any window narrower than 720 pixels, Paseo 0.12 shows no plugin buttons in the header and has no right-hand panel. Each chat there gets a <span class="ui">Mission</span> bubble (including one Paseo released after an idle hour, for 14 days) above the message box instead, with the same count, and Mission opens as a tab. So do its <span class="ui">Open Review</span> and <span class="ui">Open Agents</span> links and <code>/mission</code>. This hasn't been checked on a phone yet.</p>
 <ul>
   <li><strong>Needs you:</strong> this workspace's permission prompts and decisions.</li>
   <li><strong>Tasks:</strong> compact title/status summaries, latest recorded update and next action, an icon to copy the task ID, <span class="ui">Task details</span> and the named run-agent shortcut.</li>
@@ -728,7 +729,7 @@
 <pre><code>{ "schemaVersion": 1, "label": "Acme", "serverId": "srv_…" }</code></pre>
 <p>Use the host's name and Paseo server ID as this app knows them. The file holds no secrets. A vault's own <code>host.json</code>, which names its host with <code>hostId</code>, isn't mistaken for one.</p>
 <ul>
-  <li><strong>Bubbles:</strong> every open chat in the workspace gets bubbles above the message box:
+  <li><strong>Bubbles:</strong> every chat in the workspace gets bubbles above the message box, including one Paseo released after an idle hour:
     <ul>
       <li><span class="ui">Acme agents</span> shows how many of the host's agents are running.</li>
       <li><span class="ui">Review</span> counts its workspaces that are ready.</li>
@@ -853,7 +854,7 @@
   <img src="screenshots/setup.png" alt="The Setup screen showing Paseo, the Development Flow kit, the vault and skills by provider">
   <figcaption>Paseo, the kit, the vault, and the skills each provider has.</figcaption>
 </figure>
-<p>Setup lists everything Mission Control and its agents rely on, with a status for each: Installed, Outdated, Missing, Modified, Not managed or Unknown. <span class="ui">Check again</span> re-reads everything; reading changes nothing.</p>
+<p>Setup lists everything Mission Control and its agents rely on, with a status for each: Installed, Outdated, Missing, Modified, Not managed or Unknown. <span class="ui">Check again</span> re-reads everything; reading changes nothing. On a host where some checks are slow, the screen says <span class="ui">Still checking this host</span> and shows the last finished check, or what's been checked so far with the rest as Unknown ("Still checking…"); it updates by itself when the checks finish.</p>
 <ul>
   <li><strong>Paseo</strong> and whether it's new enough.</li>
   <li><strong>The Development Flow kit</strong> (its skills and scripts). On pc-864 it's your developer checkout, updated with Git. A host that installed Mission Control from GitHub gets a new install folder on every update, so Mission Control keeps a <strong>stable kit path</strong> that always points at the current install. If a project profile still names one install's folder, <span class="ui">Stable kit path → Use it…</span> moves it onto the stable path; then update the skill links it lists. After that, updates no longer break the profile, the skill links or running agents.</li>
@@ -867,7 +868,7 @@
 <ul>
   <li><strong>Tools</strong> show their version, why they're needed, and the exact command or link: Node, npm, Git, Gortex, and Obsidian and its CLI (detected from their files; Obsidian is never started).</li>
   <li><strong>Forge tools</strong> appear only for the forges your projects use: the GitHub CLI (<code>gh</code>), the Azure CLI (<code>az</code>) with its azure-devops extension, and Bitbucket Cloud credentials. Each shows whether it's signed in, with the command to install it or sign in. The rest are listed under "Not shown", with the reason.</li>
-  <li><strong>The OpenCode Review CLI</strong> can be installed or updated at its pinned version from here. A slow install keeps running, and the screen follows it. OpenCode Review's rule files are copied only when missing or unchanged since Mission Control wrote them, so your edits are never overwritten.</li>
+  <li><strong>The OpenCode Review CLI</strong> updates itself to its newest version each time it runs. Any version from 1.13.10 up shows as Installed, and an older one as Outdated, because the review skill Mission Control ships relies on 1.13.10. <span class="ui">Install…</span> (when it's missing) or <span class="ui">Update to newest…</span> (otherwise, for hosts where it doesn't update itself) installs the newest release and never an older one. A slow install keeps running, and the screen follows it. OpenCode Review's rule files are copied only when missing or unchanged since Mission Control wrote them, so your edits are never overwritten.</li>
   <li>Every install is logged under <strong>Recent installs</strong>.</li>
 </ul>
 

@@ -30,3 +30,63 @@ test("OCR executes workspace, committed range and rules with shell-free argument
   assert.equal(result.previews.length, 2); assert.equal(result.files.length, 1); assert.ok(calls.some(args => args.includes("file with spaces.ts"))); assert.ok(calls.some(args => args.includes("--from") && args.includes(base)));
   emptyRules = true; await assert.rejects(executeOcr("cwd", { base, rootCommit: null }, candidate, "assignment"), /every reviewable/);
 });
+
+const { looksLikeOcrUpdate } = require("./ocr-execution.ts");
+const fsPromises = require("node:fs/promises");
+const ocrReply = args => ({ code: 0, stderr: "", stdout: args.includes("--version") ? "1.13.9" : args.includes("preview") ? JSON.stringify({ schema_version: "1", mode: "workspace", reviewable_files: [{ path: "a.ts", status: "modified" }], excluded_files: [] }) : JSON.stringify({ schema_version: "1", groups: [{ files: ["a.ts"], rule: "Check correctness" }] }) });
+
+test("failures that look like OCR replacing itself are told apart from review failures", () => {
+  for (const failure of [
+    new Error("OCR failed: [ERROR] OpenCodeReview binary not found. Run: npm install -g @alibaba-group/open-code-review"),
+    new Error("OCR failed: [ERROR] Failed to start C:\\npm\\node_modules\\@alibaba-group\\ocr-win32-x64\\bin\\opencodereview.exe: spawn EBUSY"),
+    new Error("OCR failed: Error: Cannot find module '../scripts/platform'\nRequire stack:\n- C:\\npm\\node_modules\\@alibaba-group\\open-code-review\\bin\\ocr.js"),
+    new Error("OCR failed: code: 'MODULE_NOT_FOUND'"),
+    new Error("OCR failed: EPERM: operation not permitted, open 'C:\\npm\\node_modules\\@alibaba-group\\open-code-review\\package.json'"),
+    Object.assign(new Error("Install open-code-review on this host with npm before starting a managed review."), { code: "ENOENT" }),
+    Object.assign(new Error("spawn ocr ENOENT"), { code: "ENOENT" }),
+  ]) assert.equal(looksLikeOcrUpdate(failure), true, failure.message);
+  for (const failure of [
+    new Error("OCR failed: fatal: not a git repository"),
+    new Error("OCR failed: open C:\\work\\src\\missing.ts: ENOENT"),
+    new Error("OCR failed: unknown flag --from"),
+    new Error("Unexpected token < in JSON"),
+  ]) assert.equal(looksLikeOcrUpdate(failure), false, failure.message);
+});
+
+test("an OCR call caught mid self-update waits, then retries once and carries on", async t => {
+  t.mock.method(fsPromises, "access", async () => {});
+  let failures = 1; const waits = []; const calls = [];
+  t.mock.method(processes, "runProcess", async (_file, args) => {
+    calls.push(args);
+    if (args.includes("preview") && failures-- > 0) return { code: 1, stdout: "", stderr: "[ERROR] OpenCodeReview binary not found. Run: npm install -g @alibaba-group/open-code-review\n" };
+    return ocrReply(args);
+  });
+  const result = await executeOcr("cwd", { base: null, rootCommit: null }, candidate, "assignment", { retryAfterMs: 1234, wait: async ms => { waits.push(ms); } });
+  assert.deepEqual(waits, [1234]);
+  assert.equal(result.version, "1.13.9");
+  assert.equal(calls.filter(args => args.includes("preview")).length, 2);
+});
+
+test("OCR is retried only once per review, and a review failure isn't retried at all", async t => {
+  t.mock.method(fsPromises, "access", async () => {});
+  const waits = [];
+  t.mock.method(processes, "runProcess", async args => ({ code: 1, stdout: "", stderr: "[ERROR] OpenCodeReview binary not found." }));
+  await assert.rejects(executeOcr("cwd", { base: null, rootCommit: null }, candidate, "assignment", { wait: async ms => { waits.push(ms); } }), /binary not found/);
+  assert.deepEqual(waits, [5_000]);
+
+  waits.length = 0; let calls = 0;
+  t.mock.method(processes, "runProcess", async () => { calls++; return { code: 2, stdout: "", stderr: "fatal: bad revision" }; });
+  await assert.rejects(executeOcr("cwd", { base: null, rootCommit: null }, candidate, "assignment", { wait: async ms => { waits.push(ms); } }), /bad revision/);
+  assert.deepEqual(waits, []);
+  assert.equal(calls, 1);
+});
+
+test("a launcher that is missing for a moment is looked up again after the wait", { skip: process.platform !== "win32" && "the launcher path is looked up on Windows only" }, async t => {
+  let present = false;
+  t.mock.method(fsPromises, "access", async () => { if (!present) throw Object.assign(new Error("missing"), { code: "ENOENT" }); });
+  t.mock.method(processes, "runProcess", async (_file, args) => ocrReply(args));
+  const result = await executeOcr("cwd", { base: null, rootCommit: null }, candidate, "assignment", { wait: async () => { present = true; } });
+  assert.equal(result.version, "1.13.9");
+  present = false;
+  await assert.rejects(executeOcr("cwd", { base: null, rootCommit: null }, candidate, "assignment", { wait: async () => {} }), /Install open-code-review on this host/);
+});

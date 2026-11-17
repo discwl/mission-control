@@ -29,14 +29,25 @@ async function harness(t, initialAgents, initialCounts, initialPending = [], orc
   let pending = initialPending;
   let poll;
   let refreshError = null;
+  let pageSize = Infinity;
+  let observer = null;
+  let released = false;
   const registrations = [];
   const opened = [];
   const refreshes = [];
+  const countRequests = [];
+  const listCalls = [];
   t.mock.method(globalThis, "setInterval", callback => { poll = callback; return 1; });
   t.mock.method(globalThis, "clearInterval", () => {});
   const client = {
     paseo: { agents: {
-      list: async () => ({ entries: agents.map(agent => ({ agent })) }),
+      list: async (options = {}) => {
+        if (options.subscribe) return { entries: [], subscription: { subscribe(next) { observer = next; return () => { observer = null; }; }, release: async () => { released = true; } } };
+        listCalls.push(options);
+        const start = options.page?.cursor ? Number(options.page.cursor) : 0;
+        const end = Math.min(agents.length, start + pageSize);
+        return { entries: agents.slice(start, end).map(agent => ({ agent })), pageInfo: { hasMore: end < agents.length, nextCursor: end < agents.length ? String(end) : null } };
+      },
       ref: agentId => ({ refresh: async () => {
         refreshes.push(agentId);
         if (refreshError) throw refreshError;
@@ -44,7 +55,8 @@ async function harness(t, initialAgents, initialCounts, initialPending = [], orc
         return agent ? { agent, project: null } : null;
       } }),
     } },
-    rpc: async () => {
+    rpc: async (_method, input) => {
+      countRequests.push(input.workspaceIds);
       if (counts instanceof Error) throw counts;
       return { counts: await counts, pending };
     },
@@ -67,7 +79,10 @@ async function harness(t, initialAgents, initialCounts, initialPending = [], orc
   }
   assert.deepEqual(opened, [], "registering a pill must never navigate");
   return {
-    registrations, opened, refreshes, stop,
+    registrations, opened, refreshes, stop, countRequests, listCalls,
+    get observer() { return observer; },
+    get released() { return released; },
+    setPageSize(next) { pageSize = next; },
     setAgents(next) { agents = next; },
     setCounts(next) { counts = next; },
     setPending(next) { pending = next; },
@@ -140,18 +155,121 @@ test("a label refresh preserves the same chat target and registration", async t 
   assert.equal(state.opened[0].agentId, "current-agent");
 });
 
-test("an unavailable or inactive chat cannot navigate to its old workspace", async t => {
+test("an unavailable, archived or unplaced chat cannot navigate to its old workspace", async t => {
   const state = await harness(t, [agent("current-agent", "development-flow")], { "development-flow": count });
   const press = state.registrations[0].contribution.button.behavior.onPress;
   state.setAgents([]);
   await assert.rejects(press, /no longer has an active workspace/);
   for (const update of [
-    { workspaceId: null }, { status: "closed" }, { archivedAt: "2026-09-29T00:00:00Z" },
+    { workspaceId: null }, { archivedAt: "2026-09-29T00:00:00Z" },
   ]) {
     state.setAgents([{ ...agent("current-agent", "development-flow"), ...update }]);
     await assert.rejects(press, /no longer has an active workspace/);
   }
   assert.deepEqual(state.opened, []);
+});
+
+const hoursAgo = hours => new Date(Date.now() - hours * 3_600_000).toISOString();
+const resting = (id, workspaceId, updatedAt) => Object.freeze({ id, workspaceId, status: "closed", archivedAt: null, updatedAt });
+
+test("a chat Paseo released after an idle hour keeps its Review bubble, and pressing it opens Review", async t => {
+  const state = await harness(t, [resting("resting", "development-flow", hoursAgo(2))], { "development-flow": count });
+  assert.equal(state.registrations.length, 1);
+  assert.equal(state.registrations[0].contribution.agentId, "resting");
+  assert.equal(state.registrations[0].contribution.button.label, "Review · 2 to review");
+  await state.registrations[0].contribution.button.behavior.onPress();
+  assert.deepEqual(state.opened, [{ panelId: "agent-review", workspaceId: "development-flow", agentId: "resting", location: "workspace" }]);
+});
+
+test("a chat resting for over a day shows plain Review and its workspace isn't counted", async t => {
+  const state = await harness(t, [resting("old", "old-ws", hoursAgo(30)), resting("recent", "recent-ws", hoursAgo(3)), agent("open", "open-ws")], {
+    "old-ws": count, "recent-ws": count, "open-ws": count,
+  });
+  assert.deepEqual([...state.countRequests[0]].sort(), ["open-ws", "recent-ws"]);
+  const label = id => state.registrations.find(registration => registration.contribution.agentId === id).contribution.button.label;
+  assert.equal(label("old"), "Review");
+  assert.equal(label("recent"), "Review · 2 to review");
+  assert.equal(label("open"), "Review · 2 to review");
+  await state.registrations.find(registration => registration.contribution.agentId === "old").contribution.button.behavior.onPress();
+  assert.equal(state.opened[0].workspaceId, "old-ws");
+});
+
+test("a chat resting for over 14 days has no bubble, and gets it back within a moment when a message wakes it", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const old = resting("old", "old-ws", hoursAgo(15 * 24));
+  const state = await harness(t, [old, resting("recent", "recent-ws", hoursAgo(13 * 24))], {});
+  assert.deepEqual(state.registrations.map(registration => registration.contribution.agentId), ["recent"]);
+  // Another update of the old chat while it still rests changes nothing.
+  state.observer.update({ type: "agent_update", payload: { kind: "upsert", agent: old } });
+  t.mock.timers.tick(1_000); await flush(); await flush();
+  const lists = state.listCalls.length;
+  assert.equal(state.registrations.length, 1);
+  // A message wakes it: its status changes, and that alone is reason to list again.
+  const woken = { ...old, status: "running", updatedAt: new Date().toISOString() };
+  state.setAgents([woken, resting("recent", "recent-ws", hoursAgo(13 * 24))]);
+  state.observer.update({ type: "agent_update", payload: { kind: "upsert", agent: woken } });
+  t.mock.timers.tick(1_000); await flush(); await flush();
+  assert.equal(state.listCalls.length, lists + 1);
+  assert.deepEqual(state.registrations.map(registration => registration.contribution.agentId), ["recent", "old"]);
+});
+
+test("at most 300 bubbles, for the most recently updated chats", async t => {
+  const minutesAgo = minutes => new Date(Date.now() - minutes * 60_000).toISOString();
+  const many = Array.from({ length: 305 }, (_, index) => ({ ...agent(`agent-${index}`, `ws-${index}`), updatedAt: minutesAgo(index) }));
+  const state = await harness(t, many.slice().reverse(), {});
+  const ids = state.registrations.map(registration => registration.contribution.agentId);
+  assert.equal(ids.length, 300);
+  assert.ok(ids.includes("agent-0") && ids.includes("agent-299"));
+  assert.ok(!ids.includes("agent-300") && !ids.includes("agent-304"), "the oldest are left out");
+});
+
+test("a chat that stops being counted drops its last count", async t => {
+  const state = await harness(t, [agent("a", "w")], { w: count });
+  assert.equal(state.registrations[0].contribution.button.label, "Review · 2 to review");
+  state.setAgents([resting("a", "w", hoursAgo(25))]);
+  await state.sync();
+  assert.equal(state.registrations.length, 1);
+  assert.equal(state.registrations[0].contribution.button.label, "Review");
+});
+
+test("chats past the first page of the agent list get bubbles too", async t => {
+  const many = Array.from({ length: 5 }, (_, index) => agent(`agent-${index}`, `ws-${index}`));
+  const state = await harness(t, [], {});
+  state.setPageSize(2);
+  state.setAgents(many);
+  await state.sync();
+  assert.deepEqual(state.registrations.map(registration => registration.contribution.agentId), many.map(item => item.id));
+  assert.deepEqual(state.listCalls.slice(-3).map(call => call.page.cursor ?? null), [null, "2", "4"]);
+  assert.deepEqual(state.listCalls.at(-1).sort, [{ key: "created_at", direction: "desc" }]);
+});
+
+test("a new chat gets its bubble from the agent list subscription, without waiting for the poll", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const state = await harness(t, [agent("a", "w")], { w: count, other: count });
+  assert.ok(state.observer, "the pills follow the agent list");
+  state.observer.snapshot({});
+  const fresh = agent("b", "other");
+  state.setAgents([agent("a", "w"), fresh]);
+  // A status change of a listed chat isn't a reason to list again.
+  state.observer.update({ type: "agent_update", payload: { kind: "upsert", agent: { ...agent("a", "w"), status: "running" } } });
+  t.mock.timers.tick(1_000);
+  await flush(); await flush();
+  assert.equal(state.registrations.length, 1);
+  const lists = state.listCalls.length;
+  state.observer.update({ type: "agent_update", payload: { kind: "upsert", agent: fresh } });
+  state.observer.update({ type: "agent_update", payload: { kind: "upsert", agent: fresh } });
+  t.mock.timers.tick(1_000);
+  await flush(); await flush();
+  assert.equal(state.listCalls.length, lists + 1, "changes close together share one list");
+  assert.deepEqual(state.registrations.map(registration => registration.contribution.agentId), ["a", "b"]);
+
+  state.setAgents([agent("a", "w")]);
+  state.observer.update({ type: "agent_update", payload: { kind: "remove", agentId: "b" } });
+  t.mock.timers.tick(1_000);
+  await flush(); await flush();
+  assert.equal(state.registrations[1].removed, true);
+  state.stop();
+  assert.equal(state.released, true);
 });
 
 test("a failed refresh reports the error without falling back to the registered workspace", async t => {

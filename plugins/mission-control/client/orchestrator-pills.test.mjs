@@ -40,8 +40,15 @@ async function fixture(t) {
     attentionFails: false,
   };
   const pills = new Map(), opens = [], hostReads = [];
+  let observer = null;
   const client = {
-    paseo: { agents: { list: async () => ({ entries: state.agents.map(agent => ({ agent })) }) } },
+    paseo: { agents: { list: async (options = {}) => {
+      if (options.subscribe) return { entries: [], subscription: { subscribe(next) { observer = next; return () => { observer = null; }; }, release: async () => {} } };
+      const size = state.pageSize ?? Infinity;
+      const start = options.page?.cursor ? Number(options.page.cursor) : 0;
+      const end = Math.min(state.agents.length, start + size);
+      return { entries: state.agents.slice(start, end).map(agent => ({ agent })), pageInfo: { hasMore: end < state.agents.length, nextCursor: end < state.agents.length ? String(end) : null } };
+    } } },
     addComposerPill: contribution => {
       const pill = { contribution, label: contribution.button.label, removed: false };
       pills.set(contribution.id, pill);
@@ -55,7 +62,7 @@ async function fixture(t) {
   const stop = startOrchestratorPills(client, { lookUp, readHost, readAttention, now: () => clock });
   t.after(stop);
   await turn(); await turn();
-  return { state, pills, opens, hostReads, stop, advance: ms => { clock += ms; }, tick: async () => { await tick(); await turn(); await turn(); } };
+  return { state, pills, opens, hostReads, stop, get observer() { return observer; }, advance: ms => { clock += ms; }, tick: async () => { await tick(); await turn(); await turn(); } };
 }
 
 test("an orchestrator chat gets the host's Agents, Review and Attention bubbles with its counts", async t => {
@@ -123,7 +130,7 @@ test("the host is read at most once a minute, and an unreachable host keeps its 
   assert.equal(f.pills.get("host-attention-orch").label, "Attention · 2", "the open decisions still wait");
 });
 
-test("bubbles go when the chat closes or the folder stops naming a host, and on disposal", async t => {
+test("bubbles go when the chat is archived or the folder stops naming a host, and on disposal", async t => {
   const f = await fixture(t);
   f.state.bindings = {};
   await f.tick();
@@ -131,13 +138,43 @@ test("bubbles go when the chat closes or the folder stops naming a host, and on 
   f.state.bindings = { "orch-ws": { label: "Acme", serverId: "srv_acme" } };
   await f.tick();
   assert.equal(f.pills.size, 3);
-  f.state.agents[0].status = "closed";
+  f.state.agents[0].archivedAt = "2026-11-17T00:00:00Z";
   await f.tick();
   assert.equal(f.pills.size, 0);
-  f.state.agents[0].status = "idle";
+  f.state.agents[0].archivedAt = null;
   await f.tick();
+  assert.equal(f.pills.size, 3);
   f.stop();
   assert.equal(f.pills.size, 0);
+});
+
+test("a chat Paseo released after an idle hour keeps the same host bubbles", async t => {
+  const f = await fixture(t);
+  const before = [...f.pills.values()];
+  f.state.agents[0].status = "closed";
+  await f.tick();
+  assert.deepEqual([...f.pills.keys()].sort(), ["host-agents-orch", "host-attention-orch", "host-review-orch"]);
+  assert.deepEqual([...f.pills.values()], before, "resting doesn't replace the bubbles");
+});
+
+test("orchestrator chats past the first page get bubbles, and a new one arrives from the list subscription", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = await fixture(t);
+  f.state.pageSize = 1;
+  f.state.agents = [
+    { id: "dev", workspaceId: "dev-ws", status: "running", archivedAt: null },
+    { id: "orch", workspaceId: "orch-ws", status: "idle", archivedAt: null },
+  ];
+  await f.tick();
+  assert.deepEqual([...f.pills.keys()].sort(), ["host-agents-orch", "host-attention-orch", "host-review-orch"]);
+  assert.ok(f.observer, "the bubbles follow the agent list");
+  const fresh = { id: "orch-2", workspaceId: "orch-ws", status: "running", archivedAt: null };
+  f.state.agents = [...f.state.agents, fresh];
+  f.observer.update({ type: "agent_update", payload: { kind: "upsert", agent: fresh } });
+  t.mock.timers.tick(1_000);
+  await turn(); await turn(); await turn();
+  assert.ok(f.pills.has("host-agents-orch-2"));
+  assert.ok(f.pills.has("host-review-orch-2"));
 });
 
 test("registration removal clears dialog state, while stale clicks cannot reopen it", async t => {

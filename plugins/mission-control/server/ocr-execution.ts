@@ -30,14 +30,47 @@ async function ocrCommand() {
   // npm's .cmd shim requires a shell. Invoke its installed JS entry with Node instead, keeping every argument separate.
   const entry = join(process.env.APPDATA || "", "npm", "node_modules", "@alibaba-group", "open-code-review", "bin", "ocr.js");
   try { await access(entry); return { file: process.execPath, prefix: [entry] }; }
-  catch { throw new Error("Install open-code-review on this host with npm before starting a managed review."); }
+  catch { throw Object.assign(new Error("Install open-code-review on this host with npm before starting a managed review."), { code: "ENOENT" }); }
 }
-export async function executeOcr(cwd: string, scope: OcrScope, candidate: PipelineCandidate, assignmentId: string) {
-  const command = await ocrCommand();
-  async function run(args: string[]) {
+
+// OCR updates itself in the background (npm install -g) when it runs, so a run can catch its package half replaced.
+const packageFiles = /open-code-review|opencodereview|@alibaba-group[\\/]ocr-/i;
+const fileErrors = /\b(ENOENT|EBUSY|EPERM|EACCES)\b/;
+
+/**
+ * Whether an OCR failure looks like its package being replaced by that self-update: the launcher or native binary is
+ * missing, a module can't be loaded, or a file error names the package's files. Not a review or repository failure.
+ */
+export function looksLikeOcrUpdate(error: unknown): boolean {
+  const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+  if (typeof code === "string" && (fileErrors.test(code) || code === "MODULE_NOT_FOUND")) return true;
+  const text = error instanceof Error ? error.message : String(error);
+  if (/OpenCodeReview binary not found|Cannot find module|MODULE_NOT_FOUND/.test(text)) return true;
+  if (/Failed to start /.test(text) && fileErrors.test(text)) return true;
+  return text.split(/\r?\n/).some(line => fileErrors.test(line) && packageFiles.test(line));
+}
+
+const UPDATE_RETRY_MS = 5_000;
+const pause = (ms: number) => new Promise<void>(done => setTimeout(done, ms));
+
+export async function executeOcr(cwd: string, scope: OcrScope, candidate: PipelineCandidate, assignmentId: string, options: { retryAfterMs?: number; wait?: (ms: number) => Promise<void> } = {}) {
+  const { retryAfterMs = UPDATE_RETRY_MS, wait = pause } = options;
+  // One retry per review: enough to ride out one self-update, not enough to hide a broken install.
+  let retried = false;
+  async function attempt(args: string[]) {
+    const command = await ocrCommand();
     const result = await runProcess(command.file, [...command.prefix, ...args], { cwd, timeoutMs: 20_000, maxBuffer: 4_000_000 });
     if (result.code) throw new Error(`OCR failed: ${result.stderr.slice(-1500) || result.stdout.slice(-1500)}`);
     return result.stdout;
+  }
+  async function run(args: string[]) {
+    try { return await attempt(args); }
+    catch (error) {
+      if (retried || !looksLikeOcrUpdate(error)) throw error;
+      retried = true;
+      await wait(retryAfterMs);
+      return attempt(args);
+    }
   }
   const version = (await run(["--version"])).trim();
   const previews = [previewSchema.parse(JSON.parse(await run(["delegate", "preview", "--format", "json", "--repo", cwd])))];

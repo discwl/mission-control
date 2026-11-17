@@ -49,7 +49,8 @@ export const setupManifestSchema = z.object({
     install: z.enum(["mission-control", "manual"]), optional: z.boolean(), help: helpSchema,
   })),
   ocr: z.object({
-    package: z.string(), version: z.string(), home: z.string(),
+    // The oldest OCR Mission Control supports. Setup installs the newest release, never anything older than what's there.
+    package: z.string(), minimum: z.string(), home: z.string(),
     files: z.array(z.object({ path: z.string(), source: z.string() })),
   }),
   skills: z.object({
@@ -70,7 +71,7 @@ export const setupItemSchema = z.object({
   name: z.string(),
   status: z.enum(setupStatuses),
   version: z.string().nullable(),
-  /** The pinned or minimum version, for example "pinned 1.12.9" or "≥ 22.0.0". */
+  /** The pinned or minimum version, for example "≥ 22.0.0" or "pinned 1.2.3". */
   expected: z.string().nullable(),
   /** What was found and where; errors are shown here too. */
   detail: z.string(),
@@ -231,6 +232,14 @@ export const setupReportSchema = z.object({
   lastResult: setupFinishedSchema.nullable(),
   // Forge tools left out because no project on this host uses their forge (Settings → Delivery shows each project's forge).
   hiddenTools: z.array(z.object({ id: z.string(), name: z.string(), reason: z.string() })).default([]),
+  /**
+   * The checks were still running when Setup answered (it answers within 20 seconds, inside Paseo's 30-second limit on
+   * a plugin call). The report is then the last finished one, or, with `partial`, what this run had found so far: items
+   * it hadn't reached are Unknown, "Still checking…". The screen asks again until `checking` is false. Older Mission
+   * Control servers leave both out.
+   */
+  checking: z.boolean().default(false),
+  partial: z.boolean().default(false),
 });
 export type SetupReport = z.infer<typeof setupReportSchema>;
 
