@@ -1,7 +1,7 @@
 import type { PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { acknowledgeFleetDispatch, configureSupervisor, fleetChanges, fleetSnapshotSchema, pauseFleet, readFleet, readFleetHost, reconcileFleet, setFleetQueue, supervisorEntrySchema, type FleetSnapshot } from "../shared/fleet";
-import { chooseNextTask, coordinatorCandidates, fleetTargets, managedTasks, taskFingerprint, withPipelineProjection } from "../shared/fleet-model";
+import { chooseNextTask, coordinatorCandidates, fleetTargets, managedTasks, taskFingerprint, withPipelineProjection, workingStatuses } from "../shared/fleet-model";
 import { hideSecrets } from "../shared/secret-mask";
 import { isQuiet } from "../shared/agent-tree";
 import { collectFleetHost, fleetDirectory, toFleetAgent, type FleetHostDeps } from "./fleet-host";
@@ -51,7 +51,9 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
       }));
       const warnings = directory.complete ? [] : ["Coordinator roster is truncated. Automatic dispatch is disabled."];
       for (const [workspace, problem] of Object.entries(bindings.problems)) warnings.push(`${workspace}: ${problem}`);
-      return fleetSnapshotSchema.parse({ serverId, observedAt: new Date().toISOString(), coordinators, hosts, state: await store.read(), warnings });
+      // The directory read above already lists them; only working agents are sent, to keep the snapshot small.
+      const localAgents = directory.agents.map(toFleetAgent).filter(agent => !agent.archivedAt && workingStatuses.includes(agent.status));
+      return fleetSnapshotSchema.parse({ serverId, observedAt: new Date().toISOString(), coordinators, hosts, state: await store.read(), warnings, localAgents });
     });
   }
   async function snapshot(refresh = false, maxAgeMs = 10_000): Promise<FleetSnapshot> {

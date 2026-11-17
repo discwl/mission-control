@@ -111,6 +111,12 @@ Changing the configuration of an absent reserved worker is currently unsupported
 
 A future replacement operation needs exact terminal creation evidence (failed with a known outcome), a fresh absence check, a new worker reservation, and an audited run/launch reassignment that can recover from interruption while retaining the old history. That operation is not provided by this update. Current recovery keeps the original task, run, worktree, parent, worker reservation and configuration.
 
+## All work: Running
+
+The sidebar's **All work** row counts running agents (running, initializing or starting, and not waiting on a permission), and **All work → Running** lists exactly those agents, one row each, under the board's host, project, workspace and search filters (`runningAgents` in `client/kanban-model.ts`). The scope is the same on every installation: this computer plus the hosts it manages. On a computer that coordinates other hosts, that means each managed host's agents, the orchestrator chats, and this computer's own agents, which the server now sends with the fleet snapshot (`localAgents`). On a computer that coordinates none, it is that computer, which is already its one host. Each agent appears once. A task's worker opens its task card; any other agent, including an orchestrator, opens its chat.
+
+Freshness is unchanged: a managed host's agents count only from a fresh (90 seconds, measured from this computer's receipt), complete observation, and this computer's own agents and orchestrators only while the snapshot itself is fresh. A failed refresh counts nothing. Where this computer is also the one host, that host's own freshness decides. An older server sends no `localAgents`, so its board lists what it counted before. The task lanes, Needs you and every other page are unchanged.
+
 ## Kanban code review
 
 Open **Kanban → task → Code review**. Tasks waiting for code review open this section directly. The page shows the latest review request for the exact task, run, host and workspace: its saved summary, reviewer/model evidence when recorded, unresolved findings first, validation results and referenced documents. Older records explicitly identify missing reviewer verification or unavailable documents. A completed validation record is historical evidence, not a new check performed by the screen.

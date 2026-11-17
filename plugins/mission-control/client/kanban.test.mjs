@@ -70,6 +70,61 @@ test('local coordinator activity is fresh independently of its offline remote ho
   assert.equal(kanbanSidebarCounts(s, [], now, true).runningAgents, 0);
 });
 
+const { runningAgents } = load('./kanban-model.ts');
+const { filterRunningAgents, emptyKanbanScope, scopeKey } = load('./kanban-filters-model.ts');
+
+test('Running lists exactly the agents the sidebar counts, each once: workers, other agents, orchestrators and this computer', () => {
+  const e = entry(); e.run = run('implement');
+  const s = snapshot([e]);
+  s.hosts[0].snapshot.workspaces = [{ id: 'owned', name: 'Main', projectName: 'Web', branch: null, labels: [], status: 'idle' }, { id: 'side', name: 'Side', projectName: 'Docs', branch: null, labels: [], status: 'idle' }];
+  s.hosts[0].snapshot.agents = [worker(), { ...worker(), id: 'stray', name: 'Side chat', workspaceId: 'side', labels: {} }, { ...worker(), id: 'asking', labels: {}, pendingPermissions: 1 }, { ...worker('idle'), id: 'idle', labels: {} }];
+  const orchestrator = { ...worker(), id: 'orchestrator', name: 'Orchestrator', workspaceId: 'orch', labels: {} };
+  s.coordinators = [{ agentId: 'orchestrator', workspaceId: 'orch', name: 'Orchestrator', remoteServerId: 'remote', hostLabel: 'CNS', agent: orchestrator, links: [] }];
+  // This computer's own agents arrive with the snapshot; the orchestrator is among them and still counts once.
+  s.localAgents = [orchestrator, { ...worker(), id: 'personal-chat', name: 'Notes', workspaceId: null, labels: {} }];
+  const tasks = cards(s);
+  const { agents } = runningAgents(s, tasks, now);
+  assert.deepEqual(agents.map(item => [item.key, item.role, item.task?.row.entry.task.taskId ?? null]), [
+    ['remote:worker', 'worker', 'task_a'], ['remote:stray', 'agent', null], ['personal:orchestrator', 'coordinator', null], ['personal:personal-chat', 'agent', null],
+  ]);
+  assert.equal(agents.find(item => item.key === 'remote:stray').workspaceName, 'Side');
+  assert.equal(agents.find(item => item.key === 'personal:personal-chat').hostLabel, 'This computer');
+  assert.equal(kanbanSidebarCounts(s, tasks, now).runningAgents, agents.length, 'the sidebar counts the same list');
+  // This computer's agents follow the snapshot's own freshness, like coordinators.
+  assert.equal(runningAgents(s, tasks, now + 91_000).agents.length, 0);
+  assert.equal(runningAgents(s, tasks, now, true).agents.length, 0);
+  s.hosts[0].error = 'offline';
+  assert.deepEqual(runningAgents(s, tasks, now).agents.map(item => item.key), ['personal:orchestrator', 'personal:personal-chat'], 'an offline host drops its agents only');
+});
+
+test('on a computer that coordinates no host, its own agents count once, and its own host freshness decides', () => {
+  const e = entry(); e.run = run('implement');
+  const s = snapshot([e]); s.serverId = 'remote'; s.hosts[0].label = 'This computer';
+  s.hosts[0].snapshot.agents = [worker(), { ...worker(), id: 'chat', labels: {} }];
+  s.localAgents = [worker(), { ...worker(), id: 'chat', labels: {} }];
+  const tasks = cards(s);
+  assert.deepEqual(runningAgents(s, tasks, now).agents.map(item => [item.key, item.role]), [['remote:worker', 'worker'], ['remote:chat', 'agent']]);
+  s.hosts[0].snapshot.complete = false;
+  assert.equal(runningAgents(s, cards(s), now).agents.length, 0, 'a partial view of this computer is not live activity');
+});
+
+test('Running follows the board scope and search: workers by their task, other agents by their own workspace', () => {
+  const e = entry(); e.run = run('implement');
+  const s = snapshot([e]);
+  s.hosts[0].snapshot.workspaces = [{ id: 'side', name: 'Side', projectName: 'Docs', branch: null, labels: [], status: 'idle' }];
+  s.hosts[0].snapshot.agents = [worker(), { ...worker(), id: 'stray', name: 'Side chat', workspaceId: 'side', labels: {} }];
+  s.localAgents = [{ ...worker(), id: 'personal-chat', name: 'Notes', workspaceId: null, labels: {} }];
+  const { agents } = runningAgents(s, cards(s), now);
+  const keys = (scope, search = '') => filterRunningAgents(agents, { ...emptyKanbanScope(), ...scope }, search).map(item => item.key).sort();
+  assert.deepEqual(keys({}), ['personal:personal-chat', 'remote:stray', 'remote:worker']);
+  assert.deepEqual(keys({ hosts: ['remote'] }), ['remote:stray', 'remote:worker']);
+  assert.deepEqual(keys({ projects: [scopeKey('remote', 'p')] }), ['remote:worker'], 'only workers have a project');
+  assert.deepEqual(keys({ workspaces: [scopeKey('remote', 'side')] }), ['remote:stray']);
+  assert.deepEqual(keys({ workspaces: [scopeKey('remote', 'owned')] }), ['remote:worker']);
+  assert.deepEqual(keys({}, 'date boundary'), ['remote:worker'], 'a worker matches its task title');
+  assert.deepEqual(keys({}, 'notes'), ['personal:personal-chat']);
+});
+
 test('sidebar excludes unavailable, expired and partial host activity and approvals', () => {
   const e = entry(); e.run = run(); e.decisions = [decision()];
   for (const mode of ['offline', 'old', 'partial', 'invalid', 'failed']) {

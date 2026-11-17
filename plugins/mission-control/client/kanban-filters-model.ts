@@ -1,5 +1,5 @@
 import type { FleetSnapshot } from "../shared/fleet";
-import type { KanbanTask } from "./kanban-model";
+import type { KanbanTask, RunningAgent } from "./kanban-model";
 
 export type KanbanScope = { hosts: string[]; projects: string[]; workspaces: string[] };
 export type ScopeKind = keyof KanbanScope;
@@ -17,6 +17,21 @@ export function matchesKanbanScope(item: KanbanTask, scope: KanbanScope): boolea
     && (!scope.projects.length || scope.projects.includes(scopeKey(item.row.serverId, item.row.entry.task.projectId)))
     && (!scope.workspaces.length || taskWorkspaceKeys(item).some(id => scope.workspaces.includes(id)));
 }
+/**
+ * The Running list under the board's scope and search. A worker follows its task's project and workspaces; any other
+ * agent has no project, so a project selection leaves it out, and it matches a workspace selection by its own workspace.
+ * Newest activity first.
+ */
+export function filterRunningAgents(agents: readonly RunningAgent[], scope: KanbanScope, search: string): RunningAgent[] {
+  const needle = search.trim().toLowerCase();
+  return agents.filter(item => (!scope.hosts.length || scope.hosts.includes(item.serverId))
+    && (!scope.projects.length || Boolean(item.task && scope.projects.includes(scopeKey(item.task.row.serverId, item.task.row.entry.task.projectId))))
+    && (!scope.workspaces.length || (item.task ? taskWorkspaceKeys(item.task).some(id => scope.workspaces.includes(id)) : scope.workspaces.includes(scopeKey(item.serverId, item.agent.workspaceId))))
+    && (!needle || [item.hostLabel, item.agent.name, item.workspaceName, item.projectName, item.task?.row.entry.task.title, item.task?.row.entry.task.ticket?.key, item.task?.row.entry.task.taskId]
+      .filter(Boolean).join(" ").toLowerCase().includes(needle)))
+    .sort((a, b) => String(b.agent.activityAt ?? b.agent.updatedAt).localeCompare(String(a.agent.activityAt ?? a.agent.updatedAt)) || a.key.localeCompare(b.key));
+}
+
 /** Changing a parent clears its children; refresh never silently broadens a selection. */
 export function changeKanbanScope(scope: KanbanScope, kind: ScopeKind, ids: string[]): KanbanScope {
   return kind === "hosts" ? { hosts: ids, projects: [], workspaces: [] }

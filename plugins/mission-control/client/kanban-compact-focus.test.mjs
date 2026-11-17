@@ -9,8 +9,14 @@ const lanes = [
   { id: "attention", title: "Needs you" }, { id: "done", title: "Done" },
 ];
 const tasks = lanes.slice(0, 3).map(lane => ({ lane: lane.id, row: { key: lane.id } }));
+// Running lists agents: a task's worker, and an orchestrator chat that belongs to no task.
+const running = [
+  { key: "remote:worker", serverId: "remote", task: tasks[1], agent: { id: "worker" } },
+  { key: "local:orchestrator", serverId: "local", task: null, agent: { id: "orchestrator" } },
+];
 function fixture(compact) {
   const state = []; let cursor = 0;
+  const opened = [];
   const jsx = (type, props) => ({ type, props: props ?? {} });
   const query = { tasks, data: { hosts: [], warnings: [], serverId: "local" }, isPending: false, isFetching: false, isError: false, refetch() {} };
   const dependencies = {
@@ -25,23 +31,26 @@ function fixture(compact) {
       kanbanLanes: lanes, kanbanLayout: () => ({ singleLane: compact, laneWidth: 300 }),
       filterKanban: (items, _host, _lane, _search, focus) => items.filter(item => focus === "Needs you" ? item.lane === "attention" : focus === "Running" ? item.lane === "working" : true),
       kanbanCounts: items => ({ needsYou: items.filter(item => item.lane === "attention").length, running: items.filter(item => item.lane === "working").length, unconfirmed: 0 }),
+      runningAgents: () => ({ agents: running, unavailable: new Set() }),
     },
     "./kanban-filters-model": {
       emptyKanbanScope: () => ({ hosts: [], projects: [], workspaces: [] }), matchesKanbanScope: () => true,
       kanbanFilterOptions: () => ({ hosts: [], projects: [], workspaces: [] }), changeKanbanScope: (current, kind, ids) => ({ ...current, [kind]: ids }),
+      filterRunningAgents: agents => agents,
     },
+    "./kanban-origin": { KanbanOrigin: "KanbanOrigin", navigateFromKanban: (_serverId, navigate) => navigate() },
   };
   const source = fs.readFileSync(new URL("./kanban.tsx", import.meta.url), "utf8");
   const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText;
   const module = { exports: {} };
   new Function("require", "exports", "module", code)(name => dependencies[name] ?? new Proxy({}, { get: (_, key) => String(key) }), module.exports, module);
-  const render = () => { cursor = 0; return module.exports.Kanban({ theme: { colors: {} }, host: { id: "local" }, layout: { compact }, navigation: {}, params: {} }); };
-  return { render, press(prefix) { const button = nodes(render()).find(node => node.props.label?.startsWith(prefix)); assert.ok(button, `missing control: ${prefix}`); button.props.onPress(); } };
+  const render = () => { cursor = 0; return module.exports.Kanban({ theme: { colors: {} }, host: { id: "local" }, layout: { compact }, navigation: { openAgent: target => opened.push(target) }, params: {} }); };
+  return { render, opened, press(prefix) { const button = nodes(render()).find(node => node.props.label?.startsWith(prefix)); assert.ok(button, `missing control: ${prefix}`); button.props.onPress(); } };
 }
 function nodes(node) {
   if (!node || typeof node !== "object") return [];
   if (Array.isArray(node)) return node.flatMap(nodes);
-  return [node, ...nodes(node.props?.children), ...nodes(node.props?.ListHeaderComponent)];
+  return [node, ...nodes(node.props?.children), ...nodes(node.props?.ListHeaderComponent), ...nodes(node.props?.ListEmptyComponent)];
 }
 const mobileData = tree => nodes(tree).find(node => node.props.testID === "kanban-mobile-list").props.data.map(item => item.row.key);
 
@@ -50,8 +59,24 @@ test("compact focus controls immediately show matching Needs you and Running car
   assert.deepEqual(mobileData(view.render()), ["queue"]);
   view.press("Needs you ·");
   assert.deepEqual(mobileData(view.render()), ["attention"]);
+  view.press("Running · 2");
+  const tree = nodes(view.render());
+  assert.equal(tree.some(node => node.props.testID === "kanban-mobile-list"), false, "Running lists agents, not lanes of task cards");
+  assert.deepEqual(runningList(tree).props.data.map(item => item.key), ["remote:worker", "local:orchestrator"]);
+});
+
+const runningList = tree => tree.find(node => node.props.testID === "kanban-running-list");
+const row = (list, index) => list.props.renderItem({ item: list.props.data[index] }).props.children;
+
+for (const compact of [true, false]) test(`${compact ? "compact" : "desktop"} Running opens a worker's task, and any other agent's chat`, () => {
+  const view = fixture(compact);
   view.press("Running ·");
-  assert.deepEqual(mobileData(view.render()), ["working"]);
+  row(runningList(nodes(view.render())), 1).props.open();
+  assert.deepEqual(view.opened, [{ serverId: "local", agentId: "orchestrator" }]);
+  row(runningList(nodes(view.render())), 0).props.open();
+  const detail = nodes(view.render()).find(node => node.props.item?.row?.key === "working");
+  assert.ok(detail, "the worker's task opens in place of the list");
+  assert.equal(runningList(nodes(view.render())), undefined);
 });
 
 test("compact automatic lane choice does not override a lane explicitly selected by the user", () => {

@@ -2,6 +2,9 @@ import type { FleetAgent, FleetCoordinator, FleetHost, FleetQueueEntry, FleetTas
 import type { OrchestratorWork } from "./orchestrator-work";
 
 /** A coordinator can itself have been created by a setup agent in a different workspace. */
+/** Agent statuses All work counts as running. */
+export const workingStatuses: readonly string[] = ["running", "initializing", "starting"];
+
 export function coordinatorCandidates(agents: readonly FleetAgent[]): FleetAgent[] {
   return agents.filter(agent => !agent.archivedAt && agent.workspaceId && !agents.some(parent => parent.id === agent.labels["paseo.parent-agent-id"] && parent.workspaceId === agent.workspaceId));
 }

@@ -73,6 +73,10 @@ export const fleetSnapshotSchema = z.object({
   hosts: z.array(z.object({ serverId: z.string(), label: z.string(), snapshot: fleetHostSchema.nullable(), error: z.string().nullable() })),
   state: fleetStateSchema, warnings: z.array(z.string()),
   heartbeat: z.object({ checkedAt: z.string().nullable(), error: z.string().nullable() }).default({ checkedAt: null, error: null }),
+  // This computer's own working agents (running, initializing or starting), observed with the snapshot, so All work
+  // counts and lists the same scope everywhere: this computer plus the hosts it manages. A computer that coordinates
+  // none already returns its agents as its one host; older servers leave this out.
+  localAgents: z.array(fleetAgentSchema).default([]),
 });
 export type FleetSnapshot = z.infer<typeof fleetSnapshotSchema>;
 // This RPC executes beside the target host's vault, never on a substituted host.
