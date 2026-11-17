@@ -130,6 +130,7 @@ test("Start, Resume and /mission-task prompts load current effective guidance fo
     "./tasks": { localServerId: async () => identity.serverId, assignedTask: async (serverId, workspaceId, taskId) => { assert.equal(serverId, identity.serverId); assert.equal(workspaceId, "wks_a"); assert.equal(taskId, "task_aaaa"); return { task, file: "task.md" }; } },
     "../shared/vault": { defaultVaultPath: root },
     "../shared/runs": { runSchema: {} },
+    "../shared/tasks": loadTs("../shared/tasks.ts", {}),
   });
   await save(store, null, { intake: "Ask about unclear scope.", planning: "Read Confluence." });
   let prompt = (await runs.taskAgentPrompt("wks_a", "task_aaaa")).prompt;
