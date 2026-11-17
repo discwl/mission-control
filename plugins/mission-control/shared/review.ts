@@ -51,7 +51,8 @@ export const reviewSnapshotSchema = z.object({
   head: z.string().nullable(),
   // What the working tree is compared against: the last commit, nothing yet, the parent of a chosen
   // commit ("commit"), or a branch point such as where a task worktree started ("since").
-  base: z.enum(["head", "empty", "commit", "since"]),
+  base: z.enum(["head", "empty", "commit", "since", "branch"]),
+  comparison: z.object({ ref: z.string(), baseRef: z.string(), baseCommit: z.string(), worktree: z.string().nullable() }).optional(),
   // Set when reviewing from a commit onward: that commit and how many commits are included.
   fromCommit: z.object({ sha: z.string(), short: z.string(), subject: z.string(), commits: z.number().int() }).nullable(),
   // Set when reviewing everything after a branch point: that commit and how many commits followed it.
@@ -72,6 +73,12 @@ export const reviewCommitSchema = z.object({ sha: z.string(), short: z.string(),
 export type ReviewCommit = z.infer<typeof reviewCommitSchema>;
 
 const workspaceRef = z.object({ serverId: z.string().min(1), workspaceId: z.string().min(1) });
+const branchRef = z.string().min(1).max(1000).regex(/^refs\/(heads|remotes)\//);
+const reviewScope = workspaceRef.extend({ branchRef: branchRef.optional() });
+export const getReviewBranches = defineRpc({ name: "review.branches", input: workspaceRef, output: z.object({
+  defaultBranch: z.string().nullable(), currentRef: z.string().nullable(), branches: z.array(z.object({ ref: z.string(), name: z.string(), remote: z.boolean() })),
+}) });
+export const getReviewBranchSnapshot = defineRpc({ name: "review.branch.snapshot", input: workspaceRef.extend({ branchRef }), output: reviewSnapshotSchema });
 // Review state per workspace: reviewed marks, and what to compare with. `from` includes a chosen
 // commit; `since` excludes a branch point; both null means uncommitted changes only. `branchBase`
 // remembers where a task worktree branched so the choice can be offered again.
@@ -89,8 +96,10 @@ export const readReviewFile = defineRpc({
   input: workspaceRef.extend({ path: z.string().min(1).max(1000) }),
   output: z.object({ text: z.string(), truncated: z.boolean() }),
 });
-const reviewPathRef = workspaceRef.extend({ path: z.string().min(1).max(1000), directory: z.boolean() });
+// Checkout file actions must reject a branch-scoped request before resolving a host path.
+const reviewPathRef = workspaceRef.extend({ branchRef: z.never().optional(), path: z.string().min(1).max(1000), directory: z.boolean() });
 export const readReviewWorkingFile = defineRpc({ name: "review.working-file", input: workspaceRef.extend({ path: z.string().min(1).max(1000) }), output: z.object({ text: z.string(), truncated: z.boolean(), image: z.object({ mimeType: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp"]), base64: z.string().max(2_800_000) }).optional() }) });
+export const readReviewBranchFile = defineRpc({ name: "review.branch.file", input: workspaceRef.extend({ commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/), path: z.string().min(1).max(1000) }), output: readReviewWorkingFile.output });
 export const revealReviewItem = defineRpc({ name: "review.reveal", input: reviewPathRef, output: z.object({ ok: z.literal(true) }) });
 export const resolveReviewItemPath = defineRpc({ name: "review.item-path", input: reviewPathRef, output: z.object({ path: z.string() }) });
 export const prepareReviewDiscard = defineRpc({ name: "review.discard.prepare", input: reviewPathRef, output: z.object({ paths: z.array(z.string()), removePaths: z.array(z.string()), token: z.string().regex(/^[a-f0-9]{64}$/) }) });
@@ -108,10 +117,10 @@ export const setReviewSince = defineRpc({
   output: marksSchema,
 });
 
-export const getReviewMarks = defineRpc({ name: "review.marks.get", input: workspaceRef, output: marksSchema });
+export const getReviewMarks = defineRpc({ name: "review.marks.get", input: reviewScope, output: marksSchema });
 export const setReviewMarks = defineRpc({
   name: "review.marks.set",
-  input: workspaceRef.extend({ ids: z.array(z.string().regex(/^[a-f0-9]{16}$/)).min(1).max(500), reviewed: z.boolean() }),
+  input: reviewScope.extend({ ids: z.array(z.string().regex(/^[a-f0-9]{16}$/)).min(1).max(500), reviewed: z.boolean() }),
   output: marksSchema,
 });
 // For the chat bubble: installation-host workspaces only, so no serverId is needed.
@@ -155,20 +164,20 @@ export const reviewCommentSchema = z.object({
 export type ReviewComment = z.infer<typeof reviewCommentSchema>;
 const commentsSchema = z.object({ comments: z.array(reviewCommentSchema) });
 
-export const listReviewComments = defineRpc({ name: "review.comments.list", input: workspaceRef, output: commentsSchema });
+export const listReviewComments = defineRpc({ name: "review.comments.list", input: reviewScope, output: commentsSchema });
 export const saveReviewComment = defineRpc({
   name: "review.comments.save",
-  input: workspaceRef.extend({ commentId: z.string().regex(/^c_[a-f0-9]{16}$/).optional(), path: z.string().min(1).max(1000), anchor: commentAnchorSchema.nullable(), body: z.string().trim().min(1).max(4000) }),
+  input: reviewScope.extend({ commentId: z.string().regex(/^c_[a-f0-9]{16}$/).optional(), path: z.string().min(1).max(1000), anchor: commentAnchorSchema.nullable(), body: z.string().trim().min(1).max(4000) }),
   output: commentsSchema,
 });
 export const updateReviewComment = defineRpc({
   name: "review.comments.update",
-  input: workspaceRef.extend({ commentId: z.string().regex(/^c_[a-f0-9]{16}$/), action: z.enum(["delete", "resolve", "reopen", "confirm-sent", "confirm-not-sent"]) }),
+  input: reviewScope.extend({ commentId: z.string().regex(/^c_[a-f0-9]{16}$/), action: z.enum(["delete", "resolve", "reopen", "confirm-sent", "confirm-not-sent"]) }),
   output: commentsSchema,
 });
 export const sendReviewComments = defineRpc({
   name: "review.comments.send",
-  input: workspaceRef.extend({
+  input: reviewScope.extend({
     agentId: z.string().min(1),
     commentIds: z.array(z.string().regex(/^c_[a-f0-9]{16}$/)).min(1).max(50),
     workspaceName: z.string().max(300),

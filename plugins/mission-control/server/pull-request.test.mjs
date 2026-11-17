@@ -189,6 +189,23 @@ async function scenario(t, { remote = "https://github.com/acme/widgets.git", mod
   };
 }
 
+test("the host reconciles an external merged PR and preserves the branch and workspace for explicit cleanup", async t => {
+  const s = await scenario(t);
+  const head = s.git(s.repo, "rev-parse", `refs/heads/${branch}`);
+  s.tools["gh pr list"] = { stdout: JSON.stringify([{ number: 71, state: "MERGED", isCrossRepository: false, headRefName: branch, baseRefName: "master", headRefOid: head, createdAt: "2026-09-22T00:00:00Z" }]) };
+  await s.saveTools();
+  await Promise.all([s.service.reconcileMerged(serverId, s.paseo), s.service.reconcileMerged(serverId, s.paseo)]);
+  assert.equal(s.readTask().status, "delivered");
+  assert.equal(s.readTask().pullRequest.number, 71);
+  assert.ok(s.readTask().pullRequest.mergedAt);
+  assert.equal(s.git(s.repo, "rev-parse", `refs/heads/${branch}`), head);
+  assert.equal(existsSync(s.worktree), true);
+  assert.equal((await s.list(false)).length, 1);
+  assert.deepEqual(s.events, []);
+  await s.service.reconcileMerged(serverId, s.paseo);
+  assert.equal((await s.calls()).filter(item => item.args[1] === "list").length, 1);
+});
+
 const failing = status => status.checks.filter(item => !item.ok).map(item => item.id);
 const detail = (status, id) => status.checks.find(item => item.id === id)?.detail;
 const originHas = (s, name) => { try { return s.git(s.origin, "rev-parse", "--verify", "--quiet", `refs/heads/${name}`); } catch { return ""; } };

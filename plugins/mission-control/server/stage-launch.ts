@@ -8,7 +8,7 @@ import { missingReviewRole, nextPipelineStep, pipelineFingerprint } from "../sha
 import { pipelinePrompt } from "./pipeline-engine";
 import { type FleetStore } from "./fleet-store";
 import { effectiveAgentPolicy, verifyProfileAvailability } from "./agent-policy";
-import { assignedTask } from "./tasks";
+import { assignedTask, rereadAssignedTask } from "./tasks";
 import { taskAgentPrompt } from "./runs";
 import { profileKitRoot } from "./decisions";
 import { defaultVaultPath } from "../shared/vault";
@@ -56,6 +56,10 @@ export async function launchManagedStage(input: z.infer<typeof launchPipelineSta
   if (!next.dispatch || !["plan", "plan-review", "execute", "fix", "validate", "review"].includes(next.stage) || pipelineFingerprint(facts, next) !== input.fingerprint) throw new Error("Stage changed before launch.");
   const source = await assignedTask(input.serverId, input.workspaceId, input.row.taskId);
   if (!source.folder) throw new Error("A task folder is required.");
+  function verifyDelivery(task: typeof source.task) {
+    if (["delivered", "closed"].includes(task.status) || task.pullRequest || task.deliveryHistory?.at(-1)?.reopenedAt !== input.row.reopenedAt || (input.row.reopenedAt && task.worktree?.workspaceId !== input.workspaceId)) throw new Error("This stage no longer belongs to the task's active delivery or fix workspace. Refresh the task.");
+  }
+  verifyDelivery(source.task);
   const standard = input.row.workflowMode === "automatic" && input.row.workflow === "standard";
   const policy = await effectiveAgentPolicy(store, paseo, source.task.projectId, source.task.taskId, standard ? "standard" : input.row.workflowMode ?? "manual");
   if (!policy || policy.revision !== facts.agentPolicy?.revision) throw new Error("Choose native agent profiles on this host before launching a managed stage.");
@@ -88,6 +92,7 @@ export async function launchManagedStage(input: z.infer<typeof launchPipelineSta
   const root = await realpath(source.folder); const lockPath = join(root, ".stage-launch.lock");
   const lock = await acquireStageLock(lockPath, input.requestId);
   try {
+    verifyDelivery(await rereadAssignedTask(source, input.serverId, input.workspaceId));
     let agentId = randomUUID() as string; const id = randomUUID();
     const createAgent = () => paseo.workspaces.ref(input.workspaceId).agents.create({ agentId, idempotencyKey: input.requestId, parent: input.parent, title: `${source.task.title} · ${role}`, labels: { "mission-control.task-id": source.task.taskId, "mission-control.role": role },
       config: { provider: `${profile.provider}/${profile.model}`, ...(profile.modeId ? { modeId: profile.modeId } : {}), ...(profile.thinkingOptionId ? { thinkingOptionId: profile.thinkingOptionId } : {}), ...(profile.featureValues ? { featureValues: profile.featureValues } : {}) } });
@@ -160,6 +165,8 @@ export async function launchManagedStage(input: z.infer<typeof launchPipelineSta
       "Stop after your assigned stage, including when a later human approval arrives. The runner launches the next role; approval does not turn this agent into the next role.",
       manifest ? `OCR has already run. Read ${join(folder, manifest)} for the exact file/status checklist, exclusions, rules and scope. Inspect every selected diff with those rules. Do not read another reviewer's report until your own review is saved. For your checkpoint include coverage:[{path,status,outcome:"reviewed"|"skipped",reason:""}] and findings:[{title,severity:"high"|"medium"|"low",detail,file}]. Account for EVERY selected file/status pair. A skipped reviewable file or unresolved finding prevents a passing review. Explicitly disclose excluded files and any acceptance-criteria gaps. Save your own report; the coordinator checks the required review evidence and prepares the final authorization checkpoint. Do not request the human review decision yourself.` : "",
     ].filter(Boolean).join("\n\n");
+    // The worker or OCR setup can outlast a merge. Check again before sending any instructions.
+    verifyDelivery(await rereadAssignedTask(source, input.serverId, input.workspaceId));
     await progress("sending", { agentId, runId });
     await agent.send(instructions, { messageId: input.requestId });
     return { agentId, runId };

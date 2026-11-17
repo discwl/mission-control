@@ -189,6 +189,19 @@ test('independent review is work; a saved open review is a human decision', () =
   assert.equal(cards(s)[0].lane, 'attention'); assert.equal(cards(s)[0].tab, 'Code review');
 });
 
+test('a published PR waits for a confirmed merge and never creates a decision by itself', () => {
+  const e = entry(); e.run = run('delivery'); e.task.status = 'in_review'; e.task.pullRequest = { number: 12, observedState: 'open' };
+  const waiting = cards(snapshot([e]))[0];
+  assert.equal(waiting.lane, 'progress'); assert.equal(waiting.needsYou, false); assert.match(waiting.label, /PR open/);
+  assert.match(kanbanGuidance(waiting).after, /confirms the merge/);
+  e.task.pullRequest.observedState = 'closed'; assert.match(cards(snapshot([e]))[0].label, /closed without merging/);
+  e.task.pullRequest.observedState = 'unknown'; assert.match(cards(snapshot([e]))[0].label, /status unavailable/);
+  e.questions = [{ question: { status: 'open', question: 'Which environment?' } }];
+  assert.equal(cards(snapshot([e]))[0].needsYou, true, 'a specific open question remains visible');
+  e.task.status = 'delivered'; assert.match(cards(snapshot([e]))[0].label, /merge unconfirmed/);
+  e.task.pullRequest.mergedAt = at;
+  const delivered = cards(snapshot([e]))[0]; assert.equal(delivered.lane, 'done'); assert.match(delivered.label, /PR #12 merged/);
+});
 test('a completed run or idle agent cannot mark a task done', () => {
   const e = entry(); e.run = run('execute'); e.decisions = [decision('plan', { status: 'approved' })];
   const s = snapshot([e]); s.hosts[0].snapshot.agents = [worker('idle')];
@@ -354,7 +367,9 @@ test('guidance explains real saved requests and automatic planning without inven
   const e = entry(); e.run = { ...run(), workflowMode: 'automatic' };
   const planning = cards(snapshot([e]))[0];
   assert.match(kanbanGuidance(planning).why, /no decision waiting/);
-  assert.match(kanbanGuidance(planning).after, /different model checks/);
+  assert.match(kanbanGuidance(planning).after, /configured for this task/);
+  e.runWorkflow = 'advanced'; assert.match(kanbanGuidance(cards(snapshot([e]))[0]).after, /different model checks/);
+  e.runWorkflow = 'standard'; assert.match(kanbanGuidance(cards(snapshot([e]))[0]).after, /One independent reviewer/);
   e.decisions = [decision()]; assert.match(kanbanGuidance(cards(snapshot([e]))[0]).title, /approve/);
   e.decisions = [decision('review')]; assert.match(kanbanGuidance(cards(snapshot([e]))[0]).title, /accept/);
 });

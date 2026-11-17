@@ -1,0 +1,110 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+
+const require = createRequire(import.meta.url);
+const ts = require("typescript");
+require.extensions[".ts"] = (module, file) => module._compile(ts.transpileModule(readFileSync(file, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, file);
+const { recordMergedTaskPR, recordObservedTaskPR, markMergedTaskPRCleanedUp, reopenTaskSource } = require("./tasks.ts");
+const { acceptsTaskRequest } = require("../shared/tasks.ts");
+const { runRecordsOf } = require("./runs.ts");
+const date = "2026-10-01T00:00:00.000Z";
+const pr = { forge: "github", url: "https://github.com/example/project/pull/3", repository: "example/project", number: 3, taskBranch: "feature/original", targetBranch: "main", head: "a".repeat(40), createdAt: date };
+const worktree = { workspaceId: "original", sourceWorkspaceId: "main", branch: pr.taskBranch, baseCommit: "b".repeat(40), createdAt: date };
+const ticket = { system: "jira", key: "A-6", url: "https://example.com/A-6" };
+const markdown = (fields, body) => `---\n${Object.entries(fields).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join("\n")}\n---\n${body}\n`;
+async function fixture(t, extra = {}) {
+  const folder = await mkdtemp(join(tmpdir(), "mc-delivery-"));
+  t.after(() => rm(folder, { recursive: true, force: true }));
+  const file = join(folder, "task.md");
+  const task = { schemaVersion: 1, taskId: "task_aaaa", hostId: "host", projectId: "project", title: "QA correction", acceptanceCriteria: "Keep history", source: "manual", status: "in_review", createdAt: date, updatedAt: date,
+    assignments: ["main", "original"].map(workspaceId => ({ serverId: "server", workspaceId })), ticket, worktree, ...extra };
+  await writeFile(file, markdown({ ...task, futureFlag: 42 }, "# original task body"));
+  return { file, folder, task };
+}
+const reopenArgs = task => ({ serverId: "server", workspaceId: "main", reason: "Reproduce the QA failure", expectedUpdatedAt: task.updatedAt });
+const prepare = async (_task, branch) => ({ branch, workspaceId: "fix", baseCommit: "c".repeat(40) });
+
+test("verified delivery is idempotent, keeps unknown metadata and leaves cleanup explicit", async t => {
+  const source = await fixture(t);
+  const observed = await recordObservedTaskPR(source, pr, "open");
+  assert.equal(observed.status, "in_review");
+  assert.equal(observed.pullRequest.mergedAt, undefined);
+  const unknown = await recordObservedTaskPR({ ...source, task: observed }, pr, "unknown");
+  assert.equal(unknown.pullRequest.url, pr.url);
+  const closed = await recordObservedTaskPR({ ...source, task: unknown }, pr, "closed");
+  assert.equal(closed.status, "in_review");
+  assert.equal((await recordObservedTaskPR({ ...source, task: closed }, pr, "closed")).updatedAt, closed.updatedAt);
+  await assert.rejects(recordMergedTaskPR(source, pr), /changed/);
+  const delivered = await recordMergedTaskPR({ ...source, task: closed }, pr);
+  assert.equal(delivered.status, "delivered");
+  assert.ok(delivered.pullRequest.mergedAt);
+  assert.equal(delivered.pullRequest.cleanedUpAt, undefined);
+  assert.equal((await recordMergedTaskPR(source, pr)).updatedAt, delivered.updatedAt);
+  assert.equal((await recordObservedTaskPR(source, pr, "open")).status, "delivered");
+  await assert.rejects(markMergedTaskPRCleanedUp(source, pr), /changed/);
+  const cleaned = await markMergedTaskPRCleanedUp({ ...source, task: delivered }, pr);
+  assert.ok(cleaned.pullRequest.cleanedUpAt);
+  const raw = await readFile(source.file, "utf8");
+  assert.match(raw, /futureFlag: 42/);
+  assert.match(raw, /# original task body/);
+});
+
+test("reopen uses one fresh workspace, preserves the ticket and old PR, and isolates earlier work", async t => {
+  const source = await fixture(t);
+  const delivered = await recordMergedTaskPR(source, pr);
+  const input = reopenArgs(delivered);
+  const old = { ...source, task: delivered };
+  const attempts = [];
+  const fix = await reopenTaskSource(old, input, async (...args) => { attempts.push(args); return prepare(...args); });
+  assert.equal(fix.status, "ready");
+  assert.deepEqual(fix.ticket, ticket);
+  assert.equal(fix.taskId, delivered.taskId);
+  assert.equal(fix.pullRequest, undefined);
+  assert.equal(fix.deliveryHistory[0].pullRequest.url, pr.url);
+  assert.equal(fix.deliveryHistory[0].reason, input.reason);
+  assert.equal(fix.worktree.sourceWorkspaceId, "main");
+  assert.equal(fix.assignments.length, 3);
+  assert.equal(acceptsTaskRequest(fix, "original"), false);
+  assert.equal(acceptsTaskRequest(fix, "fix"), true);
+  assert.equal(acceptsTaskRequest(delivered, "original"), false);
+  const repeat = await reopenTaskSource(old, input, () => assert.fail("Duplicate reopen"));
+  assert.equal(repeat.updatedAt, fix.updatedAt);
+  await assert.rejects(recordMergedTaskPR(old, pr), /different task branch|earlier delivery/);
+  await assert.rejects(markMergedTaskPRCleanedUp(old, pr), /changed/);
+  const folder = join(old.folder, "runs", "run_aaaa");
+  await mkdir(folder, { recursive: true });
+  const run = { schemaVersion: 1, runId: "run_aaaa", taskId: fix.taskId, hostId: fix.hostId, projectId: fix.projectId, serverId: "server", workspaceId: "original", agentId: "worker", stage: "handoff", outcome: "completed", createdAt: date, updatedAt: date, nextAction: "Review", gitHead: pr.head, gitDirty: false, gitChanges: [], omittedChanges: 0 };
+  await writeFile(join(folder, "run.md"), markdown(run, "# historical run"));
+  assert.deepEqual(await runRecordsOf({ ...source, task: fix }, "server"), []);
+  assert.equal((await runRecordsOf({ ...source, task: fix }, "server", true))[0].runId, run.runId);
+  const newPR = { ...pr, taskBranch: fix.worktree.branch, number: 4, url: pr.url.replace(/3$/, "4") };
+  const deliveredAgain = await recordMergedTaskPR({ ...source, task: fix }, newPR);
+  assert.equal(deliveredAgain.pullRequest.number, 4);
+  assert.equal(deliveredAgain.deliveryHistory[0].pullRequest.number, 3);
+  assert.equal(attempts.length, 1);
+});
+
+test("partial and simultaneous reopen preparations leave a recoverable single branch identity", async t => {
+  const source = await fixture(t, { pullRequest: pr });
+  await assert.rejects(reopenTaskSource(source, reopenArgs(source.task), prepare), /confirmed merged/);
+  const task = await recordMergedTaskPR(source, pr);
+  const old = { ...source, task };
+  const input = reopenArgs(task);
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  let reserved;
+  const first = reopenTaskSource(old, input, async (_task, branch, key) => { reserved = { branch, key }; entered(); await gate; throw new Error("host disconnected"); });
+  await started;
+  await assert.rejects(reopenTaskSource(old, input, () => assert.fail()), /being updated/);
+  release();
+  await assert.rejects(first, /disconnected/);
+  assert.deepEqual((await recordMergedTaskPR(old, pr)).pullRequest, task.pullRequest);
+  const fix = await reopenTaskSource(old, input, async (current, branch, key) => { assert.deepEqual({ branch, key }, reserved); return prepare(current, branch); });
+  assert.equal(fix.status, "ready");
+});

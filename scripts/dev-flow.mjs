@@ -176,7 +176,7 @@ function gitState(cwd, repository, checkoutRoot) {
   return { head, root, dirty: changes.length > 0, changes: changes.slice(0, 30), omittedChanges: Math.max(0, changes.length - 30) };
 }
 
-async function binding(args) {
+async function binding(args, readOnly = false) {
   const loaded = await loadTask(required(args.task, "--task"));
   const host = JSON.parse(await readFile(join(loaded.root, "host.json"), "utf8"));
   if (host.schemaVersion !== 1 || host.serverId !== required(args.server, "--server") || host.hostId !== loaded.task.hostId) {
@@ -186,6 +186,7 @@ async function binding(args) {
   if (!loaded.task.assignments.some(item => item.serverId === host.serverId && item.workspaceId === workspaceId)) {
     throw new Error("Task is not assigned to this workspace.");
   }
+  if (!readOnly && loaded.task.deliveryHistory?.length && loaded.task.worktree?.workspaceId !== workspaceId) throw new Error("This workspace belongs to an earlier delivery. Continue in the current fix workspace.");
   const profile = await loadProfile(loaded.root, loaded.task.projectId);
   if (profile.hostId !== host.hostId) throw new Error("Project profile belongs to another host.");
   const cwd = await realpath(args.cwd || process.cwd());
@@ -207,7 +208,7 @@ async function runFolder(taskFolder, runId) {
   return folder;
 }
 
-async function latestRun(taskFolder) {
+async function latestRun(taskFolder, task) {
   let names;
   try { names = await readdir(join(taskFolder, "runs")); }
   catch (error) { if (error.code === "ENOENT") return null; throw error; }
@@ -216,15 +217,15 @@ async function latestRun(taskFolder) {
     const folder = await runFolder(taskFolder, name);
     const run = parseRecord(await readFile(join(folder, "run.md"), "utf8"), "Run");
     if (run.runId !== name) throw new Error("Run ID does not match its folder.");
-    runs.push({ folder, run });
+    if (!task.deliveryHistory?.length || run.workspaceId === task.worktree?.workspaceId) runs.push({ folder, run });
   }
   runs.sort((a, b) => b.run.updatedAt.localeCompare(a.run.updatedAt));
   return runs[0] || null;
 }
 
 async function context(args) {
-  const bound = await binding(args);
-  const latest = await latestRun(bound.folder);
+  const bound = await binding(args, true);
+  const latest = bound.task.deliveryHistory?.length && bound.workspaceId !== bound.task.worktree?.workspaceId ? null : await latestRun(bound.folder, bound.task);
   let handoff = null;
   if (latest) {
     try { handoff = await readFile(join(latest.folder, "handoff.md"), "utf8"); }
@@ -243,6 +244,7 @@ async function context(args) {
 
 async function start(args) {
   const bound = await binding(args);
+  if (bound.task.status === "delivered" && bound.task.pullRequest?.mergedAt) throw new Error("This task was delivered. Reopen it to start a fix.");
   const agentId = args.agent || process.env.PASEO_AGENT_ID || null;
   if (agentId && !/^[a-zA-Z0-9_-]{1,128}$/.test(agentId)) throw new Error("Invalid agent ID.");
   const runs = join(bound.folder, "runs");
@@ -852,10 +854,10 @@ async function applyWorkspaceLabel(bound, args, client, api, readTasks = linkedW
 }
 
 async function workspaceLabel(args) {
-  const bound = await binding(args);
+  const bound = await binding(args, args.action === "get");
   const endpoint = new URL(args.url || "ws://127.0.0.1:6767/ws");
   if (!["ws:", "wss:"].includes(endpoint.protocol) || endpoint.username || endpoint.password) throw new Error("--url must be a WebSocket endpoint without embedded credentials.");
-  const latest = await latestRun(bound.folder);
+  const latest = await latestRun(bound.folder, bound.task);
   bound.latestRun = latest?.run || null;
   bound.decisions = latest ? (await readDecisions(latest.folder)).map(item => item.decision) : [];
   const require = createRequire(new URL("../plugins/mission-control/package.json", import.meta.url));

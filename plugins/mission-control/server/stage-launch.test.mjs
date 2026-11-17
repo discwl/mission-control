@@ -25,6 +25,7 @@ async function fixture(t, automatic = false) {
   const created = []; const sent = []; const calls = []; const catalogCalls = [];
   const paseo = { workspaces: { ref: () => ({ refresh: async () => ({ workspaceDirectory: root, projectId: "project" }), agents: { create: async input => { created.push(input); return { send: async (...args) => sent.push(args) }; } } }) } };
   t.mock.method(tasks, "assignedTask", async () => ({ task, folder: root }));
+  t.mock.method(tasks, "rereadAssignedTask", async () => task);
   t.mock.method(policies, "effectiveAgentPolicy", async () => policy); t.mock.method(policies, "verifyProfileAvailability", async (...args) => { catalogCalls.push(args); });
   t.mock.method(parent, "requireLaunchParent", async value => calls.push(value));
   t.mock.method(merge, "reviewCandidate", async () => candidate); t.mock.method(decisions, "profileKitRoot", async () => root); t.mock.method(runs, "taskAgentPrompt", async () => ({ prompt: "Exact task" }));
@@ -34,6 +35,15 @@ async function fixture(t, automatic = false) {
   const input = () => ({ serverId: "remote", workspaceId: "work", row, parent: { serverId: "personal", agentId: "coordinator" }, fingerprint: pipelineFingerprint(facts, nextPipelineStep(row, facts)), requestId: `mc-${randomUUID()}` });
   return { root, runId, facts, row, paseo, input, created, sent, calls, catalogCalls };
 }
+test("a stage from a previous delivery cannot start in a reopened task or its previous checkout", async t => {
+  const f = await fixture(t); const reopenedAt = '2026-11-17T18:20:00.000Z';
+  f.facts.entry.task.deliveryHistory = [{ reopenedAt }]; f.facts.entry.task.worktree = { workspaceId: 'new-fix' };
+  await assert.rejects(launchManagedStage(f.input(), f.facts, f.paseo, {}), /active delivery or fix workspace/);
+  f.row.reopenedAt = reopenedAt;
+  await assert.rejects(launchManagedStage(f.input(), f.facts, f.paseo, {}), /active delivery or fix workspace/);
+  assert.equal(f.created.length, 0); assert.equal(f.catalogCalls.length, 0);
+});
+
 test("native stage launch copies the entire selected profile and keeps the original parent, task and run", async t => {
   const f = await fixture(t); const result = await launchManagedStage(f.input(), f.facts, f.paseo, {});
   assert.equal(result.runId, f.runId); assert.equal(f.created.length, 1);

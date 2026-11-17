@@ -3,6 +3,7 @@ import type { PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
   getReviewCommits,
+  getReviewBranches, getReviewBranchSnapshot, readReviewBranchFile,
   getReviewCounts,
   getReviewMarks,
   getReviewSnapshot,
@@ -22,6 +23,7 @@ import {
   type ReviewSnapshot,
 } from "../shared/review";
 import { directorySnapshot, workspaceCommits, workspaceDirectory, workspaceMarkdown } from "./review";
+import { branchReviewSnapshot, branchReviewTarget, listReviewBranches, readReviewBranchBlob, reviewScopeId } from "./review-branches";
 import { createReviewCommentStore } from "./review-comments";
 import { countToReview, createReviewMarkStore } from "./review-marks";
 import { localServerId } from "./tasks";
@@ -37,6 +39,7 @@ const countsKeepMs = 10 * 60_000;
 
 type Scan = { running: Promise<ReviewSnapshot> | null; last: { snapshot: ReviewSnapshot; at: number } | null };
 type ReviewDeps = {
+  configuredBranch: (projectId: string) => Promise<string | undefined>;
   snapshot: (directory: string, from: string | null, since: string | null) => Promise<ReviewSnapshot>;
   directory: (paseo: PaseoApi, serverId: string, workspaceId: string) => Promise<string>;
   serverId: () => Promise<string>;
@@ -55,6 +58,7 @@ async function within<T>(promise: Promise<T>, ms: number): Promise<{ done: true;
 export function registerReview(server: PluginServerContext, vaultRoot: string, overrides: Partial<ReviewDeps> = {}) {
   const deps: ReviewDeps = {
     snapshot: directorySnapshot,
+    configuredBranch: async () => undefined,
     directory: async (paseo, serverId, workspaceId) => realpath(await workspaceDirectory(paseo, await deps.serverId(), { serverId, workspaceId })),
     serverId: localServerId,
     now: Date.now,
@@ -68,20 +72,24 @@ export function registerReview(server: PluginServerContext, vaultRoot: string, o
   // outlasts its request keeps running so the next request picks it up instead of starting another.
   const scans = new Map<string, Scan>();
   const localOnly = async (serverId: string) => {
-    if (serverId !== await localServerId()) throw new Error("Review data is stored on this Mission Control host only.");
+    if (serverId !== await deps.serverId()) throw new Error("Review data is stored on this Mission Control host only.");
   };
-  async function scanFor(paseo: PaseoApi, serverId: string, workspaceId: string) {
+  async function configured(paseo: PaseoApi, workspaceId: string) {
+    const workspace = await paseo.workspaces.ref(workspaceId).refresh();
+    return workspace?.projectId ? deps.configuredBranch(workspace.projectId) : undefined;
+  }
+  async function scanFor(paseo: PaseoApi, serverId: string, workspaceId: string, branchRef?: string) {
     const stored = await marks.read(workspaceId);
     const directory = await deps.directory(paseo, serverId, workspaceId);
     const now = deps.now();
     for (const [key, entry] of scans) if (!entry.running && (!entry.last || now - entry.last.at > countsKeepMs)) scans.delete(key);
-    const key = JSON.stringify([directory, stored.from, stored.since]);
+    const key = JSON.stringify(branchRef ? [directory, workspaceId, branchRef] : [directory, stored.from, stored.since]);
     let entry = scans.get(key);
     if (!entry) { entry = { running: null, last: null }; scans.set(key, entry); }
     const scan = entry;
     const start = () => {
       if (scan.running) return scan.running;
-      const running = deps.snapshot(directory, stored.from, stored.since);
+      const running = branchRef ? configured(paseo, workspaceId).then(setting => branchReviewSnapshot(directory, branchRef, setting)) : deps.snapshot(directory, stored.from, stored.since);
       scan.running = running;
       running.then(snapshot => { scan.last = { snapshot, at: deps.now() }; }, () => undefined)
         .finally(() => { if (scan.running === running) scan.running = null; });
@@ -90,13 +98,17 @@ export function registerReview(server: PluginServerContext, vaultRoot: string, o
     return { scan, start, marks: stored.marks };
   }
 
-  server.handle(getReviewSnapshot, async ({ serverId, workspaceId }, { paseo }) => {
-    const { scan, start } = await scanFor(paseo, serverId, workspaceId);
+  async function snapshotFor(paseo: PaseoApi, serverId: string, workspaceId: string, branchRef?: string) {
+    const { scan, start } = await scanFor(paseo, serverId, workspaceId, branchRef);
     if (scan.last && deps.now() - scan.last.at <= snapshotFreshMs) return scan.last.snapshot;
     const result = await within(start(), deps.snapshotWaitMs);
     if (!result.done) throw new Error(reviewScanPendingMessage);
     return result.value;
-  });
+  }
+  server.handle(getReviewSnapshot, ({ serverId, workspaceId }, { paseo }) => snapshotFor(paseo, serverId, workspaceId));
+  server.handle(getReviewBranchSnapshot, ({ serverId, workspaceId, branchRef }, { paseo }) => snapshotFor(paseo, serverId, workspaceId, branchRef));
+  server.handle(getReviewBranches, async ({ serverId, workspaceId }, { paseo }) => listReviewBranches(await deps.directory(paseo, serverId, workspaceId), await configured(paseo, workspaceId)));
+  server.handle(readReviewBranchFile, async ({ serverId, workspaceId, commit, path }, { paseo }) => readReviewBranchBlob(await deps.directory(paseo, serverId, workspaceId), commit, path));
   server.handle(readReviewFile, async (input, { paseo }) => workspaceMarkdown(paseo, await localServerId(), input));
   server.handle(readReviewWorkingFile, async (input, { paseo }) => readReviewText(await reviewRoot(paseo, await localServerId(), input), input.path));
   server.handle(resolveReviewItemPath, async (input, { paseo }) => ({
@@ -114,8 +126,8 @@ export function registerReview(server: PluginServerContext, vaultRoot: string, o
     return { ok: true as const };
   });
   server.handle(getReviewCommits, async (input, { paseo }) => ({ commits: await workspaceCommits(paseo, await localServerId(), input) }));
-  server.handle(getReviewMarks, async ({ serverId, workspaceId }) => { await localOnly(serverId); return marks.read(workspaceId); });
-  server.handle(setReviewMarks, async ({ serverId, workspaceId, ids, reviewed }) => { await localOnly(serverId); return marks.set(workspaceId, ids, reviewed); });
+  server.handle(getReviewMarks, async ({ serverId, workspaceId, branchRef }) => { await localOnly(serverId); return marks.read(reviewScopeId(workspaceId, branchRef)); });
+  server.handle(setReviewMarks, async ({ serverId, workspaceId, branchRef, ids, reviewed }) => { await localOnly(serverId); return marks.set(reviewScopeId(workspaceId, branchRef), ids, reviewed); });
   // A new range changes the scan key, so these need no cache invalidation.
   server.handle(setReviewFrom, async ({ serverId, workspaceId, from }) => { await localOnly(serverId); return marks.setFrom(workspaceId, from); });
   server.handle(setReviewSince, async ({ serverId, workspaceId, since }) => { await localOnly(serverId); return marks.setSince(workspaceId, since); });
@@ -145,10 +157,14 @@ export function registerReview(server: PluginServerContext, vaultRoot: string, o
     return { counts, pending };
   });
 
-  server.handle(listReviewComments, async ({ serverId, workspaceId }) => { await localOnly(serverId); return { comments: await comments.list(workspaceId) }; });
-  server.handle(saveReviewComment, async ({ serverId, workspaceId, ...input }) => { await localOnly(serverId); return { comments: await comments.save(workspaceId, input) }; });
-  server.handle(updateReviewComment, async ({ serverId, workspaceId, commentId, action }) => { await localOnly(serverId); return { comments: await comments.update(workspaceId, commentId, action) }; });
-  server.handle(sendReviewComments, async ({ serverId, workspaceId, ...input }, { paseo }) => { await localOnly(serverId); return comments.send(workspaceId, input, paseo); });
+  server.handle(listReviewComments, async ({ serverId, workspaceId, branchRef }) => { await localOnly(serverId); return { comments: await comments.list(reviewScopeId(workspaceId, branchRef)) }; });
+  server.handle(saveReviewComment, async ({ serverId, workspaceId, branchRef, ...input }) => { await localOnly(serverId); return { comments: await comments.save(reviewScopeId(workspaceId, branchRef), input) }; });
+  server.handle(updateReviewComment, async ({ serverId, workspaceId, branchRef, commentId, action }) => { await localOnly(serverId); return { comments: await comments.update(reviewScopeId(workspaceId, branchRef), commentId, action) }; });
+  server.handle(sendReviewComments, async ({ serverId, workspaceId, branchRef, ...input }, { paseo }) => {
+    await localOnly(serverId);
+    const target = branchRef && await branchReviewTarget(await deps.directory(paseo, serverId, workspaceId), branchRef, await configured(paseo, workspaceId));
+    return comments.send(reviewScopeId(workspaceId, branchRef), input, paseo, workspaceId, target ? target.worktree : null);
+  });
   // Final feedback verifies the human's displayed comparison without reusing cached or already-running scans.
   // The caller owns repository serialization; directorySnapshot itself does not acquire that lock.
   async function freshSnapshot(paseo: PaseoApi, serverId: string, workspaceId: string) {

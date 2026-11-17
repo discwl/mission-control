@@ -13,7 +13,7 @@ import type { TaskRecord, TaskWorktree } from "../shared/tasks";
 import { assignedTask, attachTaskWorktree, localServerId } from "./tasks";
 import { projectProfileFile } from "./decisions";
 import { branchPreview } from "./branch-names";
-import { listRunRecords, taskAgentPrompt } from "./runs";
+import { runRecordsOf, taskAgentPrompt } from "./runs";
 import { createTaskWorktree, type CreatedWorktree } from "./worktree";
 import { ProcessStopped, runProcess } from "./process-tree";
 import { hideCredentials } from "../shared/secret-mask";
@@ -95,26 +95,30 @@ async function loadContext(input: TaskBinding, paseo: PaseoApi): Promise<Context
   }).catch(error => { throw error instanceof ProcessStopped ? new Error(`dev-flow context ${error.message.replace(/^\S+ /, "")}.`) : error; });
   if (context.code !== 0) throw new Error(`dev-flow context failed: ${hideCredentials(context.stderr.trim() || `exit code ${context.code}`)}`);
   const checked = contextSchema.parse(JSON.parse(context.stdout));
-  const run = (await listRunRecords(input.serverId, input.workspaceId, input.taskId))[0] ?? null;
+  const run = (await runRecordsOf(source, input.serverId))[0] ?? null;
   const done = source.task.status === "delivered" || source.task.status === "closed";
   // Only a first start can create the worktree, and it needs a commit to branch from.
   const canIsolate = !source.task.worktree && !run && !done && checked.git.head !== null;
   return { folder: await realpath(source.folder), task: source.task, cwd, kitRoot, git: checked.git, run, workspaceId, canIsolate };
 }
-async function readLaunch(folder: string, input: TaskBinding) {
+function launchFile(folder: string, task: TaskRecord) {
+  const generation = task.deliveryHistory?.length ?? 0;
+  return join(folder, generation ? `.mission-control-launch-fix-${generation}.json` : ".mission-control-launch.json");
+}
+async function readLaunch(folder: string, input: TaskBinding, task: TaskRecord) {
   let text;
-  try { text = await safeFile(join(folder, ".mission-control-launch.json")); }
+  try { text = await safeFile(launchFile(folder, task)); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
   const record = launchRecordSchema.parse(JSON.parse(text));
   if (record.taskId !== input.taskId || record.serverId !== input.serverId || record.workspaceId !== input.workspaceId) throw new Error("Launch identity does not match this task.");
   return record;
 }
-async function saveLaunch(folder: string, record: LaunchRecord) {
+async function saveLaunch(folder: string, record: LaunchRecord, task: TaskRecord) {
   const temp = join(folder, `.mission-control-launch-${randomUUID()}.tmp`);
   try {
     await writeFile(temp, JSON.stringify(record, null, 2), { flag: "wx" });
     // On Windows a status refresh reading the record briefly blocks replacing it; rename retries.
-    await rename(temp, join(folder, ".mission-control-launch.json"));
+    await rename(temp, launchFile(folder, task));
   } finally { await unlink(temp).catch(() => {}); }
 }
 async function ensureRun(context: Context, record: LaunchRecord) {
@@ -189,7 +193,7 @@ export function createTaskLauncher(overrides: Partial<LauncherDeps> = {}) {
     const context = { ...loaded, workspaceId: loaded.workspaceId || input.workspaceId, canIsolate: loaded.canIsolate ?? false };
     // Launch records, agents and prompts all use the workspace the task runs in.
     const bound: TaskBinding = { ...input, workspaceId: context.workspaceId };
-    const launch = await readLaunch(context.folder, bound);
+    const launch = await readLaunch(context.folder, bound, context.task);
     if (launch && context.run && launch.runId !== context.run.runId) throw new Error("A different run was started outside the launcher. Open its agent and reconcile the task first.");
     const agentId = context.run?.agentId ?? launch?.agentId;
     const snapshot = agentId ? await refreshAgent(paseo, agentId) : null;
@@ -294,7 +298,7 @@ export function createTaskLauncher(overrides: Partial<LauncherDeps> = {}) {
       record = { ...bound, ...(creatingAgent && input.parent ? { parent: input.parent } : {}), launchId: randomUUID(), agentId: context.run?.agentId || randomUUID(), runId: context.run?.runId || `run_${randomUUID()}`, provider: input.provider || snapshot?.provider || "unknown", modeId: creatingAgent ? input.modeId ?? null : null, thinkingOptionId: creatingAgent ? input.thinkingOptionId ?? null : null, creatingAgent, phase: "preparing", createdAt: now, updatedAt: now, runUpdatedAt: context.run?.updatedAt ?? null, lastUserMessageAt: snapshot?.lastUserMessageAt ?? null, error: null };
     }
     record = launchRecordSchema.parse(record);
-    await saveLaunch(context.folder, record);
+    await saveLaunch(context.folder, record, context.task);
     try {
       let run = context.run;
       if (!run) run = await ensureRun(context, record);
@@ -314,14 +318,14 @@ export function createTaskLauncher(overrides: Partial<LauncherDeps> = {}) {
         "Run context again and reconcile the latest handoff with the working tree. Record actual progress in this run. Start/resume authorizes work within the task's existing scope; it grants no new commit, push, merge, or deployment permission.",
       ].join("\n");
       record = { ...record, phase: "sending", runUpdatedAt: run.updatedAt, lastUserMessageAt: refreshed!.lastUserMessageAt, error: null, updatedAt: new Date().toISOString() };
-      await saveLaunch(context.folder, record);
+      await saveLaunch(context.folder, record, context.task);
       await agent.send(message, { messageId: record.launchId });
       record = { ...record, phase: "sent", updatedAt: new Date().toISOString() };
-      await saveLaunch(context.folder, record);
+      await saveLaunch(context.folder, record, context.task);
     } catch (error) {
       // 'sending' is deliberately not reset: a timeout may have accepted the prompt.
       record = { ...record, error: error instanceof Error ? error.message : String(error), updatedAt: new Date().toISOString() };
-      await saveLaunch(context.folder, record);
+      await saveLaunch(context.folder, record, context.task);
       throw error;
     }
   }

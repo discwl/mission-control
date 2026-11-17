@@ -9,7 +9,7 @@ export const reviewBaselineSchema = z.object({
 export type ReviewBaseline = z.infer<typeof reviewBaselineSchema>;
 // A HEAD comparison has a moving base. A since/commit comparison can advance HEAD safely.
 export function reviewComparisonScope(snapshot: ReviewSnapshot): string {
-  return JSON.stringify([snapshot.repoRoot, snapshot.branch, snapshot.base, snapshot.fromCommit?.sha ?? null, snapshot.sinceCommit?.sha ?? null, snapshot.base === "head" ? snapshot.head : null]);
+  return JSON.stringify([snapshot.repoRoot, snapshot.branch, snapshot.base, snapshot.fromCommit?.sha ?? null, snapshot.sinceCommit?.sha ?? null, snapshot.base === "head" ? snapshot.head : null, ...(snapshot.comparison ? [snapshot.comparison.ref, snapshot.comparison.baseRef, snapshot.comparison.baseCommit] : [])]);
 }
 export function makeReviewBaseline(identity: string, snapshot: ReviewSnapshot): ReviewBaseline {
   return { version: 1, identity, at: snapshot.generatedAt, fingerprint: snapshot.fingerprint, scope: reviewComparisonScope(snapshot),

@@ -21,6 +21,19 @@ async function fixture(t) {
   return { source, run: facts.entry.run, entry: facts.entry, assignment, save: value => writeFile(join(runFolder, "stage-assignments", `${id}.json`), JSON.stringify(value)) };
 }
 
+test("host card attributes its workflow to the latest assignment of the exact run", async t => {
+  const { fleetRunWorkflow } = require("./runs.ts");
+  for (const [saved, expected] of [[undefined, "advanced"], ["standard", "standard"], ["advanced", "advanced"]]) {
+    const f = await fixture(t);
+    assert.equal(await fleetRunWorkflow(f.source, f.run), undefined, "A recorded automatic mode alone cannot identify the level");
+    await f.save({ ...f.assignment, workflowMode: "manual" });
+    assert.equal(await fleetRunWorkflow(f.source, f.run), "manual");
+    await f.save({ ...f.assignment, workflow: saved });
+    assert.equal(await fleetRunWorkflow(f.source, f.run), expected, "An adopted manual run reports the new automatic workflow");
+    await assert.rejects(fleetRunWorkflow(f.source, { ...f.run, workspaceId: 'another-workspace' }), /identity/);
+  }
+});
+
 test("cheap discriminator skips legacy absent workspaces and requires exact managed automatic evidence", async t => {
   const f = await fixture(t); const legacy = { ...f.run }; delete legacy.workflowMode;
   assert.equal(await hasAutomaticAssignment(f.source, legacy), false);

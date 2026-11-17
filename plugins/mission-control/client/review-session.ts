@@ -8,7 +8,7 @@ const pinnedSnapshots = new Map<string, ReviewSnapshot>();
 import { readClientStorage, writeClientStorage } from "./web";
 
 export const reviewSessionSchema = z.object({
-  version: z.literal(1), identity: z.string(),
+  version: z.literal(1), identity: z.string(), branchRef: z.string().optional(),
   selectedPath: z.string().nullable(), filter: z.enum(["all", "high", "medium", "low", "info"]),
   mode: z.enum(["blocks", "full"]), layout: z.enum(["split", "unified"]),
   pane: z.enum(["files", "comments"]), fileView: z.enum(["list", "tree"]),

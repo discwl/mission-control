@@ -178,6 +178,13 @@ export async function assignedTask(serverId: string, workspaceId: string, taskId
   return source;
 }
 
+// Recheck the same task after a slow stage setup without scanning every task on this host again.
+export async function rereadAssignedTask(source: TaskSource, serverId: string, workspaceId: string) {
+  const current = parseTask(await readFile(source.file, "utf8"));
+  if (current.taskId !== source.task.taskId || current.hostId !== source.task.hostId || current.projectId !== source.task.projectId || !current.assignments.some(assignment => assignment.serverId === serverId && assignment.workspaceId === workspaceId)) throw new Error("The stage's task or workspace changed. Refresh the task.");
+  return current;
+}
+
 export async function readTaskSummary(serverId: string) {
   const { sources, problems } = await scanTaskSources(serverId);
   return summarizeTasks(sources.map(source => source.task), serverId, problems);
@@ -323,6 +330,7 @@ export async function deliverTaskSource(source: TaskSource, line: string): Promi
     const markdown = await readFile(source.file, "utf8");
     const current = parseTask(markdown);
     if (current.taskId !== source.task.taskId) throw new Error("Task ID does not match its path.");
+    if (current.deliveryHistory?.length && source.task.worktree?.workspaceId !== current.worktree?.workspaceId) throw new Error("This operation belongs to an earlier task delivery.");
     let next = current;
     if (current.status !== "delivered") {
       const frontmatter = /^---(\r?\n)([\s\S]*?)(\r?\n)---(?=\r?\n|$)/.exec(markdown);
@@ -366,6 +374,7 @@ export async function recordTaskPullRequest(source: TaskSource, pullRequest: Pul
     const current = parseTask(markdown);
     if (current.taskId !== source.task.taskId) throw new Error("Task ID does not match its path.");
     if (current.pullRequest) throw new Error(`This task already records the pull request ${current.pullRequest.url}.`);
+    if (current.deliveryHistory?.length && (current.worktree?.branch !== pullRequest.taskBranch || source.task.worktree?.workspaceId !== current.worktree?.workspaceId)) throw new Error("This pull request belongs to an earlier task delivery.");
     const frontmatter = /^---(\r?\n)([\s\S]*?)(\r?\n)---(?=\r?\n|$)/.exec(markdown);
     if (!frontmatter) throw new Error("Task record has no frontmatter.");
     let replaced = 0;
@@ -436,6 +445,108 @@ export async function attachTaskWorktree(input: { serverId: string; taskId: stri
     }
     return next;
   });
+}
+
+// Update the original document atomically, retaining unknown fields and the Markdown body.
+async function changeDelivery(source: TaskSource, transition: (current: TaskRecord) => Promise<Partial<TaskRecord> | null>) {
+  if (!source.folder) throw new Error("This task needs a task folder before changing delivery.");
+  const folder = source.folder;
+  return withTaskWriteLock(folder, async () => {
+    const markdown = await readFile(source.file, "utf8");
+    const current = parseTask(markdown);
+    if (current.taskId !== source.task.taskId || current.hostId !== source.task.hostId || current.projectId !== source.task.projectId) throw new Error("Task identity changed. Refresh the task.");
+    const patch = await transition(current);
+    if (!patch) return current;
+    const updatedAt = new Date(Math.max(Date.now(), (Date.parse(current.updatedAt) || 0) + 1)).toISOString();
+    const fields: Record<string, unknown> = { ...patch, updatedAt };
+    const front = /^---(\r?\n)([\s\S]*?)\r?\n---(?=\r?\n|$)/.exec(markdown)!;
+    const lines = front[2].split(/\r?\n/).filter(line => !Object.hasOwn(fields, line.slice(0, line.indexOf(":"))));
+    for (const [key, value] of Object.entries(fields)) if (value !== undefined) lines.push(`${key}: ${JSON.stringify(value)}`);
+    const content = ["---", ...lines, "---"].join(front[1]) + markdown.slice(front[0].length);
+    const next = parseTask(content);
+    const temporary = join(folder, `.${current.taskId}.${randomUUID()}.tmp`);
+    try { await writeFile(temporary, content, { flag: "wx" }); await rename(temporary, source.file); }
+    finally { await unlink(temporary).catch(() => {}); }
+    return next;
+  });
+}
+
+function samePullRequest(a: PullRequestRecord, b: PullRequestRecord) {
+  return a.forge === b.forge && a.repository === b.repository && a.number === b.number && a.url === b.url && a.taskBranch === b.taskBranch && a.targetBranch === b.targetBranch;
+}
+
+function assertTaskPullRequest(current: TaskRecord, record: PullRequestRecord) {
+  if (current.pullRequest && !samePullRequest(current.pullRequest, record)) throw new Error("A different pull request is recorded on this task.");
+  if ((current.worktree && current.worktree.branch !== record.taskBranch) || current.deliveryHistory?.some(entry => samePullRequest(entry.pullRequest, record))) throw new Error("This pull request belongs to a different task branch or earlier delivery.");
+  if (!current.worktree && !current.pullRequest) throw new Error("This task has no recorded branch or pull request to verify.");
+}
+
+export async function recordObservedTaskPR(source: TaskSource, record: PullRequestRecord, state: "open" | "closed" | "unknown"): Promise<TaskRecord> {
+  const observed = pullRequestRecordSchema.parse(record);
+  return changeDelivery(source, async current => {
+    if (current.status === "closed" || current.status === "delivered") return null;
+    assertTaskPullRequest(current, observed);
+    if (current.updatedAt !== source.task.updatedAt) throw new Error("Task changed while checking the pull request. Refresh and retry.");
+    const pullRequest = { ...current.pullRequest, ...observed, createdAt: current.pullRequest?.createdAt ?? observed.createdAt, observedState: state, mergedAt: undefined, cleanedUpAt: undefined };
+    if (JSON.stringify(current.pullRequest) === JSON.stringify(pullRequestRecordSchema.parse(pullRequest))) return null;
+    return { pullRequest };
+  });
+}
+
+/** The caller verified the merge on the owning forge. Delivery and Git cleanup are separate operations. */
+export async function recordMergedTaskPR(source: TaskSource, verifiedPullRequest: PullRequestRecord): Promise<TaskRecord> {
+  const verified = pullRequestRecordSchema.parse(verifiedPullRequest);
+  return changeDelivery(source, async current => {
+    if (current.status === "closed") throw new Error("This task was closed.");
+    assertTaskPullRequest(current, verified);
+    if (current.status === "delivered" && current.pullRequest?.mergedAt) return null;
+    if (current.updatedAt !== source.task.updatedAt) throw new Error("Task changed while checking the merge. Refresh and retry.");
+    return { status: "delivered", pullRequest: { ...current.pullRequest, ...verified, observedState: undefined, mergedAt: current.pullRequest?.mergedAt ?? new Date().toISOString(), cleanedUpAt: current.pullRequest?.cleanedUpAt } };
+  });
+}
+
+export async function markMergedTaskPRCleanedUp(source: TaskSource, verifiedPullRequest: PullRequestRecord): Promise<TaskRecord> {
+  return changeDelivery(source, async current => {
+    if (current.status !== "delivered" || !current.pullRequest?.mergedAt || !samePullRequest(current.pullRequest, verifiedPullRequest)) throw new Error("The delivered pull request changed. Refresh before recording cleanup.");
+    if (current.pullRequest.cleanedUpAt) return null;
+    if (current.updatedAt !== source.task.updatedAt) throw new Error("The task changed while cleaning up. Refresh and retry.");
+    return { pullRequest: { ...current.pullRequest, cleanedUpAt: new Date().toISOString() } };
+  });
+}
+
+const reopening = new Set<string>();
+
+export async function reopenTaskSource(source: TaskSource, input: { serverId: string; workspaceId: string; expectedUpdatedAt: string; reason: string },
+  prepare: (task: TaskRecord, branch: string, key: string) => Promise<Pick<TaskWorktree, "workspaceId" | "branch" | "baseCommit">>): Promise<TaskRecord> {
+  const reason = z.string().trim().min(1).max(4000).parse(input.reason);
+  if (reopening.has(source.file)) throw new Error("This task is being updated. Reload and retry.");
+  reopening.add(source.file);
+  try {
+    // Leave the on-disk task lock free during Git fetch and Paseo worktree creation. A restarted
+    // plugin can use the same generation key to finish an interrupted preparation.
+    const current = await changeDelivery(source, async () => null);
+    const history = current.deliveryHistory ?? [];
+    const previous = history.at(-1);
+    const workspaceId = current.worktree?.sourceWorkspaceId ?? current.assignments.find(entry => entry.serverId === input.serverId)?.workspaceId;
+    if (workspaceId !== input.workspaceId || !current.assignments.some(entry => entry.serverId === input.serverId && entry.workspaceId === workspaceId)) throw new Error("Reopen from this task's source workspace.");
+    if (previous?.previousRevision === input.expectedUpdatedAt && previous.reason === reason && !current.pullRequest && current.status !== "closed") return current;
+    if (current.updatedAt !== input.expectedUpdatedAt) throw new Error("The task changed. Refresh before reopening.");
+    if (current.status !== "delivered" || !current.pullRequest?.mergedAt) throw new Error("Reopen requires a delivered task with a confirmed merged pull request.");
+    const key = createHash("sha256").update(JSON.stringify([current.taskId, current.pullRequest.url, current.pullRequest.head, history.length])).digest("hex").slice(0, 20);
+    const branch = `task/${current.taskId.replace(/^task_/, "")}-fix-${history.length + 1}-${key.slice(0, 8)}`;
+    const created = await prepare(current, branch, key);
+    if (created.branch !== branch || current.assignments.some(entry => entry.workspaceId === created.workspaceId && entry.serverId === input.serverId)) throw new Error("The fix needs its own new branch and workspace.");
+    const reopenedAt = new Date().toISOString();
+    const patch: Partial<TaskRecord> = { status: "ready", pullRequest: undefined,
+      deliveryHistory: [...history, { pullRequest: current.pullRequest, previousRevision: current.updatedAt, workspaceId: current.worktree?.workspaceId, reopenedAt, reason }],
+      worktree: { workspaceId: created.workspaceId, branch, baseCommit: created.baseCommit, sourceWorkspaceId: workspaceId, createdAt: reopenedAt },
+      assignments: [...current.assignments, { serverId: input.serverId, workspaceId: created.workspaceId }],
+    };
+    return await changeDelivery(source, async latest => {
+      if (latest.updatedAt !== current.updatedAt || latest.status !== "delivered" || !latest.pullRequest || !samePullRequest(latest.pullRequest, current.pullRequest!)) throw new Error("The task changed during fix preparation. Refresh and retry.");
+      return patch;
+    });
+  } finally { reopening.delete(source.file); }
 }
 
 function revisionOf(content: Buffer): string {

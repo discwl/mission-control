@@ -5,6 +5,7 @@ import { questionSchema, type Question, type QuestionEntry } from "../shared/que
 import { isQuiet } from "../shared/agent-tree";
 import { atomicWrite, inside, markdownRecord, parseRecord, regularFile, withRunLock } from "./decisions";
 import type { TaskSource } from "./tasks";
+import { acceptsTaskRequest } from "../shared/tasks";
 
 type Ref = { serverId: string; workspaceId: string; taskId: string; runId: string; questionId: string };
 
@@ -57,7 +58,7 @@ export function createQuestionStore(deps: { sources: (serverId: string) => Promi
         catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
         for (const name of names.filter(value => questionFilePattern.test(value))) {
           const { question } = await load(source, runFolder, runId, name);
-          if (question.status === "open") questions.push({ question, taskTitle: source.task.title, projectId: source.task.projectId });
+          if (question.status === "open" && acceptsTaskRequest(source.task, question.workspaceId)) questions.push({ question, taskTitle: source.task.title, projectId: source.task.projectId });
         }
       }
     }
@@ -70,6 +71,7 @@ export function createQuestionStore(deps: { sources: (serverId: string) => Promi
     if (!source || !source.task.assignments.some(item => item.serverId === input.serverId && item.workspaceId === input.workspaceId)) {
       throw new Error("Task is not assigned to this workspace.");
     }
+    if (!acceptsTaskRequest(source.task, input.workspaceId)) throw new Error("This question belongs to a completed delivery. Open the current task.");
     const runFolder = await runFolderOf(source, input.runId);
     const reload = () => load(source, runFolder, input.runId, `${input.questionId}.md`);
     return withRunLock(runFolder, async () => {

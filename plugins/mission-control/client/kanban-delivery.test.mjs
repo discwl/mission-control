@@ -5,28 +5,37 @@ import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
 const compiled = ts.transpileModule(readFileSync(new URL('./kanban-detail.tsx', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
 const nodes = node => !node || typeof node !== 'object' ? [] : Array.isArray(node) ? node.flatMap(nodes) : [node, ...nodes(node.props?.children)];
-function render({ kind = 'code', online = true, builders = 1, stale = false, question = false } = {}) {
+const model = { exports: {} };
+const modelCode = ts.transpileModule(readFileSync(new URL('./kanban-model.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+runInNewContext(modelCode, { exports: model.exports });
+function render({ kind = 'code', online = true, builders = 1, stale = false, question = false, workflow, tierOnHost, runMode, projection = true, delivered = false, supported = true, tab = 'Delivery' } = {}) {
   const jsx = (type, props) => ({ type, props });
   const row = { key: 'remote:task', serverId: 'remote', hostLabel: 'CNS', state: online ? 'Needs you' : 'Unconfirmed', staleReview: stale,
     entry: { task: { taskId: 'task', title: 'Keep invoice dates consistent', acceptanceCriteria: ['Preserve the selected date'] }, run: { runId: 'run', workspaceId: 'workspace', agentId: 'reviewer' }, decisions: question ? [{ decision: { kind: 'review', status: 'open' } }] : [], questions: question ? [{ question: { status: 'open', question: 'Which date should be preserved?' } }] : [], pipeline: { runId: 'run', workflowMode: 'automatic', deliveryKind: kind, stage: 'delivery', mode: 'ready' } },
     host: { workspaces: [{ id: 'workspace', name: 'Invoice dates', projectName: 'Billing' }], complete: true },
     workers: Array.from({ length: builders }, (_, i) => ({ id: 'builder-' + i, workspaceId: 'workspace', archivedAt: null, labels: { 'mission-control.task-id': 'task', 'mission-control.role': 'builder' } })).concat([{ id: 'reviewer', workspaceId: 'workspace', archivedAt: null, labels: { 'mission-control.task-id': 'task', 'mission-control.role': 'reviewer' } }]), coordinators: [], queue: [] };
+  row.entry.run.workflowMode = runMode;
+  row.entry.runWorkflow = tierOnHost;
+  if (projection) row.entry.pipeline.workflow = workflow; else delete row.entry.pipeline;
+  if (delivered) Object.assign(row.entry.task, { status: 'delivered', worktree: { sourceWorkspaceId: 'source' }, assignments: [{ serverId: 'remote', workspaceId: 'source' }], pullRequest: { number: 13, repository: 'billing', url: 'https://example.test/pr/13', mergedAt: 'today' }, deliveryHistory: [{ reopenedAt: 'yesterday', reason: 'Test failed', pullRequest: { number: 12, repository: 'billing', url: 'https://example.test/pr/12' } }] });
+  if (delivered === 'unverified') delete row.entry.task.pullRequest.mergedAt;
   const modules = {
     react: { useState: value => [typeof value === 'function' ? value() : value, () => {}] },
     'react/jsx-runtime': { jsx, jsxs: jsx, Fragment: 'Fragment' }, 'react-native': { ScrollView: 'ScrollView', Text: 'Text', View: 'View' },
     '@getpaseo/plugin/client': { useHosts: () => [{ serverId: 'remote', status: online ? 'online' : 'offline' }] },
+    '../shared/tasks': { reopenDeliveredTask: { name: 'tasks.reopen-delivered' } },
     '../shared/decision-receipt': { decisionReceipt: () => null },
-    './compact-link': { CompactLink: 'Link' }, './host-rpc': { HostRpcProvider: 'HostScope', useMissionControlCopy: () => ({ copy: { id: 'remote-copy' } }) },
+    './compact-link': { CompactLink: 'Link', CompactExternalLink: 'ExternalLink' }, './reopen-delivered-task': { ReopenDeliveredTask: 'Reopen' }, './host-rpc': { HostRpcProvider: 'HostScope', useMissionControlCopy: () => ({ copy: { id: 'remote-copy', supports: () => supported } }) },
     './fleet-task': { FleetWorkerTree: 'Workers', TaskAttention: 'Attention', TaskDelivery: 'Publish', TaskPlan: 'Plan' },
     './mission-review': { MissionReview: 'CodeReview' }, './review-report': { ReviewReport: 'LegacyReview' }, './review-readiness': { ReviewReadiness: 'LegacyReadiness' },
     './final-change-request': { FinalChangeRequest: 'RequestFixes' },
     './pipeline-review': { PipelineReviewEvidence: 'AutomaticEvidence' }, './action-delivery': { ActionDeliveryCard: 'ActionReview' }, './task-flow': { TaskFlowDetail: 'Evidence' },
     './mission-control-v2-model': { v2Workspace: () => 'workspace' },
-    './kanban-model': { kanbanCanAct: (_row, live) => live, kanbanHasRequest: () => question, kanbanGuidance: () => ({ title: 'Review the completed work', why: 'The agents have finished their checks.', tab: 'Delivery', action: 'Review result', after: 'Choose whether to publish.', steps: [] }) },
+    './kanban-model': { ...model.exports, kanbanCanAct: (_row, live) => live, kanbanHasRequest: () => question, kanbanGuidance: () => ({ title: 'Review the completed work', why: 'The agents have finished their checks.', tab: 'Delivery', action: 'Review result', after: 'Choose whether to publish.', steps: [] }) },
     './kanban-origin': { navigateFromKanban: (_server, act) => act() },
   };
   const module = { exports: {} }; runInNewContext(compiled, { exports: module.exports, require: name => { if (!(name in modules)) throw Error(name); return modules[name]; } });
-  return module.exports.KanbanDetail({ item: { row, lane: 'attention', tab: question ? 'Decision' : 'Delivery', label: 'Ready to publish', needsYou: true }, snapshot: { serverId: 'personal', state: { pipelines: [], revision: 1 } }, colors: {}, compact: false, height: 900, navigation: {}, close() {}, refresh() {} });
+  return module.exports.KanbanDetail({ item: { row, lane: 'attention', tab: question === true ? 'Decision' : tab, label: 'Ready to publish', needsYou: true }, snapshot: { serverId: 'personal', state: { pipelines: [], revision: 1 } }, colors: {}, compact: false, height: 900, navigation: {}, close() {}, refresh() {} });
 }
 test('Ready to publish includes the existing code review and comments component on the owning host', () => {
   const tree = render(); const all = nodes(tree); const review = all.find(node => node.type === 'CodeReview');
@@ -37,6 +46,34 @@ test('Ready to publish includes the existing code review and comments component 
   assert.ok(nodes(brief).some(node => node.type === 'AutomaticEvidence'));
   assert.equal(nodes(brief).some(node => node.type === 'LegacyReview'), false);
   assert.equal(review.props.readiness({}, false), null);
+});
+test('workflow appears beside status and the plan and review instructions match the selected level', () => {
+  for (const [workflow, label, plan, review] of [['standard', 'Standard workflow', /One independent reviewer/, /builder’s validation/], ['advanced', 'Advanced workflow', /different model checks/, /both independent review reports/]]) {
+    const screen = nodes(render({ workflow, tab: 'Plan' }));
+    assert.ok(screen.some(node => node.props.children === label));
+    assert.match(JSON.stringify(screen), plan);
+    assert.match(JSON.stringify(nodes(render({ workflow }))), review);
+    assert.ok(nodes(render({ tierOnHost: workflow, projection: false })).some(node => node.props.children === label));
+  }
+  for (const [runMode, label] of [['manual', 'Manual workflow'], ['automatic', 'Automatic workflow · level not recorded'], [undefined, 'Workflow not recorded']]) {
+    assert.ok(nodes(render({ runMode, projection: false })).some(node => node.props.children === label));
+  }
+});
+test('reopen targets the source workspace on its owning host and keeps earlier PRs visible offline', () => {
+  const tree = nodes(render({ delivered: true }));
+  const reopen = tree.find(node => node.type === 'Reopen');
+  assert.equal(reopen.props.workspaceId, 'source'); assert.equal(reopen.props.serverId, 'remote');
+  assert.equal(tree.some(node => node.type === 'Publish'), false);
+  assert.equal(nodes(render({ delivered: 'unverified' })).some(node => node.type === 'Reopen'), false);
+  const followUp = nodes(render({ delivered: true, question: 'follow-up', tab: 'Evidence' }));
+  assert.ok(followUp.some(node => node.props.children === 'Which date should be preserved?'));
+  assert.ok(followUp.some(node => node.props.label === 'View open question'));
+  const older = nodes(render({ delivered: true, supported: false }));
+  assert.equal(older.some(node => node.type === 'Reopen'), false);
+  assert.match(JSON.stringify(older), /Update Mission Control/);
+  const offline = nodes(render({ delivered: true, online: false }));
+  assert.equal(offline.some(node => node.type === 'Reopen'), false);
+  assert.deepEqual(offline.filter(node => node.type === 'ExternalLink').map(node => node.props.href), ['https://example.test/pr/13', 'https://example.test/pr/12']);
 });
 test('multiple builders require an explicit comment recipient instead of choosing the last reviewer', () => {
   const review = nodes(render({ builders: 2 })).find(node => node.type === 'CodeReview');

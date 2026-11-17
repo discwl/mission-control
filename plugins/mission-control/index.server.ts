@@ -6,14 +6,16 @@ import {
   readTaskSummary,
   taskSources,
   localServerId,
+  assignedTask,
   attachTaskWorktree,
+  reopenTaskSource,
   saveTaskDocumentRecord,
   updateTaskStatusRecord,
   updateTaskDueDateRecord,
   deliverTaskSource,
   recordTaskPullRequest,
 } from "./server/tasks";
-import { createTask, listTaskDocuments, listTasks, saveTaskDocument, updateTaskDueDate, updateTaskStatus } from "./shared/tasks";
+import { createTask, reopenDeliveredTask, listTaskDocuments, listTasks, saveTaskDocument, updateTaskDueDate, updateTaskStatus } from "./shared/tasks";
 import { listRunRecords, runRecordsOf, taskAgentPrompt } from "./server/runs";
 import { agentRuns, createClaimHandler } from "./server/agents-panel";
 import { agentsPanelSettings, claimAgentsPanelWorkspaces, listAgentRuns } from "./shared/agents-panel";
@@ -28,6 +30,7 @@ import { registerBranchNames } from "./server/branch-names";
 import { registerToolsInventory } from "./server/tools-inventory";
 import { ensureStableKit, localSetupHost, registerSetup } from "./server/setup";
 import { createTaskWorktree } from "./server/worktree";
+import { runGit } from "./server/review";
 import { createDecisionStore, profileKitRoot } from "./server/decisions";
 import { listDecisions, readDecisionReview, resendDecision, resolveDecision, supersedeDecisions } from "./shared/decisions";
 import { readDecisionPlan } from "./shared/plan-approval";
@@ -80,7 +83,8 @@ export default function contribute(context: PluginServerContext) {
   // The status label sync runs outside handlers; it lists through the host's own Paseo API once a handler has seen it.
   const { server, current: hostPaseo } = rememberHostPaseo(context);
   server.registerSettings(missionPreferences);
-  const review = registerReview(server, defaultVaultPath);
+  const projectGit = registerProjectGit(server);
+  const review = registerReview(server, defaultVaultPath, { configuredBranch: projectGit.defaultBranchFor });
   registerMorning(server);
   registerWorkflowInstructions(server);
   registerTaskStatusRecovery(server);
@@ -88,7 +92,6 @@ export default function contribute(context: PluginServerContext) {
   registerRuntimeDiagnostic(server);
   registerOrchestrator(server);
   registerOrchestratorWork(server);
-  const projectGit = registerProjectGit(server);
   const branchNames = registerBranchNames(server);
   registerToolsInventory(server);
   // Setup shows the forge tools (gh, az, Bitbucket credentials) only for forges this host's projects use.
@@ -109,6 +112,20 @@ export default function contribute(context: PluginServerContext) {
       await review.marks.setBranchBase(input.worktree.workspaceId, input.worktree.baseCommit);
       return task;
     },
+  });
+  server.handle(reopenDeliveredTask, async (input, { paseo }) => {
+    const source = await assignedTask(input.serverId, input.workspaceId, input.taskId);
+    return reopenTaskSource(source, input, async (task, branch, reopenKey) => {
+      const sourceCwd = await projectRoot(paseo, task.projectId);
+      const origin = (await runGit(sourceCwd, ["remote", "get-url", "origin"])).trim();
+      const repo = detectForge(origin, (await deliveryOf(task.projectId)).forge);
+      const merged = task.pullRequest!;
+      if (!repo || repo.forge !== merged.forge || repo.slug !== merged.repository || repo.forge === "azure-devops" && merged.organizationUrl && repo.organizationUrl !== merged.organizationUrl) throw new Error("The project's origin no longer matches the delivered pull request. Check the project before reopening.");
+      const defaultBranch = await projectGit.defaultBranchFor(task.projectId);
+      const created = await createTaskWorktree({ task, branch, reopenKey, sourceCwd, defaultBranch }, paseo);
+      await review.marks.setBranchBase(created.workspaceId, created.baseCommit);
+      return created;
+    });
   });
   server.handle(getTaskLaunch, (input, { paseo }) => launcher.status(input, paseo));
   server.handle(checkLaunchParent, (input, { paseo }) => probeLaunchParent(input, paseo));
@@ -217,6 +234,11 @@ export default function contribute(context: PluginServerContext) {
     deliver: deliverTaskSource,
     clearReviewMarks: workspaceId => review.marks.clear(workspaceId),
   });
+  const mergeCheckTimer = setInterval(() => {
+    const paseo = hostPaseo();
+    if (paseo && !deliveryStopped) void localServerId().then(id => pullRequests.reconcileMerged(id, paseo, () => deliveryStopped)).catch(error => console.warn("[mission-control] checking merged pull requests:", error.message));
+  }, 60_000);
+  mergeCheckTimer.unref?.();
   registerAgentCleanup(server, { decisions, questions, pullRequests });
   registerChatWorkflow(server, { decisions, pullRequests, questions, actionDelivery });
   server.handle(checkPullRequest, (input, { paseo }) => pullRequests.check(input, paseo));
@@ -295,5 +317,5 @@ export default function contribute(context: PluginServerContext) {
   const updater = createPluginUpdater();
   server.handle(checkPluginUpdate, () => updater.check());
   server.handle(applyPluginUpdate, ({ target }) => updater.apply(target));
-  return () => { deliveryStopped = true; clearInterval(decisionDeliveryTimer); stopFleet(); statusLabels.stop(); };
+  return () => { deliveryStopped = true; clearInterval(mergeCheckTimer); clearInterval(decisionDeliveryTimer); stopFleet(); statusLabels.stop(); };
 }

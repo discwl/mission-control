@@ -9,7 +9,7 @@ import { PageScrollView } from "./page-state";
 import { pageKey } from "./page-memory";
 import { FlatList, Pressable, ScrollView, Text, View } from "react-native";
 import {
-  getReviewCommits,
+  getReviewCommits, getReviewBranches, getReviewBranchSnapshot, readReviewBranchFile,
   getReviewMarks,
   getReviewSnapshot,
   isMarkdownPath,
@@ -123,10 +123,10 @@ function DiffRow({ row, colors, total, split, onStep, isReviewed, onToggleReview
   </View>;
 }
 
-function FileRow({ file, selected, reviewed, comments, colors, onPress, onActions }: { file: ReviewFile; selected: boolean; reviewed: number; comments: number; colors: Colors; onPress: () => void; onActions: (target: ReviewItemTarget) => void }) {
+function FileRow({ file, selected, reviewed, comments, colors, onPress, onActions }: { file: ReviewFile; selected: boolean; reviewed: number; comments: number; colors: Colors; onPress: () => void; onActions?: (target: ReviewItemTarget) => void }) {
   const done = reviewed === file.reviewIds.length;
   const { dir, name } = splitPath(file.path);
-  return <ReviewItemActions target={{ path: file.path, directory: false, deleted: file.change === "deleted" }} colors={colors} onOpen={onActions}><Pressable accessibilityRole="button" accessibilityState={{ selected }} accessibilityLabel={`${file.path}, ${severityLabel[file.severity]}`} onLongPress={() => onActions({ path: file.path, directory: false, deleted: file.change === "deleted" })} onPress={onPress}
+  return <ReviewItemActions target={{ path: file.path, directory: false, deleted: file.change === "deleted" }} colors={colors} onOpen={onActions}><Pressable accessibilityRole="button" accessibilityState={{ selected }} accessibilityLabel={`${file.path}, ${severityLabel[file.severity]}`} onLongPress={() => onActions?.({ path: file.path, directory: false, deleted: file.change === "deleted" })} onPress={onPress}
     style={{ padding: 9, gap: 3, borderRadius: 7, borderLeftWidth: 3, borderLeftColor: selected ? colors.accent : "transparent", backgroundColor: selected ? colors.surface2 : "transparent" }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
       {done ? <Text style={{ color: colors.statusSuccess, fontSize: 13 }}>✓</Text> : null}
@@ -142,7 +142,7 @@ function FileRow({ file, selected, reviewed, comments, colors, onPress, onAction
 }
 
 function FileTree({ files, colors, renderFile, onActions, prefix = "" }: {
-  files: ReviewFile[]; colors: Colors; renderFile: (file: ReviewFile) => React.ReactNode; onActions: (target: ReviewItemTarget) => void; prefix?: string;
+  files: ReviewFile[]; colors: Colors; renderFile: (file: ReviewFile) => React.ReactNode; onActions?: (target: ReviewItemTarget) => void; prefix?: string;
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const folders = new Map<string, ReviewFile[]>();
@@ -171,7 +171,7 @@ function FileTree({ files, colors, renderFile, onActions, prefix = "" }: {
       const path = `${prefix}${name}/`;
       const expanded = !collapsed.has(path);
       return <View key={path} style={{ gap: 2 }}>
-        <ReviewItemActions target={{ path, directory: true }} colors={colors} onOpen={onActions}><Pressable accessibilityRole="button" accessibilityLabel={`${expanded ? "Collapse" : "Expand"} folder ${path}`} onLongPress={() => onActions({ path, directory: true })} accessibilityState={{ expanded }} onPress={() => toggle(path)}
+        <ReviewItemActions target={{ path, directory: true }} colors={colors} onOpen={onActions}><Pressable accessibilityRole="button" accessibilityLabel={`${expanded ? "Collapse" : "Expand"} folder ${path}`} onLongPress={() => onActions?.({ path, directory: true })} accessibilityState={{ expanded }} onPress={() => toggle(path)}
           style={{ minHeight: 36, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 9 }}>
           <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{expanded ? "▾" : "▸"}</Text>
           <Text numberOfLines={1} style={{ color: colors.foreground, fontSize: 12, fontWeight: "600", flex: 1 }}>{name}</Text>
@@ -195,12 +195,13 @@ function noLinesMessage(file: ReviewFile) {
 
 function scopeLabel(snapshot: ReviewSnapshot | null) {
   if (!snapshot) return "uncommitted changes";
+  if (snapshot.comparison) return `${snapshot.branch} against ${snapshot.comparison.baseRef} at ${snapshot.head?.slice(0, 8)}`;
   if (snapshot.fromCommit) return `${plural(snapshot.fromCommit.commits, "commit")} from ${snapshot.fromCommit.short} plus uncommitted changes`;
   if (snapshot.sinceCommit) return `everything since ${snapshot.sinceCommit.short}: ${plural(snapshot.sinceCommit.commits, "commit")} plus uncommitted changes`;
   return snapshot.base === "head" ? `uncommitted changes vs ${snapshot.head!.slice(0, 7)}` : "all files; the repository has no commits yet";
 }
 
-export function MissionReview({ serverId, localServerId = serverId, online, workspace, colors, compact, onChangeWorkspace, onNavigate, agentId: preferredAgentId, tab, sessionId = "workspace", openWorkspace, readiness, brief, embedded = false, requireAgentSelection = false }: {
+type ReviewProps = {
   serverId: string; online: boolean; workspace: { id: string; name: string; projectName: string; hostLabel: string };
   colors: Colors; compact: boolean; onChangeWorkspace?: () => void; onNavigate?: () => void; agentId?: string;
   // The host this Mission Control runs on, whose vault names the tasks in sub-agents' context lines.
@@ -213,15 +214,41 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
   openWorkspace?: () => void;
   readiness?: (snapshot: ReviewSnapshot | null, stale: boolean) => React.ReactNode;
   brief?: (snapshot: ReviewSnapshot | null, stale: boolean, selectFile: (path: string) => void) => React.ReactNode;
-}) {
-  const identity = JSON.stringify([serverId, workspace.id, preferredAgentId ?? sessionId]);
+};
+
+export function MissionReview(props: ReviewProps) {
+  const key = JSON.stringify([props.serverId, props.workspace.id, props.agentId ?? props.sessionId ?? "workspace"]);
+  return <ReviewScope key={key} {...props} />;
+}
+
+function ReviewScope(props: ReviewProps) {
+  const [choice, setChoice] = useState<string | null | undefined>(() => {
+    if (props.embedded || props.readiness || props.brief || props.requireAgentSelection) return undefined;
+    const state = props.tab?.state;
+    if (!state || typeof state !== "object" || !("branchRef" in state) || typeof state.branchRef !== "string") return undefined;
+    const expected = JSON.stringify([props.serverId, props.workspace.id, props.agentId ?? props.sessionId ?? "workspace", state.branchRef]);
+    return "identity" in state && state.identity === expected ? state.branchRef : undefined;
+  });
+  return <ReviewContent key={choice ?? "checkout"} {...props} choice={choice} onChoice={setChoice} />;
+}
+
+function ReviewContent({ serverId, localServerId = serverId, online, workspace, colors, compact, onChangeWorkspace, onNavigate, agentId: preferredAgentId, tab, sessionId = "workspace", openWorkspace, readiness, brief, embedded = false, requireAgentSelection = false, choice, onChoice }: ReviewProps & { choice: string | null | undefined; onChoice: (choice: string | null) => void }) {
+  const branchRef = choice || undefined;
+  const identity = JSON.stringify([serverId, workspace.id, preferredAgentId ?? sessionId, ...(branchRef ? [branchRef] : [])]);
   const memory = useReviewSession(identity, tab);
   const saved = memory.initial;
   const read = useRpc(getReviewSnapshot);
+  const readBranch = useRpc(getReviewBranchSnapshot);
+  const readBranches = useRpc(getReviewBranches);
+  const readBranchFile = useRpc(readReviewBranchFile);
+  const scope = { serverId, workspaceId: workspace.id, ...(branchRef ? { branchRef } : {}) };
+  const marksKey = [...reviewMarksKey(serverId, workspace.id), ...(branchRef ? [branchRef] : [])];
+  const allowBranches = !embedded && !readiness && !brief && !requireAgentSelection;
+  const [branchesOpen, setBranchesOpen] = useState(false);
   // Poll for changes, but keep showing the snapshot the user is reviewing until they refresh.
   const query = useQuery({
-    queryKey: reviewSnapshotKey(serverId, workspace.id),
-    queryFn: () => read({ serverId, workspaceId: workspace.id }),
+    queryKey: [...reviewSnapshotKey(serverId, workspace.id), ...(branchRef ? [branchRef] : [])],
+    queryFn: () => branchRef ? readBranch({ ...scope, branchRef }) : read(scope),
     enabled: online, refetchInterval: online ? 10_000 : false, staleTime: 0, retry: false,
   });
   const [pinned, setPinned] = useState<ReviewSnapshot | null>(memory.snapshot);
@@ -247,7 +274,7 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
   // Stays on while moving between Markdown files; other files always show changes.
   const [showPreview, setShowPreview] = useState(saved?.showPreview ?? false);
   useEffect(() => {
-    memory.save({ version: 1, identity, selectedPath, filter, mode, layout, pane, fileView, blockIndex, showDetail, showReviewed, showResolved, showPreview, agentChoice, draft });
+    memory.save({ version: 1, identity, branchRef, selectedPath, filter, mode, layout, pane, fileView, blockIndex, showDetail, showReviewed, showResolved, showPreview, agentChoice, draft });
   }, [identity, selectedPath, filter, mode, layout, pane, fileView, blockIndex, showDetail, showReviewed, showResolved, showPreview, agentChoice, draft]);
   useEffect(() => { tab?.setModified(Boolean(draft && (draft.body ?? draft.initial ?? "").trim())); }, [tab, draft]);
   const updateDraftBody = (body: string) => writeDraft(previous => previous ? { ...previous, body } : previous);
@@ -262,8 +289,8 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
   const readCommits = useRpc(getReviewCommits);
   const queryClient = useQueryClient();
   const marksQuery = useQuery({
-    queryKey: reviewMarksKey(serverId, workspace.id),
-    queryFn: () => readMarks({ serverId, workspaceId: workspace.id }),
+    queryKey: marksKey,
+    queryFn: () => readMarks(scope),
     enabled: online, staleTime: 5_000, retry: false,
   });
   const commitsQuery = useQuery({
@@ -271,8 +298,14 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
     queryFn: () => readCommits({ serverId, workspaceId: workspace.id }),
     enabled: online && scopeOpen, staleTime: 10_000, retry: false,
   });
-  const review = useReviewComments(serverId, workspace.id, online);
-  const agentsQuery = useWorkspaceAgents(serverId, workspace.id, online);
+  const autoBranch = allowBranches && choice === undefined && !draft && !!query.data?.branch && query.data?.base === "head" && !query.data.files.length && !!marksQuery.data && !marksQuery.data.branchBase && !marksQuery.data.from && !marksQuery.data.since;
+  const branches = useQuery({ queryKey: ["mission-control", "review-branches", serverId, workspace.id], queryFn: () => readBranches(scope), enabled: online && allowBranches && (branchesOpen || autoBranch), staleTime: 10_000, retry: false });
+  const currentRef = branches.data?.currentRef;
+  useEffect(() => {
+    if (autoBranch && currentRef && branches.data?.branches.some(b => b.ref === currentRef)) onChoice(currentRef);
+  }, [autoBranch, currentRef, branches.data, onChoice]);
+  const review = useReviewComments(serverId, workspace.id, online, branchRef);
+  const agentsQuery = useWorkspaceAgents(serverId, workspace.id, online && (!branchRef || !!pinned?.comparison), pinned?.comparison?.worktree);
   // Task titles come from this Mission Control's vault, also for another host's workspace.
   const contextLine = useContextLines(serverId, localServerId, online);
   const agents = agentsQuery.data ?? [];
@@ -285,7 +318,7 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
   const fileDone = (file: ReviewFile) => reviewedCount(file) === file.reviewIds.length;
   async function mark(ids: string[], reviewed: boolean) {
     setMarkError(null);
-    try { queryClient.setQueryData(reviewMarksKey(serverId, workspace.id), await writeMarks({ serverId, workspaceId: workspace.id, ids, reviewed })); }
+    try { queryClient.setQueryData(marksKey, await writeMarks({ ...scope, ids, reviewed })); }
     catch (error) { setMarkError(error instanceof Error ? error.message : String(error)); }
   }
   async function chooseFrom(from: string | null, since: string | null = null) {
@@ -294,6 +327,7 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
       const state = since ? await writeSince({ serverId, workspaceId: workspace.id, since }) : await writeFrom({ serverId, workspaceId: workspace.id, from });
       queryClient.setQueryData(reviewMarksKey(serverId, workspace.id), state);
       setScopeOpen(false);
+      onChoice(null);
       const result = await query.refetch();
       if (result.data) { setPinned(result.data); setSelectedPath(null); setBlockIndex(0); }
     } catch (error) { setMarkError(error instanceof Error ? error.message : String(error)); }
@@ -318,7 +352,7 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
   const previewing = showPreview && canPreview;
   const previewQuery = useQuery({
     queryKey: ["mission-control", "review-file", serverId, workspace.id, selected?.path ?? "", snapshot?.fingerprint ?? ""],
-    queryFn: () => readFile({ serverId, workspaceId: workspace.id, path: selected!.path }),
+    queryFn: () => branchRef ? readBranchFile({ ...scope, commit: snapshot!.head!, path: selected!.path }) : readFile({ ...scope, path: selected!.path }),
     enabled: online && previewing, staleTime: 10_000, retry: false,
   });
 
@@ -415,10 +449,11 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
     </ScrollView>
   </View> : null;
 
-  const fileMenu = <>{itemTarget ? <ReviewFileMenu onNavigate={onNavigate} key={`${serverId}:${workspace.id}:${itemTarget.path}:${itemTarget.directory}`} target={itemTarget} serverId={serverId} workspaceId={workspace.id} online={online} colors={colors}
+  const openItem = branchRef ? undefined : setItemTarget;
+  const fileMenu = <>{itemTarget && !branchRef ? <ReviewFileMenu onNavigate={onNavigate} key={`${serverId}:${workspace.id}:${itemTarget.path}:${itemTarget.directory}`} target={itemTarget} serverId={serverId} workspaceId={workspace.id} online={online} colors={colors}
     onClose={() => setItemTarget(null)} onOpenFile={path => setWorkingFile({ serverId, workspaceId: workspace.id, path })}
     onDiscarded={() => { setSelectedPath(null); setDraft(null); setWorkingFile(null); refresh(); void queryClient.invalidateQueries({ queryKey: ["mission-control", "review-file", serverId, workspace.id] }); }} /> : null}
-    {workingFile && workingFile.serverId === serverId && workingFile.workspaceId === workspace.id ? <ReviewFilePreview key={`${serverId}:${workspace.id}:${workingFile.path}`} {...workingFile} online={online} colors={colors} compact={compact} openWorkspace={openWorkspace} onClose={() => setWorkingFile(null)} /> : null}
+    {workingFile && workingFile.serverId === serverId && workingFile.workspaceId === workspace.id ? <ReviewFilePreview key={`${serverId}:${workspace.id}:${workingFile.path}`} {...workingFile} commit={branchRef ? snapshot!.head! : undefined} online={online} colors={colors} compact={compact} openWorkspace={branchRef ? undefined : openWorkspace} onClose={() => setWorkingFile(null)} /> : null}
   </>;
 
   const header = <View style={{ gap: 8, borderBottomColor: colors.border, borderBottomWidth: 1, paddingBottom: 10 }}>
@@ -432,12 +467,25 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
     <Breadcrumbs colors={colors} segments={[workspace.hostLabel, workspace.projectName, workspace.name]} />
     {snapshot ? <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
       <Text style={{ color: colors.foregroundMuted, fontSize: 12, flexShrink: 1 }}>
-        Reviewing <Text style={{ color: colors.foreground }}>{scopeLabel(snapshot)}</Text>{snapshot.branch ? ` on ${snapshot.branch}` : ""} · snapshot {formatDateTime(snapshot.generatedAt)} · {snapshot.files.length} files <Text style={{ color: colors.statusSuccess }}>+{additions}</Text> <Text style={{ color: colors.statusDanger }}>−{deletions}</Text>
+        Reviewing <Text style={{ color: colors.foreground }}>{scopeLabel(snapshot)}</Text>{snapshot.branch && !branchRef ? ` on ${snapshot.branch}` : ""} · snapshot {formatDateTime(snapshot.generatedAt)} · {snapshot.files.length} files <Text style={{ color: colors.statusSuccess }}>+{additions}</Text> <Text style={{ color: colors.statusDanger }}>−{deletions}</Text>
       </Text>
-      {snapshot.head ? <LinkButton label={scopeOpen ? "Close" : "Change what to review"} onPress={() => setScopeOpen(!scopeOpen)} colors={colors} /> : null}
+      {snapshot.head && !branchRef ? <LinkButton label={scopeOpen ? "Close" : "Change what to review"} onPress={() => setScopeOpen(!scopeOpen)} colors={colors} /> : null}
     </View> : null}
     {brief?.(snapshot, stale || !online || (query.isError && !scanning), select)}
     <ReviewChanges key={identity} identity={identity} snapshot={snapshot} stale={stale || !online || (query.isError && !scanning)} colors={colors} onSelect={select} onFilter={setComparisonPaths} />
+    {allowBranches ? <View style={{ gap: 5 }}>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+        <LinkButton label={branchesOpen ? "Close branch list" : "Review a branch…"} disabled={!online} onPress={() => setBranchesOpen(!branchesOpen)} colors={colors} />
+        {branchRef ? <LinkButton label="Return to checkout changes" disabled={!!draft || review.busy} onPress={() => onChoice(null)} colors={colors} /> : null}
+      </View>
+      {branchesOpen ? <ScrollView style={{ maxHeight: 240 }} nestedScrollEnabled>
+        {branches.isError ? <Text accessibilityRole="alert" style={{ color: colors.statusDanger }}>{branches.error instanceof Error ? branches.error.message : String(branches.error)}</Text> : null}
+        {branches.isPending ? <Text style={{ color: colors.foregroundMuted }}>Reading local and fetched branches…</Text> : null}
+        {branches.data ? <Text style={{ color: colors.foregroundMuted }}>{!branches.data.defaultBranch ? "Set a default branch in project Git settings." : branches.data.branches.length ? `Committed changes against ${branches.data.defaultBranch}` : `No branches have commits ahead of ${branches.data.defaultBranch}.`}</Text> : null}
+        {draft ? <Text style={{ color: colors.foregroundMuted }}>Save or cancel your comment to switch branches.</Text> : null}
+        {branches.data?.branches.map(branch => <LinkButton key={branch.ref} label={`${branch.name}${branch.remote ? " · fetched" : " · local"}`} colors={colors} disabled={!!draft || review.busy} onPress={() => { setBranchesOpen(false); onChoice(branch.ref); }} />)}
+      </ScrollView> : null}
+    </View> : null}
     {scopePicker}
     {draft && (pane !== "files" || (compact && !showDetail) || draft.path !== selected?.path || (draft.anchor && !rows.some(row => row.type === "composer"))) ? <View style={{ gap: 6 }}>
       <Text style={{ color: colors.statusWarning, fontSize: 12 }}>Unfinished comment on {draft.path}{draft.anchor ? `, ${draft.anchor.side} line ${draft.anchor.line}. Original line context is retained; it may now be outdated.` : "."} Save or cancel it before starting another comment.</Text>
@@ -478,18 +526,18 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
           </Pressable>;
         })}
       </ScrollView>
-      {snapshot && snapshot.files.length === 0 ? <Text style={{ color: colors.foregroundMuted, fontSize: 13 }}>No changes to review. {snapshot.head ? "Use \"Change what to review\" to review recent commits." : ""}</Text> : null}
+      {snapshot && snapshot.files.length === 0 ? <Text style={{ color: colors.foregroundMuted, fontSize: 13 }}>No changes to review. {branchRef ? "The branch has no changes against its default branch." : snapshot.head ? "Use \"Change what to review\" to review recent commits." : ""}</Text> : null}
       {comparisonPaths ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Showing files changed since your comparison point. Use Show all files above to restore the full list.</Text> : null}
       {snapshot && snapshot.files.length ? <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "700", marginTop: 6 }}>To review · {toReview.length}</Text> : null}
       {snapshot && snapshot.files.length && !toReview.length ? <Text style={{ color: colors.statusSuccess, fontSize: 12 }}>Everything here is reviewed.</Text> : null}
-      {fileView === "tree" ? <FileTree files={toReview} colors={colors} onActions={setItemTarget} renderFile={file => <FileRow file={file} selected={selected?.path === file.path} reviewed={reviewedCount(file)} comments={commentsIn(file.path)} colors={colors} onActions={setItemTarget} onPress={() => select(file.path)} />} /> : fileGroups(toReview).map(group => <View key={group.severity} style={{ gap: 2 }}>
+      {fileView === "tree" ? <FileTree files={toReview} colors={colors} onActions={openItem} renderFile={file => <FileRow file={file} selected={selected?.path === file.path} reviewed={reviewedCount(file)} comments={commentsIn(file.path)} colors={colors} onActions={openItem} onPress={() => select(file.path)} />} /> : fileGroups(toReview).map(group => <View key={group.severity} style={{ gap: 2 }}>
         <Text style={{ color: severityColor(group.severity, colors), fontSize: 11, fontWeight: "700", marginTop: 6 }}>{severityLabel[group.severity]} · {group.files.length}</Text>
-        {group.files.map(file => <FileRow key={file.path} file={file} selected={selected?.path === file.path} reviewed={reviewedCount(file)} comments={commentsIn(file.path)} colors={colors} onActions={setItemTarget} onPress={() => select(file.path)} />)}
+        {group.files.map(file => <FileRow key={file.path} file={file} selected={selected?.path === file.path} reviewed={reviewedCount(file)} comments={commentsIn(file.path)} colors={colors} onActions={openItem} onPress={() => select(file.path)} />)}
       </View>)}
       {reviewedFiles.length ? <Pressable accessibilityRole="button" accessibilityState={{ expanded: showReviewed }} onPress={() => setShowReviewed(!showReviewed)} style={{ minHeight: 40, justifyContent: "center", marginTop: 8 }}>
         <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "700" }}>{showReviewed ? "▾" : "▸"} Reviewed · {reviewedFiles.length}</Text>
       </Pressable> : null}
-      {showReviewed ? fileView === "tree" ? <FileTree files={reviewedFiles} colors={colors} onActions={setItemTarget} renderFile={file => <FileRow file={file} selected={selected?.path === file.path} reviewed={reviewedCount(file)} comments={commentsIn(file.path)} colors={colors} onActions={setItemTarget} onPress={() => select(file.path)} />} /> : reviewedFiles.map(file => <FileRow key={file.path} file={file} selected={selected?.path === file.path} reviewed={reviewedCount(file)} comments={commentsIn(file.path)} colors={colors} onActions={setItemTarget} onPress={() => select(file.path)} />) : null}
+      {showReviewed ? fileView === "tree" ? <FileTree files={reviewedFiles} colors={colors} onActions={openItem} renderFile={file => <FileRow file={file} selected={selected?.path === file.path} reviewed={reviewedCount(file)} comments={commentsIn(file.path)} colors={colors} onActions={openItem} onPress={() => select(file.path)} />} /> : reviewedFiles.map(file => <FileRow key={file.path} file={file} selected={selected?.path === file.path} reviewed={reviewedCount(file)} comments={commentsIn(file.path)} colors={colors} onActions={openItem} onPress={() => select(file.path)} />) : null}
     </>}
   </PageScrollView>;
 
@@ -508,7 +556,7 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
         style={{ minHeight: 40, paddingHorizontal: 12, justifyContent: "center", borderRadius: 7, backgroundColor: fileDone(selected) ? "transparent" : colors.accent, borderWidth: 1, borderColor: fileDone(selected) ? colors.statusSuccess : colors.accent }}>
         <Text style={{ color: fileDone(selected) ? colors.statusSuccess : colors.accentForeground, fontSize: 12, fontWeight: "600" }}>{fileDone(selected) ? "✓ File reviewed · undo" : "Mark file reviewed"}</Text>
       </Pressable>
-      {selected.change !== "deleted" ? <CompactLink label="View current file" colors={colors} disabled={!online} onPress={() => setWorkingFile({ serverId, workspaceId: workspace.id, path: selected.path })} /> : null}
+      {selected.change !== "deleted" ? <CompactLink label={branchRef ? "View branch file" : "View current file"} colors={colors} disabled={!online} onPress={() => setWorkingFile({ serverId, workspaceId: workspace.id, path: selected.path })} /> : null}
       <Pressable accessibilityRole="button" accessibilityLabel="Comment on file" onPress={() => { review.clearError(); setDraft({ path: selected.path, anchor: null }); }}
         style={{ minHeight: 40, paddingHorizontal: 12, justifyContent: "center", borderRadius: 7, borderWidth: 1, borderColor: colors.border }}>
         <Text style={{ color: colors.foreground, fontSize: 12 }}>💬 Comment on file</Text>
@@ -547,7 +595,7 @@ export function MissionReview({ serverId, localServerId = serverId, online, work
     <ReviewDiffList key={scrollKey} memoryKey={scrollKey} data={rows} keyExtractor={row => row.key} scrollEnabled initialNumToRender={60} windowSize={9} extraData={[marks, review.comments, draft, review.busy]}
     ListHeaderComponent={detailHeader} style={{ flex: 1, minHeight: 0 }} nestedScrollEnabled keyboardShouldPersistTaps="handled"
     ListFooterComponent={previewing ? <View style={{ borderColor: colors.border, borderWidth: 1, borderRadius: 8, padding: 14, gap: 8 }}>
-      <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>Preview of the file as it is now. Switch to Changes to comment on lines.</Text>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{branchRef ? `Preview at commit ${snapshot?.head?.slice(0, 8)}.` : "Preview of the file as it is now."} Switch to Changes to comment on lines.</Text>
       {previewQuery.isPending ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Loading preview…</Text> : null}
       {previewQuery.isError ? <Text accessibilityRole="alert" style={{ color: colors.statusDanger, fontSize: 12 }}>{previewQuery.error instanceof Error ? previewQuery.error.message : String(previewQuery.error)}</Text> : null}
       {previewQuery.data?.truncated ? <Text style={{ color: colors.statusWarning, fontSize: 12 }}>Only the first 512 KB are shown.</Text> : null}

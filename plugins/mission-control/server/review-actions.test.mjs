@@ -33,7 +33,7 @@ test("copy-path RPC resolves files, folders and deleted files only in the select
   const root = await fixture(t), handlers = new Map(), seen = [];
   const rpc = load("./review-rpc.ts", {
     "../shared/review": new Proxy({}, { get: (_target, name) => name }),
-    "./review-actions": actions, "./review": review,
+    "./review-actions": actions, "./review": review, "./review-branches": {},
     "./review-marks": { createReviewMarkStore: () => ({}) },
     "./review-comments": { createReviewCommentStore: () => ({}) },
     "./tasks": { localServerId: async () => "personal" },
@@ -180,7 +180,7 @@ test("working-file RPC reads the exact workspace image and refuses other hosts o
   const root = await fixture(t), handlers = new Map();
   const rpc = load("./review-rpc.ts", {
     "../shared/review": new Proxy({}, { get: (_target, name) => name }),
-    "./review-actions": actions, "./review": review,
+    "./review-actions": actions, "./review": review, "./review-branches": {},
     "./review-marks": { createReviewMarkStore: () => ({}) },
     "./review-comments": { createReviewCommentStore: () => ({}) },
     "./tasks": { localServerId: async () => "personal" },

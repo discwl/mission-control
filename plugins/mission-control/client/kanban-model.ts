@@ -1,5 +1,5 @@
 import type { V2Task } from "./mission-control-v2-model";
-import type { FleetAgent, FleetHost, FleetSnapshot } from "../shared/fleet";
+import type { FleetAgent, FleetHost, FleetSnapshot, FleetTask } from "../shared/fleet";
 
 export const kanbanScreenId = "kanban";
 export const kanbanLanes = [
@@ -19,7 +19,13 @@ export function kanbanTask(row: V2Task): KanbanTask {
   const running = workers.filter(agent => ["running", "initializing", "starting"].includes(agent.status)).length;
   const result = (lane: KanbanLane, label: string, action: string, tab: KanbanTab, needsYou = false): KanbanTask => ({ row, lane, label, action, tab, needsYou, running });
   if (row.state === "Unconfirmed" || row.limited) return result("attention", "Status unavailable", "Check connection and saved progress", "Workers");
-  if (row.state === "Delivered") return result("done", "Delivery recorded", "Read delivery evidence", "Evidence");
+  if (row.state === "Delivered") {
+    const pr = row.entry.task.pullRequest;
+    const label = pr?.mergedAt ? `Delivered · PR #${pr.number} merged` : pr ? "Delivery recorded · merge unconfirmed" : "Delivery recorded";
+    return result("done", label, "Read delivery evidence", "Evidence");
+  }
+  if (row.state === "PR follow-up") return result("progress", row.entry.task.pullRequest?.observedState === "closed" ? "PR closed without merging" : "PR status unavailable", "View pull request", "Evidence");
+  if (row.state === "Awaiting merge") return result("progress", row.entry.task.pullRequest?.observedState === "open" ? "PR open · awaiting merge" : "PR recorded · awaiting merge confirmation", "View pull request", "Evidence");
   if (row.entry.problem) return result("attention", "Task record needs recovery", "Inspect blocker", "Evidence", true);
   if (workers.some(agent => agent.pendingPermissions > 0) || row.entry.questions.some(item => item.question.status === "open")) {
     return result("attention", "Worker needs an answer", "Read question or permission", "Decision", true);
@@ -56,6 +62,26 @@ export function kanbanHasRequest(row: V2Task): boolean {
     || row.workers.some(worker => !worker.archivedAt && worker.pendingPermissions > 0);
 }
 
+export function kanbanWorkflow(entry: FleetTask, pending?: FleetSnapshot["state"]["pipelines"][number]) {
+  if (!entry.run) return pending?.workflowMode === "automatic" ? pending.workflow ?? "advanced" : pending ? "manual" : "unselected";
+  if (entry.pipeline?.runId === entry.run.runId) return entry.pipeline.workflow ?? (entry.runWorkflow === "manual" ? "automatic" : entry.runWorkflow) ?? "automatic";
+  return entry.runWorkflow ?? entry.run.workflowMode ?? "unknown";
+}
+
+export const workflowLabels = {
+  standard: "Standard workflow", advanced: "Advanced workflow", manual: "Manual workflow",
+  automatic: "Automatic workflow · level not recorded", unknown: "Workflow not recorded", unselected: "Workflow not selected",
+} as const;
+
+export const planningNext = {
+  standard: "The builder implements the saved plan and runs the checks. One independent reviewer checks the result.",
+  advanced: "A different model checks the plan before the builder starts. A validator and two independent reviewers check the result.",
+  automatic: "The runner continues with the checks configured for this task.",
+  manual: "A saved plan request will tell you when your approval is needed.",
+  unknown: "The linked conversation and saved plan show what happens next.",
+  unselected: "The workflow is selected when the task starts.",
+} as const;
+
 /** Guidance comes from saved state, never from interpreting free-form handoff text as authority. */
 export function kanbanGuidance(item: KanbanTask): { title: string; why: string; steps: string[]; after: string; action: string; tab: KanbanTab } {
   const { row, lane } = item;
@@ -81,10 +107,13 @@ export function kanbanGuidance(item: KanbanTask): { title: string; why: string; 
     "Acceptance moves toward delivery preparation. Publishing, PR creation and merges require separate authorization.", "Review changes and checks", "Code review");
   if (lane === "progress" && ["Intake", "Planning", "Plan check"].includes(row.workflow.stage)) return make(item.label,
     "The task is being planned and checked. There is no decision waiting for you.", ["Read the saved plan or progress if you want an update.", "Open the conversation if requirements have changed or you have useful context."],
-    row.entry.run?.workflowMode === "automatic" ? "A different model checks the plan before work starts. You will be asked if a question needs your answer." : "A saved plan request will tell you when your approval is needed.", "Read planning progress", "Evidence");
+    planningNext[kanbanWorkflow(row.entry)], "Read planning progress", "Evidence");
   if (lane === "queue") return make("Check priority with the coordinator", "The task is queued or ready for coordination; opening this card does not start it.",
     ["Check the recorded priority and blockers.", "Open the coordinator conversation to agree when to start or change the order."],
     "The coordinator checks eligibility and starts the appropriate phase; this board does not bypass that check.", "See queue and coordinator", "Workers");
+  if (row.state === "PR follow-up") return make(item.label, row.next, ["Open the linked pull request to check its status."], row.entry.task.pullRequest?.observedState === "closed" ? "Use the task conversation to decide whether to open a replacement PR or close this work." : "Refresh the task after the host can reach the repository.", "Read delivery evidence", "Evidence");
+  if (row.state === "Awaiting merge") return make("Waiting for the pull request to merge", "The host has recorded the pull request and is waiting for merge confirmation.",
+    ["Open the linked pull request for its latest status."], "The task moves to Delivered after the host confirms the merge.", "Read delivery evidence", "Evidence");
   if (lane === "progress") return make(item.running ? "Monitor the worker; no decision is waiting" : "Check why the worker is waiting",
     item.label + ".",  ["Check the linked worker's latest activity and the saved checks.", item.running ? "Open its conversation only if you need to clarify scope or investigate a problem." : "Open the linked conversation to confirm whether work finished, failed or needs to resume."],
     "A saved question or review request will supply your next decision. A finished chat turn does not complete the task.", "See workers and progress", "Workers");

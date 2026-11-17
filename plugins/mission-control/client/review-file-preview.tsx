@@ -4,15 +4,16 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Image, Text, View } from "react-native";
 import { CompactLink } from "./compact-link";
-import { isMarkdownPath, readReviewWorkingFile, resolveReviewItemPath } from "../shared/review";
+import { isMarkdownPath, readReviewBranchFile, readReviewWorkingFile, resolveReviewItemPath } from "../shared/review";
 import { AppModal } from "./app-modal";
 import { MarkdownPreview } from "./markdown-preview";
 import { mono, type Colors } from "./review-ui";
 
-export function ReviewFilePreview({ serverId, workspaceId, path, online, colors, compact, onClose, embedded = false, openWorkspace }: {
-  serverId: string; workspaceId: string; path: string; online: boolean; colors: Colors; compact: boolean; onClose: () => void; embedded?: boolean; openWorkspace?: () => void;
+export function ReviewFilePreview({ serverId, workspaceId, path, online, colors, compact, onClose, embedded = false, openWorkspace, commit }: {
+  serverId: string; workspaceId: string; path: string; online: boolean; colors: Colors; compact: boolean; onClose: () => void; embedded?: boolean; openWorkspace?: () => void; commit?: string;
 }) {
   const readFile = useRpc(readReviewWorkingFile);
+  const readBranch = useRpc(readReviewBranchFile);
   const [imageError, setImageError] = useState(false);
   const resolvePath = useRpc(resolveReviewItemPath);
   const active = useRef(true);
@@ -27,8 +28,8 @@ export function ReviewFilePreview({ serverId, workspaceId, path, online, colors,
     } catch (error) { if (active.current) setCopyStatus(`Could not copy: ${error instanceof Error ? error.message : String(error)}`); }
   }
   const query = useQuery({
-    queryKey: ["mission-control", "review-working-preview", serverId, workspaceId, path],
-    queryFn: () => readFile({ serverId, workspaceId, path }),
+    queryKey: ["mission-control", "review-working-preview", serverId, workspaceId, path, commit ?? ""],
+    queryFn: () => commit ? readBranch({ serverId, workspaceId, path, commit }) : readFile({ serverId, workspaceId, path }),
     enabled: online, staleTime: 0, gcTime: 0, retry: false,
   });
   const data = online ? query.data : undefined;
@@ -37,12 +38,12 @@ export function ReviewFilePreview({ serverId, workspaceId, path, online, colors,
         {!embedded ? <CompactLink label="Back to review" colors={colors} onPress={onClose} /> : null}
         {openWorkspace ? <CompactLink label="Open workspace" colors={colors} disabled={!online} onPress={openWorkspace} /> : null}
         <CompactLink label="Copy relative path" colors={colors} onPress={() => void copyPath(false)} />
-        <CompactLink label="Copy full host path" colors={colors} disabled={!online} onPress={() => void copyPath(true)} />
+        {!commit ? <CompactLink label="Copy full host path" colors={colors} disabled={!online} onPress={() => void copyPath(true)} /> : null}
       </View>
       {copyStatus ? <Text accessibilityLiveRegion="polite" style={{ color: colors.foregroundMuted, fontSize: 12 }}>{copyStatus}</Text> : null}
       {embedded ? <CompactLink label="Refresh file" colors={colors} disabled={!online || query.isFetching} onPress={() => void query.refetch()} /> : null}
       <Text selectable style={{ color: colors.foreground, fontSize: 14, fontWeight: "600" }}>{path}</Text>
-      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Read-only view of the current file on its workspace host. To edit, open the workspace and select this path in Files. Your diff and unfinished review comments stay in Review.</Text>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{commit ? `File at reviewed commit ${commit.slice(0, 8)}.` : "Read-only view of the current file on its workspace host. To edit, open the workspace and select this path in Files. Your diff and unfinished review comments stay in Review."}</Text>
       {!online ? <Text accessibilityRole="alert" style={{ color: colors.statusWarning }}>Connect to the workspace host to preview this file.</Text> : null}
       {online && query.isPending ? <Text style={{ color: colors.foregroundMuted }}>Loading file…</Text> : null}
       {online && query.isError ? <Text accessibilityRole="alert" style={{ color: colors.statusDanger }}>{query.error instanceof Error ? query.error.message : String(query.error)}</Text> : null}
@@ -53,7 +54,7 @@ export function ReviewFilePreview({ serverId, workspaceId, path, online, colors,
           : <ScrollView horizontal><Text selectable style={[mono, { color: colors.foreground }]}>{data.text || "This file is empty."}</Text></ScrollView> : null}
     </View>;
   if (embedded) return <ScrollView contentContainerStyle={{ padding: compact ? 16 : 24 }}>{content}</ScrollView>;
-  return <AppModal open onOpenChange={open => { if (!open) onClose(); }} title="Current file · read-only" colors={colors} maxWidth={1100}>
+  return <AppModal open onOpenChange={open => { if (!open) onClose(); }} title={commit ? "Branch file · read-only" : "Current file · read-only"} colors={colors} maxWidth={1100}>
     <AppModal.Content contentContainerStyle={{ padding: compact ? 16 : 24, gap: 12 }}>{content}</AppModal.Content>
   </AppModal>;
 }

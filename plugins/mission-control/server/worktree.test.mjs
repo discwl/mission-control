@@ -227,6 +227,26 @@ async function withOrigin(t) {
   return { ...setup, origin, upstream, push, fresh, localMaster };
 }
 
+test("reopening branches from the latest default commit with a new repeatable worktree key", async t => {
+  const { repo, git, paseo, calls, push } = await withOrigin(t);
+  const first = await createTaskWorktree({ task, sourceCwd: repo }, paseo);
+  const latest = await push("master", "qa-fix.txt");
+  const input = { task, sourceCwd: repo, branch: "task/1234abcd-fix-1", reopenKey: "fix-1" };
+  const fix = await createTaskWorktree(input, paseo);
+  assert.notEqual(fix.workspaceId, first.workspaceId);
+  assert.equal(git(fix.directory, "rev-parse", "HEAD"), latest);
+  assert.equal(git(first.directory, "rev-parse", "HEAD"), first.baseCommit);
+  assert.notEqual(calls[0].idempotencyKey, calls[1].idempotencyKey);
+  assert.equal((await createTaskWorktree(input, paseo)).workspaceId, fix.workspaceId);
+  assert.equal(calls.length, 2);
+});
+
+test("reopening without an origin cannot use a local feature branch as the fix base", async t => {
+  const { repo, paseo, calls } = await repository(t);
+  await assert.rejects(createTaskWorktree({ task, sourceCwd: repo, branch: "task/1234abcd-fix-1", reopenKey: "fix-1" }, paseo), /freshly fetched default/);
+  assert.equal(calls.length, 0);
+});
+
 test("a new task worktree starts from the freshly fetched origin default branch, not the local branch", async t => {
   const { repo, git, paseo, calls, fresh, localMaster } = await withOrigin(t);
   const worktree = await createTaskWorktree({ task, sourceCwd: repo }, paseo);

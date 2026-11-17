@@ -34,6 +34,25 @@ function bindExistingRun(f, extra = {}) {
   f.coordinator.links.push({ serverId: "personal", agentId: "coordinator", remoteServerId: "remote", remoteAgentId: "worker", remoteWorkspaceId: "work", taskId, linkedAt: at });
 }
 
+test("reopening enrolls one fresh Standard runner, preserves previous dispatch receipts, and rejects an older reopening", async t => {
+  const f = await fixture(t);
+  t.mock.method(transport, "invokeChatHost", async serverId => ({ serverId, version: 1, idempotentIntake: true, automaticWorkflow: true, standardWorkflow: true, taskWorktrees: true }));
+  const input = { coordinatorId: 'coordinator', remoteServerId: 'remote', taskId, expectedRevision: 0 };
+  const previous = await f.invoke('pipeline.start', { ...input, workflowMode: 'automatic', workflow: 'advanced' });
+  const reopenedAt = '2026-11-17T18:20:00.000Z';
+  f.task.task.deliveryHistory = [{ reopenedAt, workspaceId: 'old-work' }]; f.task.task.worktree = { workspaceId: 'fix-work' };
+  const former = agent('old-reviewer', 'old-work'); former.labels['mission-control.task-id'] = taskId; f.host.agents.push(former);
+  await f.store.update(state => { state.pipelines[0].pending = { requestId: 'pending', fingerprint: 'previous', stage: 'review', attemptedAt: at }; });
+  await assert.rejects(f.invoke('pipeline.reopened.start', { ...input, reopenedAt }), /unconfirmed dispatch/);
+  await f.store.update(state => { state.pipelines[0].pending = null; });
+  await assert.rejects(f.invoke('pipeline.reopened.start', { ...input, reopenedAt: at }), /reopening changed/);
+  const fresh = await f.invoke('pipeline.reopened.start', { ...input, reopenedAt });
+  assert.equal(fresh.workflow, 'standard'); assert.equal(fresh.reopenedAt, reopenedAt); assert.equal(fresh.runId, null);
+  assert.deepEqual(fresh.retiredWorkerIds, ['old-reviewer']);
+  assert.equal((await f.invoke('pipeline.reopened.start', { ...input, reopenedAt })).id, fresh.id);
+  const { pipelines } = await f.store.read(); assert.equal(pipelines.length, 2); assert.equal(pipelines.find(row => row.id === previous.id).mode, 'done');
+});
+
 test("starting an existing manual run cannot opt it into automatic or change its deliverable", async t => {
   const f = await fixture(t); bindExistingRun(f);
   f.task.decisions = [{ decision: { kind: "plan", status: "approved", runId: f.task.run.runId, plan: { revision: "approved-plan" } } }];

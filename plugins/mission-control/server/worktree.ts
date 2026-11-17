@@ -79,7 +79,7 @@ async function branchCreationPoint(cwd: string, branch: string) {
  * an origin remote branches off the source checkout's current branch. Uncommitted changes in the
  * source are not carried over. `branch` is the name from the branch-name template, else task/<id>-<slug>.
  */
-export async function createTaskWorktree(input: { task: TaskRecord; sourceCwd: string; defaultBranch?: string; branch?: string }, paseo: PaseoApi): Promise<CreatedWorktree> {
+export async function createTaskWorktree(input: { task: TaskRecord; sourceCwd: string; defaultBranch?: string; branch?: string; reopenKey?: string }, paseo: PaseoApi): Promise<CreatedWorktree> {
   const cwd = await realpath(input.sourceCwd);
   const head = (await runGit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"], [0, 1])).trim();
   if (!head) throw new Error("Make a first commit before starting a task in its own worktree.");
@@ -103,8 +103,9 @@ export async function createTaskWorktree(input: { task: TaskRecord; sourceCwd: s
     const branchExists = (await runGit(cwd, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], [0, 1])).trim() !== "";
     // Only a new branch needs origin; finding a task's branch again works offline.
     if (!branchExists) start = await taskStartingPoint(cwd, input.defaultBranch);
+    if (input.reopenKey && !start?.ref.startsWith("refs/remotes/origin/")) throw new Error("The fix needs the project's freshly fetched default branch on origin.");
     const handle = await paseo.workspaces.create({
-      idempotencyKey: `mission-control-worktree-${input.task.taskId}`,
+      idempotencyKey: `mission-control-worktree-${input.task.taskId}${input.reopenKey ? `-${input.reopenKey}` : ""}`,
       title: input.task.title,
       source: branchExists
         ? { kind: "worktree", cwd, projectId: input.task.projectId, action: "checkout", refName: branch, worktreeSlug: slug }

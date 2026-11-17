@@ -21,6 +21,10 @@ export const pullRequestRecordSchema = z.object({
   taskBranch: z.string().min(1).max(200),
   head: z.string().regex(/^[0-9a-f]{40}$/),
   createdAt: z.string().min(1),
+  // First positive merge verification, and optional completion of explicit worktree cleanup.
+  mergedAt: z.string().datetime().optional(),
+  observedState: z.enum(["open", "closed", "unknown"]).optional(),
+  cleanedUpAt: z.string().datetime().optional(),
   // Azure DevOps only: what az --organization takes (a Server collection included).
   organizationUrl: z.string().max(2000).regex(/^https?:\/\/[^\s]+$/i).optional(),
   // The task worktree the pull request was opened from; Clean up checks it for uncommitted work even after the branch is gone.
@@ -61,12 +65,28 @@ export const taskSchema = z.object({
   groupedTickets: z.array(ticketSchema.extend({ title: z.string().max(300), acceptanceCriteria: z.string().max(20_000) })).min(2).max(200).optional(),
   // Set when Mission Control opened the task's draft pull request (Open PR in Attention).
   pullRequest: pullRequestRecordSchema.optional(),
+  deliveryHistory: z.array(z.object({
+    pullRequest: pullRequestRecordSchema,
+    reason: z.string().min(1).max(4000),
+    reopenedAt: z.string().datetime(),
+    previousRevision: z.string().min(1),
+    workspaceId: z.string().min(1).optional(),
+  })).optional(),
   // When the task is due; tasks without one have no deadline.
   dueDate: dueDateSchema.optional(),
 });
 export type TaskWorktree = NonNullable<TaskRecord["worktree"]>;
 
 export type TaskRecord = z.infer<typeof taskSchema>;
+
+/** Reopened work has its own workspace; older records are still available in the task's run history. */
+export function currentTaskWorkspace(task: TaskRecord, workspaceId: string) {
+  return !task.deliveryHistory?.length || task.worktree?.workspaceId === workspaceId;
+}
+
+export function acceptsTaskRequest(task: TaskRecord, workspaceId: string) {
+  return !(task.status === "delivered" && task.pullRequest?.mergedAt) && currentTaskWorkspace(task, workspaceId);
+}
 
 // A task file that was skipped because it is invalid; `file` is relative to the vault.
 export const taskFileProblemSchema = z.object({ taskId: z.string(), file: z.string(), problem: z.string() });
@@ -109,6 +129,12 @@ const taskDocumentAddressSchema = z.object({
   serverId: z.string().min(1),
   workspaceId: z.string().min(1),
   taskId: z.string().regex(/^task_[a-f0-9-]+$/),
+});
+
+export const reopenDeliveredTask = defineRpc({
+  name: "tasks.reopen-delivered",
+  input: taskDocumentAddressSchema.extend({ expectedUpdatedAt: z.string().min(1), reason: z.string().trim().min(1).max(4000) }),
+  output: taskSchema,
 });
 
 export const updateTaskStatus = defineRpc({

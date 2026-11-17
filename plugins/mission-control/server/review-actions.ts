@@ -38,20 +38,29 @@ export async function readReviewText(root: string, path: string) {
   try {
     const header = Buffer.alloc(16);
     await handle.read(header, 0, header.length, 0);
-    const mimeType = header.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? "image/png" as const
-      : header[0] === 255 && header[1] === 216 && header[2] === 255 ? "image/jpeg" as const
-      : ["GIF87a", "GIF89a"].includes(header.toString("ascii", 0, 6)) ? "image/gif" as const
-      : header.toString("ascii", 0, 4) === "RIFF" && header.toString("ascii", 8, 12) === "WEBP" ? "image/webp" as const : null;
-    const limit = mimeType ? 2 * 1024 * 1024 : 512 * 1024, buffer = Buffer.alloc(limit + 1);
+    const buffer = Buffer.alloc((reviewImageMime(header) ? 2 * 1024 * 1024 : 512 * 1024) + 1);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    const bytes = buffer.subarray(0, Math.min(bytesRead, limit));
-    if (mimeType) {
-      if (bytesRead > limit) throw new Error("This image exceeds the 2 MB preview limit. Reveal it in Explorer instead.");
-      return { text: "", truncated: false, image: { mimeType, base64: bytes.toString("base64") } };
-    }
-    if (bytes.includes(0)) throw new Error("This binary file format cannot be previewed. Reveal it in Explorer instead.");
-    return { text: bytes.toString("utf8"), truncated: bytesRead > limit };
+    return previewReviewBytes(buffer.subarray(0, bytesRead));
   } finally { await handle.close(); }
+}
+
+function reviewImageMime(header: Buffer) {
+  return header.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? "image/png" as const
+    : header[0] === 255 && header[1] === 216 && header[2] === 255 ? "image/jpeg" as const
+    : ["GIF87a", "GIF89a"].includes(header.toString("ascii", 0, 6)) ? "image/gif" as const
+    : header.toString("ascii", 0, 4) === "RIFF" && header.toString("ascii", 8, 12) === "WEBP" ? "image/webp" as const : null;
+}
+
+export function previewReviewBytes(buffer: Buffer) {
+  const mimeType = reviewImageMime(buffer);
+  const limit = mimeType ? 2 * 1024 * 1024 : 512 * 1024;
+  const bytes = buffer.subarray(0, limit);
+  if (mimeType) {
+    if (buffer.length > limit) throw new Error("This image exceeds the 2 MB preview limit.");
+    return { text: "", truncated: false, image: { mimeType, base64: bytes.toString("base64") } };
+  }
+  if (bytes.includes(0)) throw new Error("This binary file format cannot be previewed.");
+  return { text: bytes.toString("utf8"), truncated: buffer.length > limit };
 }
 async function fileStamp(root: string, path: string): Promise<string> {
   const absolute = await checkedReviewPath(root, path);

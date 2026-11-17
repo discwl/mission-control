@@ -13,6 +13,7 @@ export function taskDestination(entry: FleetTask, workers: readonly FleetAgent[]
   if (entry.questions.some(item => item.question.status === "open")) return { tab: "Needs you", label: "Answer question" };
   if (entry.decisions.some(item => item.decision.kind === "review" && item.decision.status === "open")) return { tab: "Needs you", label: "Review result" };
   const workflow = taskWorkflow(entry, workers);
+  if (workflow.stage === "Awaiting merge" || workflow.stage === "PR follow-up") return { tab: "Delivery", label: "View pull request" };
   if (workflow.stage === "Delivery approval") return { tab: "Delivery", label: "Review delivery" };
   if (["Code review", "Your review"].includes(workflow.stage)) return { tab: "Review", label: "Review code" };
   if (workflow.stage === "Planning") return { tab: "Plan", label: "View plan" };

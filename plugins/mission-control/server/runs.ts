@@ -1,6 +1,8 @@
 import { readFile, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import { runSchema, type RunRecord } from "../shared/runs";
+import { readStageAssignments } from "./stage-records.mjs";
+import { currentTaskWorkspace } from "../shared/tasks";
 import { assignedTask, localServerId, type TaskSource } from "./tasks";
 import { defaultVaultPath } from "../shared/vault";
 import { workflowInstructionsPrompt } from "../shared/workflow-instructions.mjs";
@@ -28,11 +30,11 @@ function parseRun(markdown: string): RunRecord {
 }
 
 export async function listRunRecords(serverId: string, workspaceId: string, taskId: string): Promise<RunRecord[]> {
-  return runRecordsOf(await assignedTask(serverId, workspaceId, taskId), serverId);
+  return runRecordsOf(await assignedTask(serverId, workspaceId, taskId), serverId, true);
 }
 
 /** A task's runs on this host, newest first. */
-export async function runRecordsOf(source: TaskSource, serverId: string): Promise<RunRecord[]> {
+export async function runRecordsOf(source: TaskSource, serverId: string, includeHistory = false): Promise<RunRecord[]> {
   const taskId = source.task.taskId;
   if (!source.folder) return [];
   const taskFolder = await realpath(source.folder);
@@ -53,9 +55,27 @@ export async function runRecordsOf(source: TaskSource, serverId: string): Promis
     if (run.runId !== name || run.taskId !== taskId || run.serverId !== serverId || !assigned || run.hostId !== source.task.hostId || run.projectId !== source.task.projectId) {
       throw new Error("Run identity does not match its task and workspace.");
     }
-    runs.push(run);
+    if (includeHistory || currentTaskWorkspace(source.task, run.workspaceId)) runs.push(run);
   }
   return runs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+// An automatic run keeps its selected workflow for its lifetime. A manual run can still be adopted.
+const automaticWorkflows = new Map<string, "standard" | "advanced">();
+export async function fleetRunWorkflow(source: TaskSource, run: RunRecord) {
+  if (!source.folder) return undefined;
+  const folder = join(source.folder, "runs", run.runId);
+  const { taskId, runId, serverId, workspaceId } = run;
+  const key = JSON.stringify([folder, taskId, runId, serverId, workspaceId]);
+  const known = automaticWorkflows.get(key);
+  if (known) return known;
+  const [assignment] = await readStageAssignments(folder, { taskId, runId, serverId, workspaceId });
+  if (assignment?.workflowMode !== "automatic") return assignment?.workflowMode === "manual" || run.workflowMode === "manual" ? "manual" as const : undefined;
+  // The automatic runner that predates workflow selection used the Advanced stages.
+  const workflow = assignment.workflow ?? "advanced";
+  if (automaticWorkflows.size >= 300) automaticWorkflows.clear();
+  automaticWorkflows.set(key, workflow);
+  return workflow;
 }
 
 /** The summary of the run's latest handoff: the text between "# Handoff" and the next heading. */
@@ -73,8 +93,10 @@ export async function taskAgentPrompt(workspaceId: string, taskId: string) {
   const serverId = await localServerId();
   const source = await assignedTask(serverId, workspaceId, taskId);
   const instructions = await createWorkflowInstructionsStore(defaultVaultPath).read({ serverId, hostId: source.task.hostId, projectId: source.task.projectId });
-  return { title: source.task.title, prompt: taskPromptText({
-    workflowInstructions: workflowInstructionsPrompt(instructions), serverId, workspaceId, taskId, title: source.task.title, projectId: source.task.projectId, file: source.file, dueDate: source.task.dueDate }) };
+  const latestFix = source.task.deliveryHistory?.at(-1);
+  const prompt = taskPromptText({
+    workflowInstructions: workflowInstructionsPrompt(instructions), serverId, workspaceId, taskId, title: source.task.title, projectId: source.task.projectId, file: source.file, dueDate: source.task.dueDate });
+  return { title: source.task.title, prompt: latestFix ? `${prompt}\nThis task was reopened after ${latestFix.pullRequest.url} merged. Address this reported issue in the new fix workspace:\n${latestFix.reason}` : prompt };
 }
 
 /** The working rules Start task, Resume and /mission-task give a task's agent. */

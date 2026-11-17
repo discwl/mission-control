@@ -83,7 +83,7 @@ export async function untrackedDiff(cwd: string, name: string): Promise<string> 
   ]);
 }
 
-function spawnGit(cwd: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+function gitOutput(cwd: string, args: string[], prefixBytes?: number): Promise<{ code: number; bytes: Buffer; stderr: string }> {
   return new Promise((resolve, reject) => {
     const forward = cwd.replaceAll("\\", "/");
     // diff.relative=true would make a diff from a subfolder skip the rest of the repository and print subfolder paths.
@@ -95,14 +95,31 @@ function spawnGit(cwd: string, args: string[]): Promise<{ code: number; stdout: 
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     let size = 0;
-    child.stdout.on("data", (chunk: Buffer) => { size += chunk.length; if (size <= maxOutput) out.push(chunk); else child.kill(); });
+    child.stdout.on("data", (chunk: Buffer) => {
+      const limit = prefixBytes ?? maxOutput;
+      if (size < limit) out.push(chunk.subarray(0, limit - size));
+      size += chunk.length;
+      if (size > limit) child.kill();
+    });
     child.stderr.on("data", (chunk: Buffer) => { if (err.length < 64) err.push(chunk); });
     child.on("error", reject);
     child.on("close", code => {
-      if (size > maxOutput) return reject(new Error(tooLarge));
-      resolve({ code: code ?? -1, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8").trim() });
+      if (prefixBytes === undefined && size > maxOutput) return reject(new Error(tooLarge));
+      resolve({ code: prefixBytes !== undefined && size > prefixBytes ? 0 : code ?? -1, bytes: Buffer.concat(out), stderr: Buffer.concat(err).toString("utf8").trim() });
     });
   });
+}
+
+async function spawnGit(cwd: string, args: string[]) {
+  const { code, bytes, stderr } = await gitOutput(cwd, args);
+  return { code, stdout: bytes.toString("utf8"), stderr };
+}
+
+export async function readGitBlobPrefix(cwd: string, commit: string, path: string, limit: number) {
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit)) throw new Error("Invalid review commit.");
+  const result = await gitOutput(cwd, ["cat-file", "blob", `${commit}:${path}`], limit);
+  if (result.code !== 0) throw new Error(result.stderr || "This file is unavailable at the reviewed commit.");
+  return result.bytes;
 }
 
 export async function runGit(cwd: string, args: string[], acceptable: number[] = [0]): Promise<string> {
@@ -203,8 +220,11 @@ export async function collectFrozenReview(directory: string, baseCommit: string,
   const base = (await runGit(cwd, ["rev-parse", "--verify", "--end-of-options", `${baseCommit}^{commit}`])).trim();
   const tree = (await runGit(cwd, ["rev-parse", "--verify", "--end-of-options", `${candidateTree}^{tree}`])).trim();
   if (base !== baseCommit || tree !== candidateTree) throw new Error("The saved review objects are unavailable; no live diff was substituted.");
-  const raw = await runGit(cwd, ["diff", ...diffFlags, base, tree, "--"]);
-  return { baseCommit: base, candidateTree: tree, files: parseDiff(raw) };
+  return { baseCommit: base, candidateTree: tree, files: await diffReviewObjects(cwd, base, tree) };
+}
+
+export async function diffReviewObjects(cwd: string, base: string, target: string) {
+  return parseDiff(await runGit(cwd, ["diff", ...diffFlags, base, target, "--"]));
 }
 
 export async function workspaceDirectory(paseo: PaseoApi, localServer: string, input: { serverId: string; workspaceId: string }) {

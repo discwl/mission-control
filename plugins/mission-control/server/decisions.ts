@@ -11,6 +11,7 @@ import {
   type Finding,
 } from "../shared/decisions";
 import type { TaskSource } from "./tasks";
+import { acceptsTaskRequest } from "../shared/tasks";
 import { readPlanSnapshot, verifyPlanApproval } from "./plan-snapshots.mjs";
 import { decisionPlanSchema } from "../shared/plan-approval";
 import { isQuiet } from "../shared/agent-tree";
@@ -161,6 +162,7 @@ export function createDecisionStore(deps: { sources: (serverId: string) => Promi
     if (!source || !source.task.assignments.some(item => item.serverId === ref.serverId && item.workspaceId === ref.workspaceId)) {
       throw new Error("Task is not assigned to this workspace.");
     }
+    if (!acceptsTaskRequest(source.task, ref.workspaceId)) throw new Error("This request belongs to a completed delivery. Open the current task.");
     const runFolder = await runFolderOf(source, ref.runId);
     const reload = async () => {
       const loaded = await load(source, runFolder, ref.runId, `${ref.decisionId}.md`);
@@ -182,7 +184,10 @@ export function createDecisionStore(deps: { sources: (serverId: string) => Promi
         let names: string[];
         try { names = await readdir(join(runFolder, "decisions")); }
         catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
-        for (const name of names.filter(value => decisionFilePattern.test(value))) all.push(await load(source, runFolder, runId, name));
+        for (const name of names.filter(value => decisionFilePattern.test(value))) {
+          const loaded = await load(source, runFolder, runId, name);
+          if (acceptsTaskRequest(source.task, loaded.decision.workspaceId)) all.push(loaded);
+        }
       }
     }
     const open = all.filter(item => item.decision.status === "open").sort((a, b) => a.decision.requestedAt.localeCompare(b.decision.requestedAt));

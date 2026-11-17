@@ -9,7 +9,7 @@ export function coordinatorCandidates(agents: readonly FleetAgent[]): FleetAgent
   return agents.filter(agent => !agent.archivedAt && agent.workspaceId && !agents.some(parent => parent.id === agent.labels["paseo.parent-agent-id"] && parent.workspaceId === agent.workspaceId));
 }
 
-export const workflowStages = ["Intake", "Planning", "Plan check", "Ready", "Implementing", "Validating", "Code review", "Your review", "Delivery approval", "Delivered"] as const;
+export const workflowStages = ["Intake", "Planning", "Plan check", "Ready", "Implementing", "Validating", "Code review", "Your review", "Delivery approval", "Awaiting merge", "PR follow-up", "Delivered"] as const;
 export type WorkflowStage = typeof workflowStages[number] | "Blocked";
 export type Workflow = { stage: WorkflowStage; actor: "agent" | "you" | "dependency" | "done"; next: string; evidence: string };
 
@@ -69,8 +69,8 @@ export function withPipelineProjection(snapshot: FleetSnapshot, state = snapshot
     const { pipeline: _prior, ...clean } = entry;
     // A just-switched task's runner has no run of its own until its first automatic stage, which continues the task's run.
     const owns = (row: typeof state.pipelines[number]) => Boolean(entry.run) && (row.runId === entry.run!.runId || row.runId === null && row.retiredWorkerIds !== undefined && !["done", "stopped"].includes(row.mode));
-    const row = [...state.pipelines].filter(row => row.workflowMode === "automatic" && row.remoteServerId === host.serverId && row.taskId === entry.task.taskId && owns(row)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
-    return row && entry.run ? { ...clean, pipeline: { runId: entry.run.runId, workflowMode: "automatic" as const, deliveryKind: row.deliveryKind, stage: row.stage, mode: row.mode, message: row.message,
+    const row = [...state.pipelines].filter(row => row.workflowMode === "automatic" && row.remoteServerId === host.serverId && row.taskId === entry.task.taskId && row.reopenedAt === entry.task.deliveryHistory?.at(-1)?.reopenedAt && owns(row)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    return row && entry.run ? { ...clean, pipeline: { runId: entry.run.runId, workflowMode: "automatic" as const, workflow: row.workflow ?? "advanced", deliveryKind: row.deliveryKind, stage: row.stage, mode: row.mode, message: row.message,
       ...(row.retiredWorkerIds ? { retiredWorkerIds: row.retiredWorkerIds, freshSwitch: row.lastSentAt === null } : {}) } } : clean;
   }) } : null })) };
 }
@@ -85,6 +85,12 @@ export function taskWorkflow(entry: FleetTask, agents: readonly FleetAgent[]): W
   const decisions = [...entry.decisions].sort((a, b) => b.decision.requestedAt.localeCompare(a.decision.requestedAt));
   const open = decisions.find(entry => entry.decision.status === "open");
   if (open) return result(open.decision.kind === "plan" ? "Planning" : "Your review", "you", open.decision.kind === "plan" ? "Approve the implementation plan" : "Review the result and evidence");
+  if (task.status === "in_review" && task.pullRequest) {
+    const pr = task.pullRequest;
+    if (pr.observedState === "closed") return result("PR follow-up", "dependency", `PR #${pr.number} closed without merging.`);
+    if (pr.observedState === "unknown") return result("PR follow-up", "dependency", `The host could not confirm the status of PR #${pr.number}.`);
+    return result("Awaiting merge", "dependency", `Waiting for merge confirmation on PR #${pr.number}.`);
+  }
   const current = decisions.filter(entry => !run || entry.decision.runId === run.runId);
   const review = current.find(entry => entry.decision.kind === "review");
   const plan = current.find(entry => entry.decision.kind === "plan");
@@ -126,11 +132,11 @@ export function taskWorkflow(entry: FleetTask, agents: readonly FleetAgent[]): W
   if (review?.decision.status === "approved") return result("Delivery approval", "you", task.pullRequest ? "Review PR follow-up · external changes need approval" : "Approve the exact PR or delivery action");
   if (review?.decision.status === "changes_requested") return result("Implementing", "agent", "Address requested changes, validate, and request fresh review");
   if (run?.workflowMode === "automatic") {
-    if (run.stage === "plan") return result("Planning", "agent", run.nextAction || "Prepare the versioned plan for independent checking");
+    if (run.stage === "plan") return result("Planning", "agent", run.nextAction || "Prepare the saved plan for implementation");
     if (run.stage === "plan-review") return result("Plan check", "agent", run.nextAction || "Check the plan with a different model");
     if (run.stage === "execute" || run.stage === "fix") return result("Implementing", "agent", run.nextAction || "Complete the checked scope");
     if (run.stage === "validate") return result("Validating", "agent", run.nextAction || "Record relevant checks for this candidate");
-    if (run.stage === "review") return result("Code review", "agent", run.nextAction || "Complete both independent model reviews");
+    if (run.stage === "review") return result("Code review", "agent", run.nextAction || "Complete the independent review checks");
     if (run.stage === "delivery") return result("Delivery approval", "you", "Review the exact prepared publication or action");
   }
   if (task.status === "in_review") return result("Your review", "you", "Inspect review evidence before accepting work");

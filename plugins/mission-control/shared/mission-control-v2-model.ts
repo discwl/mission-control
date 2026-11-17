@@ -3,7 +3,7 @@ import { managedTasks, taskWorkers, taskWorkflow, type Workflow } from "./fleet-
 
 export const missionControlV2ScreenId = "mission-control-v2";
 export type V2View = "Needs you" | "Work" | "Up next";
-export type V2State = "Needs you" | "Working" | "Waiting on worker" | "Blocked" | "Unconfirmed" | "Queued" | "Delivered";
+export type V2State = "Needs you" | "Working" | "Waiting on worker" | "Awaiting merge" | "PR follow-up" | "Blocked" | "Unconfirmed" | "Queued" | "Delivered";
 export type V2Task = {
   key: string; serverId: string; hostLabel: string; host: FleetHost; entry: FleetTask;
   coordinators: FleetCoordinator[]; workers: FleetAgent[]; queue: FleetQueueEntry[];
@@ -58,6 +58,8 @@ export function buildV2Tasks(snapshot: FleetSnapshot, options: { unconfirmed?: b
         if (question) next = question.question.plain?.need ?? question.question.question;
         else if (open) next = open.decision.kind === "plan" ? "Inspect the saved plan and approval request." : "Inspect the saved review and candidate evidence.";
       } else if (staleReview) { state = "Blocked"; waitingOn = "Fresh worker evidence"; next = "The saved run changed after this review. A fresh review is required."; }
+      else if (workflow.stage === "PR follow-up") { state = "PR follow-up"; waitingOn = "Pull request follow-up"; }
+      else if (workflow.stage === "Awaiting merge") { state = "Awaiting merge"; waitingOn = "Pull request merge"; }
       else if (unresolvedDelivery && !open) {
         const newer = decisions.some(item => item.decision.requestedAt > unresolvedDelivery.decision.requestedAt);
         if (!newer && unresolvedDelivery.decision.resume?.phase === "pending") { state = "Waiting on worker"; waitingOn = "Worker availability"; next = "Decision saved; worker delivery is pending. No repeat approval is needed."; }

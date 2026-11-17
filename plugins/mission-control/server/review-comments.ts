@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import type { PaseoApi } from "@getpaseo/client";
 import { z } from "zod";
 import { reviewCommentSchema, type CommentAnchor, type ReviewComment } from "../shared/review";
@@ -111,7 +111,7 @@ export function createReviewCommentStore(vaultRoot: string) {
     })).comments;
   }
 
-  async function send(workspaceId: string, input: { agentId: string; commentIds: string[]; workspaceName: string; scopeLabel: string }, paseo: PaseoApi) {
+  async function send(workspaceId: string, input: { agentId: string; commentIds: string[]; workspaceName: string; scopeLabel: string }, paseo: PaseoApi, destination = workspaceId, branchDirectory?: string | null) {
     let agent;
     try { agent = (await paseo.agents.ref(input.agentId).refresh())?.agent ?? null; }
     catch (error) {
@@ -120,7 +120,7 @@ export function createReviewCommentStore(vaultRoot: string) {
     }
     // A closed agent is resting (Paseo 0.14 releases idle agents); sending resumes it.
     if (!agent || agent.archivedAt) throw new Error("That agent is unavailable or archived.");
-    if (agent.workspaceId !== workspaceId) throw new Error("That agent belongs to another workspace.");
+    if (agent.workspaceId !== destination && !(branchDirectory && agent.cwd && relative(branchDirectory, agent.cwd) === "")) throw new Error("That agent belongs to another workspace.");
     if (!isQuiet(agent) || agent.activeTurn || agent.pendingPermissions.length) throw new Error("The agent is busy or waiting on a permission. Send when it is idle.");
     const ids = new Set(input.commentIds);
     // Claim the comments first, so a second click or another client cannot send them twice.

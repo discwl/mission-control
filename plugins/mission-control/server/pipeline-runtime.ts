@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { FleetSnapshot } from "../shared/fleet";
-import { inspectPipeline, startPipeline, controlPipeline, pipelineInspectionSchema, pipelineCapabilities, prepareTaskWorktree } from "../shared/pipeline";
+import { inspectPipeline, startPipeline, startReopenedPipeline, controlPipeline, pipelineInspectionSchema, pipelineCapabilities, prepareTaskWorktree } from "../shared/pipeline";
 import { isStartingStage, needsDispatchCheck, pipelineSchema, type Pipeline } from "../shared/pipeline-state";
 import { supersedeDecisions } from "../shared/decisions";
 import { inspectPipelineTask, savedRunWorkflow } from "./pipeline-inspect";
@@ -186,8 +186,7 @@ export function registerPipelineRuntime(server: PluginServerContext, store: Flee
       note: `Retired on ${day} when this task switched to the automatic workflow. Not approved: a fresh independent plan check, validation and two independent reviews replace this request.` }));
   }
   const adoptedMessage = "Switched to the automatic workflow. Open old-flow requests were retired without approval; a fresh independent plan check comes next.";
-  server.handle(startPipeline, async input => {
-    input = startPipeline.input.parse(input);
+  async function enroll(input: ReturnType<typeof startPipeline.input.parse>, expectedReopening?: string) {
     if (input.deliveryKind !== "code" && input.workflowMode !== "automatic") throw new Error("Non-code delivery requires the automatic workflow.");
     if (input.adoptExisting) {
       if (input.workflowMode !== "automatic") throw new Error("Switching an existing run requires the automatic workflow.");
@@ -215,6 +214,13 @@ export function registerPipelineRuntime(server: PluginServerContext, store: Flee
     const host = current.hosts.find(item => item.serverId === input.remoteServerId)?.snapshot;
     const task = host?.tasks.find(item => item.task.taskId === input.taskId);
     if (!coordinator || !host?.complete || host.warnings.length || current.warnings.length || !task) throw new Error("Choose a connected host with a complete current task snapshot.");
+    const reopenedAt = task.task.deliveryHistory?.at(-1)?.reopenedAt;
+    if (expectedReopening) {
+      if (expectedReopening !== reopenedAt) throw new Error("The task's reopening changed. Refresh the task before starting the fix.");
+      const existing = current.state.pipelines.find(row => row.taskId === input.taskId && row.remoteServerId === input.remoteServerId && row.reopenedAt === reopenedAt);
+      if (existing) return existing;
+      if (task.run || task.task.status !== "ready" || !task.task.worktree) throw new Error("The fix already progressed or its fresh workspace is unavailable. Refresh the task and inspect its current runner.");
+    }
     if (task.run && !managedTasks(current.serverId, coordinator, host).some(item => item.task.taskId === input.taskId)) throw new Error("Adopt this task's existing worker into this coordinator before starting its runner.");
     if (["closed", "delivered"].includes(task.task.status) || task.task.pullRequest) throw new Error("This task already has delivery recorded. Continue with its existing PR.");
     if (task.run && input.workflowMode !== (task.run.workflowMode ?? "manual")) throw new Error(`This task already has a run. Start its runner with the existing workflow, or switch a manual run to automatic checks in one step with "automate pipeline ${input.taskId}"; its open requests are retired without approval.`);
@@ -230,18 +236,33 @@ export function registerPipelineRuntime(server: PluginServerContext, store: Flee
       const capability = pipelineCapabilities.output.parse(await invokeChatHost(input.remoteServerId, pipelineCapabilities.name, { serverId: input.remoteServerId }));
       if (!capability.automaticWorkflow || workflow === "standard" && !capability.standardWorkflow || input.deliveryKind !== "code" && !capability.actionBundles || input.deliveryKind === "code" && !task.run && !capability.taskWorktrees) throw new Error("Update this host's Mission Control before using automatic workflow.");
     }
-    const row = pipelineSchema.parse({ id: randomUUID(), ...input, workflow, title: task.task.title, mode: "running", stage: "plan", runId: task.run?.runId ?? null, message: "Enrolled. Checking saved plan and stage evidence.", updatedAt: new Date().toISOString(), repairs: 0, repairIds: [], lastDispatch: null, lastSentAt: null, date: "", wakeups: 0, pending: null });
+    // Previous workers keep their history in the delivered workspace. New fix stages run in the fresh workspace.
+    const fixWorkspace = task.task.worktree?.workspaceId;
+    const retiredWorkerIds = reopenedAt && fixWorkspace ? [...new Set([
+      ...host.agents.filter(agent => agent.labels["mission-control.task-id"] === input.taskId && agent.workspaceId !== fixWorkspace).map(agent => agent.id),
+      ...coordinator.links.filter(link => link.taskId === input.taskId && link.remoteWorkspaceId !== fixWorkspace).map(link => link.remoteAgentId),
+    ])] : undefined;
+    const row = pipelineSchema.parse({ id: randomUUID(), ...input, workflow, reopenedAt, retiredWorkerIds, title: task.task.title, mode: "running", stage: "plan", runId: task.run?.runId ?? null, message: "Enrolled. Checking saved plan and stage evidence.", updatedAt: new Date().toISOString(), repairs: 0, repairIds: [], lastDispatch: null, lastSentAt: null, date: "", wakeups: 0, pending: null });
     await store.update(state => {
       if (state.paused) throw new Error("Resume fleet wake-ups before starting a task runner.");
+      if (reopenedAt) {
+        const previous = state.pipelines.filter(item => item.taskId === row.taskId && item.remoteServerId === row.remoteServerId && item.reopenedAt !== reopenedAt && !["stopped", "done"].includes(item.mode));
+        if (previous.some(item => item.pending)) throw new Error("The earlier runner has an unconfirmed dispatch. Check its receipt before starting the fix.");
+        for (const item of previous) {
+          item.mode = "done"; item.message = "PR merged. This runner belongs to the previous delivery."; item.updatedAt = new Date().toISOString();
+        }
+      }
       const active = state.pipelines.filter(item => !["stopped", "done"].includes(item.mode));
       if (active.some(item => item.taskId === input.taskId)) throw new Error("A runner already owns this task. Inspect it before starting another.");
       // Automatic runners queue per host. A manual runner drives the coordinator chat, so it stays alone.
       if (input.workflowMode !== "automatic" && active.some(item => item.workflowMode !== "automatic" && (item.remoteServerId === input.remoteServerId || item.coordinatorId === input.coordinatorId))) throw new Error("A manual runner already owns this host or coordinator. Inspect it before starting another.");
       for (const queued of state.queue.filter(item => item.taskId === row.taskId && item.remoteServerId === row.remoteServerId)) queued.enabled = false;
       state.pipelines.push(row); fleetEvent(state, { coordinatorId: row.coordinatorId, remoteServerId: row.remoteServerId, taskId: row.taskId, kind: "settings", message: row.workflow === "standard" ? "Standard workflow enrolled. The planner saves a plan; the builder implements and validates before one independent review." : row.workflowMode === "automatic" ? "Automatic workflow enrolled. Plan checking and two independent reviews precede exact human delivery authorization." : "Run to draft PR enrolled. Human plan, code and publication gates remain active." });
-    }, input.expectedRevision);
+    }, expectedReopening ? current.state.revision : input.expectedRevision);
     invalidate(); return row;
-  });
+  }
+  server.handle(startPipeline, input => enroll(startPipeline.input.parse(input)));
+  server.handle(startReopenedPipeline, input => enroll(startPipeline.input.parse({ ...input, workflowMode: "automatic", workflow: "standard", deliveryKind: "code" }), input.reopenedAt));
   server.handle(controlPipeline, async input => {
     let adoption: Pipeline | undefined;
     let retired: string[] | undefined;

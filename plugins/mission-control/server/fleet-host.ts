@@ -6,7 +6,7 @@ import { agentPageOrder, listIncludingBackground } from "../shared/background";
 import { agentDisplayName } from "../shared/agent-names";
 import { hideSecrets } from "../shared/secret-mask";
 import { scanTaskSources } from "./tasks";
-import { runRecordsOf } from "./runs";
+import { fleetRunWorkflow, runRecordsOf } from "./runs";
 
 export function toFleetAgent(agent: PaseoAgent): FleetAgent {
   const dates = [agent.lastUserMessageAt, agent.activeTurn?.startedAt, agent.attentionTimestamp].filter((date): date is string => Boolean(date)).sort();
@@ -59,7 +59,9 @@ export async function collectFleetHost(paseo: PaseoApi, serverId: string, deps: 
     let run = null; let problem: string | null = null;
     try { run = (await runRecordsOf(source, serverId))[0] ?? null; }
     catch (error) { problem = hideSecrets(error instanceof Error ? error.message : String(error)); }
-    return { task: source.task, run, problem,
+    // Display metadata must never turn an otherwise readable task into a failed inspection.
+    const runWorkflow = run ? await fleetRunWorkflow(source, run).catch(() => undefined) : undefined;
+    return { task: source.task, run, ...(runWorkflow ? { runWorkflow } : {}), problem,
       decisions: allDecisions.filter(entry => entry.decision.taskId === source.task.taskId),
       questions: waiting.questions.filter(entry => entry.question.taskId === source.task.taskId),
     };

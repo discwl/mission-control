@@ -51,6 +51,12 @@ For a task with no code changes, select **Actions** or **Report** when starting 
 
 OCR's code-diff coverage applies to code changes. Non-code reviewers inspect the saved bundle directly and record artifact coverage; they must not fabricate an OCR receipt.
 
+## Delivery and follow-up fixes
+
+Open a task in **All work** to see its workflow beside its status. A code task with a recorded open PR awaits merge. Its host periodically checks GitHub, Azure DevOps or Bitbucket for the PR. For a PR opened outside Mission Control, the host can match the task’s recorded branch to a single PR from the same repository into the project’s target branch. An ambiguous match or unavailable forge leaves the task available for follow-up.
+
+Once the forge confirms the merge, the card moves to **Delivered**. Workspace and branch cleanup is a separate action. If testing uncovers a bug, open the delivered card in **All work**, select **Reopen to fix**, and describe the problem. The fix gets a new branch from the freshly fetched default branch. The task keeps its ID, tickets and prior PR history.
+
 ## Pages focused on your next action
 
 **Needs you** replaces the old Mission Control v2 preview. It groups questions, work ready to publish, actions ready to execute and problems that need intervention. Older tasks that still require manual approvals are labelled separately. Each task appears once with its host, a plain explanation and a next action. Unavailable or incomplete hosts are visibly unconfirmed, never reported as clear of work.

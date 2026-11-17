@@ -17,7 +17,7 @@ function runtime(result = {}) {
     if (id === "@getpaseo/plugin/client/react-native") return { ScrollView: "ScrollView", copyText: async text => calls.push({ name: "copy", text }) };
     if (id === "@getpaseo/plugin/client" || id === "./host-rpc") return { useRpc: name => async input => { calls.push({ name, input }); return result.data; } };
     if (id === "@tanstack/react-query") return { useQuery: options => { queries.push(options); return result; } };
-    if (id === "../shared/review") return { readReviewWorkingFile: "working-file", resolveReviewItemPath: "item-path", isMarkdownPath: path => /\.md$/i.test(path) };
+    if (id === "../shared/review") return { readReviewBranchFile: "branch-file", readReviewWorkingFile: "working-file", resolveReviewItemPath: "item-path", isMarkdownPath: path => /\.md$/i.test(path) };
     if (id === "./app-modal") return { AppModal: Object.assign(() => null, { Content: "Content" }) };
     if (id === "./markdown-preview") return { MarkdownPreview: "MarkdownPreview" };
     if (id === "./compact-link") return { CompactLink: "CompactLink" };
@@ -45,6 +45,19 @@ test("PNG preview renders bytes as an image and binds the read to the selected h
   assert.equal(state.queries[0].enabled, true);
   assert.equal(state.queries[0].gcTime, 0);
   state.render({ ...props, serverId: "other-host", workspaceId: "other-workspace" });
+  assert.notDeepEqual(state.queries[0].queryKey, state.queries[1].queryKey);
+});
+
+test("branch previews request the displayed commit and expose only repository-relative paths", async () => {
+  const state = runtime({ data: { text: "branch contents", truncated: false } });
+  const commit = "a".repeat(40);
+  const tree = state.render({ ...props, path: "docs/readme.md", commit });
+  assert.equal(tree.props.title, "Branch file · read-only");
+  assert.equal(nodes(tree).find(node => node.type === "MarkdownPreview").props.content, "branch contents");
+  assert.ok(!nodes(tree).some(node => node.props?.label === "Copy full host path"));
+  await state.queries[0].queryFn();
+  assert.deepEqual(state.calls, [{ name: "branch-file", input: { serverId: props.serverId, workspaceId: props.workspaceId, path: "docs/readme.md", commit } }]);
+  state.render({ ...props, path: "docs/readme.md", commit: "b".repeat(40) });
   assert.notDeepEqual(state.queries[0].queryKey, state.queries[1].queryKey);
 });
 

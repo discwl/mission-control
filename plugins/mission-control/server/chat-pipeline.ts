@@ -1,8 +1,10 @@
 import { readFleet } from "../shared/fleet";
 import { startPipeline, controlPipeline } from "../shared/pipeline";
 import { invokeChatHost } from "./chat-transport";
-export const PIPELINE_CHAT_HELP = "run to draft PR <task ID> [standard|advanced] — start a task with Standard by default. Standard uses one fresh reviewer. Advanced adds an independent plan check, separate validation and a second reviewer. You authorize publication. Tasks queue per host; each host runs one stage at a time\npipeline <task ID> — show its stage and next action\npause pipeline <task ID> | resume pipeline <task ID> | stop pipeline <task ID> — control future stages\nautomate pipeline <task ID> — switch a task's manual run to automatic checks; its open plan/review requests are retired without approval";
+import { reopenFromChat } from "./chat-reopen";
+export const PIPELINE_CHAT_HELP = "run to draft PR <task ID> [standard|advanced] — start a task with Standard by default. Standard uses one fresh reviewer. Advanced adds an independent plan check, separate validation and a second reviewer. You authorize publication. Tasks queue per host; each host runs one stage at a time\nreopen <task ID> <what needs fixing> — reopen a merged delivery and start a Standard fix\npipeline <task ID> — show its stage and next action\npause pipeline <task ID> | resume pipeline <task ID> | stop pipeline <task ID> — control future stages\nautomate pipeline <task ID> — switch a task's manual run to automatic checks; its open plan/review requests are retired without approval";
 export async function managePipelineChat(command: string, context: { local: string; target: string; agentId: string; label: string; orchestrator: boolean }): Promise<{ text: string } | null> {
+  if (/^reopen\b/i.test(command)) return reopenFromChat(command, context);
   const start = /^run to draft pr\s+(task_[a-f0-9-]+)(?:\s+(standard|advanced))?$/i.exec(command);
   const control = /^(?:(pause|resume|stop|automate)\s+)?pipeline\s+(task_[a-f0-9-]+)$/i.exec(command);
   if (!start && !control) return null;

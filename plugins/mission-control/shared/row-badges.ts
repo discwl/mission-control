@@ -13,7 +13,7 @@ export type RowBadge = Omit<z.infer<typeof rowBadgeSchema>, "workspaceId">;
 export const readRowBadges = defineRpc({ name: "orchestrator.row-badges", input: z.object({}), output: z.object({ badges: z.array(rowBadgeSchema) }) });
 
 // Most urgent wins when several tasks share a workspace (report tasks share their project checkout).
-const urgency: Record<V2State, number> = { "Needs you": 4, Blocked: 3, Working: 2, "Waiting on worker": 2, Queued: 1, Delivered: 0, Unconfirmed: 0 };
+const urgency: Record<V2State, number> = { "Needs you": 4, Blocked: 3, Working: 2, "Waiting on worker": 2, "Awaiting merge": 0, "PR follow-up": 0, Queued: 1, Delivered: 0, Unconfirmed: 0 };
 
 function taskBadge(task: V2Task): RowBadge | null {
   const title = task.entry.task.title;

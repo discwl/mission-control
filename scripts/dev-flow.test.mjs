@@ -53,6 +53,27 @@ async function fixture(t) {
   return { base, vault, repo, folder, run };
 }
 
+test("a reopened task starts with fresh context and rejects writes from the delivered workspace", async t => {
+  const { folder, run } = await fixture(t);
+  const old = run("start");
+  assert.equal(old.status, 0, old.stderr);
+  const data = JSON.parse(run("context").stdout).task;
+  data.deliveryHistory = [{ reason: "QA found a regression" }];
+  data.worktree = { workspaceId: "wks_fix", sourceWorkspaceId: workspaceId };
+  data.assignments.push({ serverId, workspaceId: "wks_fix" });
+  await writeFile(join(folder, "task.md"), record(data));
+  const current = run("context", ["--workspace", "wks_fix"]);
+  assert.equal(current.status, 0, current.stderr);
+  assert.equal(JSON.parse(current.stdout).latestRun, null);
+  const stale = run("start");
+  assert.notEqual(stale.status, 0);
+  assert.match(stale.stderr, /earlier delivery/);
+  const fresh = run("start", ["--workspace", "wks_fix"]);
+  assert.equal(fresh.status, 0, fresh.stderr);
+  assert.notEqual(JSON.parse(fresh.stdout).run.runId, JSON.parse(old.stdout).run.runId);
+  assert.equal(JSON.parse(run("context", ["--workspace", "wks_fix"]).stdout).latestRun.workspaceId, "wks_fix");
+});
+
 test("run-lock CLI inspects exact bound run and refuses legacy recovery without mutation", async t => {
   const { base, folder, run } = await fixture(t);
   const start = run("start"); assert.equal(start.status, 0, start.stderr); const runId = JSON.parse(start.stdout).run.runId;

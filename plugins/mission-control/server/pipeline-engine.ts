@@ -188,6 +188,7 @@ export function createPipelineEngine(deps: Deps) {
     if (snapshot.state.paused || snapshot.warnings.length || !coordinator || !host?.complete || host.serverId !== row.remoteServerId || host.warnings.length || now() - Date.parse(host.observedAt) > 90_000) return false;
     if (snapshot.state.stoppedAgentIds.includes(coordinator.agentId) || !isQuiet(coordinator.agent) || coordinator.agent.pendingPermissions || coordinator.agent.error || coordinator.agent.archivedAt || (coordinator.agent.attention && coordinator.agent.attentionReason !== "finished")) return false;
     const selected = host.tasks.find(item => item.task.taskId === row.taskId);
+    if (selected?.task.deliveryHistory?.at(-1)?.reopenedAt !== row.reopenedAt) return false;
     // A task switched from the manual flow: the runner is the ownership record, and its earlier workers (even archived
     // or errored ones) no longer gate new stages. Anything running in the task's workspace still does.
     const adopted = row.workflowMode === "automatic" && row.retiredWorkerIds !== undefined;

@@ -8,9 +8,10 @@ import { bindReviewContextMenu } from "./web";
 import type { Colors } from "./review-ui";
 
 export type ReviewItemTarget = { path: string; directory: boolean; deleted?: boolean };
-export function ReviewItemActions({ children, target, colors, onOpen }: { children: ReactNode; target: ReviewItemTarget; colors: Colors; onOpen: (target: ReviewItemTarget) => void }) {
+export function ReviewItemActions({ children, target, colors, onOpen }: { children: ReactNode; target: ReviewItemTarget; colors: Colors; onOpen?: (target: ReviewItemTarget) => void }) {
   const element = useRef<View>(null);
-  useEffect(() => Platform.OS === "web" ? bindReviewContextMenu(element.current, () => onOpen(target)) : undefined, [onOpen, target.path, target.directory]);
+  useEffect(() => onOpen && Platform.OS === "web" ? bindReviewContextMenu(element.current, () => onOpen(target)) : undefined, [onOpen, target.path, target.directory]);
+  if (!onOpen) return <>{children}</>;
   return <View ref={element} style={{ flexDirection: "row", alignItems: "center" }}>
     <View style={{ flex: 1, minWidth: 0 }}>{children}</View>
     <Pressable accessibilityRole="button" accessibilityLabel={`Actions for ${target.directory ? "folder" : "file"} ${target.path}`} onPress={() => onOpen(target)} onLongPress={() => onOpen(target)}

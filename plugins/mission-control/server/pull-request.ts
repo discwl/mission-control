@@ -21,7 +21,9 @@ import {
 import { commitTaskWork, git, GitStopped, replyWithinMs, type Evaluation, type EvaluateMode } from "./merge";
 import { withRepository } from "./project-git";
 import { handoffSummary, runRecordsOf } from "./runs";
-import type { TaskSource } from "./tasks";
+import { markMergedTaskPRCleanedUp, recordMergedTaskPR, recordObservedTaskPR, type TaskSource } from "./tasks";
+import { findTaskPullRequest, mapState } from "./merged-pr-lookup";
+export { mapState };
 import { parseWorktreeList } from "./worktree";
 
 type Deps = {
@@ -37,6 +39,7 @@ type Deps = {
   record: (source: TaskSource, pullRequest: PullRequestRecord, line: string) => Promise<unknown>;
   deliver: (source: TaskSource, line: string) => Promise<unknown>;
   clearReviewMarks: (workspaceId: string) => Promise<unknown>;
+
   results?: DeliveryResults;
   runs?: (source: TaskSource, serverId: string) => Promise<RunRecord[]>;
   // The forge tools; tests put fake gh, az and an HTTP server here.
@@ -128,14 +131,6 @@ function bitbucketCreate(api: string, repo: Extract<ForgeRepository, { forge: "b
 // Only the task branch: no tags (push.followTags) and no submodule branches (push.recurseSubmodules), whatever the config says.
 const pushArgs = (tip: string, branch: string) => ["push", "--porcelain", "--no-follow-tags", "--recurse-submodules=no", "origin", `${tip}:refs/heads/${branch}`];
 
-/** gh's, az's and Bitbucket's pull request states as draft, open, merged or closed. */
-export function mapState(forge: ForgeRepository["forge"], value: { state?: unknown; status?: unknown; isDraft?: unknown; draft?: unknown }): PullRequestState | null {
-  const draft = value.isDraft === true || value.draft === true;
-  const state = String(value.state ?? value.status ?? "").toUpperCase();
-  if (forge === "github") return state === "MERGED" ? "merged" : state === "CLOSED" ? "closed" : state === "OPEN" ? (draft ? "draft" : "open") : null;
-  if (forge === "azure-devops") return state === "COMPLETED" ? "merged" : state === "ABANDONED" ? "closed" : state === "ACTIVE" ? (draft ? "draft" : "open") : null;
-  return state === "MERGED" ? "merged" : state === "DECLINED" || state === "SUPERSEDED" ? "closed" : state === "OPEN" ? (draft ? "draft" : "open") : null;
-}
 
 type Tools = { gh: ToolCommand | null; az: ToolCommand | null; auth: BitbucketAuth | null };
 // commitMessage, title and body: the text the user confirmed; each one left out uses the plan's default.
@@ -448,7 +443,7 @@ export function createPullRequestService(deps: Deps) {
 
   const tracked = (source: TaskSource, serverId: string) => {
     const { task } = source;
-    return Boolean(task.pullRequest && task.worktree && task.status !== "delivered" && task.status !== "closed" && task.assignments.some(item => item.serverId === serverId));
+    return Boolean(task.pullRequest && task.worktree && (task.status !== "delivered" || (task.pullRequest.mergedAt && !task.pullRequest.cleanedUpAt)) && task.status !== "closed" && task.assignments.some(item => item.serverId === serverId));
   };
 
   /**
@@ -489,6 +484,47 @@ export function createPullRequestService(deps: Deps) {
     const state = mapState("bitbucket", parsed);
     if (!state) throw new Error("Bitbucket answered with an unknown state.");
     return { state, head: hash(parsed.source?.commit?.hash) };
+  }
+
+  const lastMergeChecks = new Map<string, number>();
+  let checkingMerges = false;
+  async function reconcileMerged(serverId: string, paseo: PaseoApi, stopped = () => false) {
+    if (checkingMerges || stopped()) return;
+    checkingMerges = true;
+    try {
+      const sources = (await deps.sources(serverId)).filter(({ task }) => (task.worktree || task.pullRequest) && task.status !== "closed" && !task.pullRequest?.mergedAt && task.assignments.some(a => a.serverId === serverId));
+      const branchOwners = new Map<string, number>();
+      const branchKey = (task: TaskRecord) => JSON.stringify([task.projectId, task.worktree?.branch ?? task.pullRequest?.taskBranch]);
+      for (const { task } of sources) branchOwners.set(branchKey(task), (branchOwners.get(branchKey(task)) ?? 0) + 1);
+      const ids = new Set(sources.map(s => s.task.taskId));
+      for (const key of lastMergeChecks.keys()) if (!ids.has(key)) lastMergeChecks.delete(key);
+      const now = (deps.now?.() ?? new Date()).getTime();
+      const due = sources.filter(({ task }) => !busy(task.taskId) && (task.pullRequest || branchOwners.get(branchKey(task)) === 1) && now - (lastMergeChecks.get(task.taskId) ?? -Infinity) >= 600_000);
+      due.sort((a, b) => (lastMergeChecks.get(a.task.taskId) ?? 0) - (lastMergeChecks.get(b.task.taskId) ?? 0));
+      for (const source of due.slice(0, 4)) {
+        if (stopped()) return;
+        const { task } = source;
+        lastMergeChecks.set(task.taskId, now);
+        try {
+          const root = await deps.projectRoot(task.projectId, paseo);
+          const branch = task.worktree?.branch ?? task.pullRequest?.taskBranch;
+          const target = task.pullRequest?.targetBranch ?? await deps.targetBranch(task.projectId, root);
+          if (!branch || !target || branch === target) continue;
+          const origin = await gitIn(root, ["remote", "get-url", "origin"], 10_000);
+          const settings = await deps.delivery(task.projectId);
+          const repo = detectForge(origin, settings.forge ?? {});
+          if (!repo) continue;
+          const observation = await findTaskPullRequest({ repo, branch, target, since: task.worktree?.createdAt ?? task.createdAt, recorded: task.pullRequest, tools: await tools(repo.forge), run, http, bitbucketApi: api });
+          if (stopped() || busy(task.taskId)) continue;
+          if (observation?.state === "merged") await recordMergedTaskPR(source, observation.record);
+          else if (task.status !== "delivered" && observation && (observation.state === "open" || task.pullRequest)) await recordObservedTaskPR(source, observation.record, observation.state);
+          else if (!observation && task.pullRequest && task.status !== "delivered") await recordObservedTaskPR(source, task.pullRequest, "unknown");
+        } catch (error) {
+          console.warn(`[mission-control] merge check for ${task.taskId}: ${failure(error)}`);
+          if (task.pullRequest && task.status !== "delivered" && !stopped() && !busy(task.taskId)) await recordObservedTaskPR(source, task.pullRequest, "unknown").catch(() => {});
+        }
+      }
+    } finally { checkingMerges = false; }
   }
 
   async function refresh(taskId: string, record: PullRequestRecord) {
@@ -681,7 +717,10 @@ export function createPullRequestService(deps: Deps) {
         });
         await step("Mark delivered", async () => {
           const day = (deps.now?.() ?? new Date()).toISOString().slice(0, 10);
-          await deps.deliver(source, `- ${day}: Delivered. Pull request #${record.number} (${record.url}) merged into ${record.targetBranch}; Mission Control cleaned up.`);
+          if (source.task.status === "delivered") {
+            if (steps.some(item => item.state === "failed")) throw new Error("Resolve the incomplete cleanup steps and try again.");
+            await markMergedTaskPRCleanedUp(source, record);
+          } else await deps.deliver(source, `- ${day}: Delivered. Pull request #${record.number} (${record.url}) merged into ${record.targetBranch}; Mission Control cleaned up.`);
           return "Set the task to delivered and added a status.md line.";
         });
         return { outcome: "cleaned", steps };
@@ -697,7 +736,7 @@ export function createPullRequestService(deps: Deps) {
     return started.done ? started.result : { outcome: "running", resultId: started.resultId, taskId: input.taskId, step: started.step, startedAt: started.startedAt };
   }
 
-  return { check, start, list, cleanupPlan, cleanup };
+  return { check, start, list, cleanupPlan, cleanup, reconcileMerged };
 }
 
 /**

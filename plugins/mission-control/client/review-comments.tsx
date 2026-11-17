@@ -24,15 +24,18 @@ type Action = "delete" | "resolve" | "reopen" | "confirm-sent" | "confirm-not-se
 function message(error: unknown) { return error instanceof Error ? error.message : String(error); }
 
 /** Agents in this workspace that can receive review comments. */
-export function useWorkspaceAgents(serverId: string, workspaceId: string, online: boolean) {
+export function useWorkspaceAgents(serverId: string, workspaceId: string, online: boolean, branchDirectory?: string | null) {
   return useQuery({
-    queryKey: ["mission-control", "review-agents", serverId, workspaceId],
+    queryKey: ["mission-control", "review-agents", serverId, workspaceId, branchDirectory ?? ""],
     queryFn: async (): Promise<ReviewAgent[]> => {
       // A background workspace's agents are left out of Paseo 0.12's lists unless asked for.
       // A chat Paseo released after an idle hour ("closed") can still receive comments: sending wakes it.
       const { entries } = await listAgentPages(serverId, {}, (filter, cursor) => getPaseoClient(serverId).agents.list({ filter, sort: agentPageOrder, page: { limit: 200, ...(cursor ? { cursor } : {}) } }));
-      return entries.map(entry => entry.agent)
-        .filter(agent => agent.workspaceId === workspaceId && !("archivedAt" in agent && agent.archivedAt))
+      const available = entries.map(entry => entry.agent).filter(agent => !("archivedAt" in agent && agent.archivedAt));
+      // Git writes Windows worktree paths with forward slashes. Keep case sensitivity on Unix.
+      const key = (path: string) => /^[a-z]:[\\/]|^\\\\/i.test(path) ? path.replaceAll("\\", "/").toLowerCase() : path;
+      const owners = branchDirectory ? available.filter(agent => agent.cwd && key(agent.cwd) === key(branchDirectory)) : [];
+      return (owners.length ? owners : available.filter(agent => agent.workspaceId === workspaceId))
         .map(agent => ({ id: agent.id, name: agent.title || `${agent.provider} agent`, status: agent.status, updatedAt: agent.updatedAt, parentAgentId: parentAgentIdOf(agent) }))
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     },
@@ -40,8 +43,10 @@ export function useWorkspaceAgents(serverId: string, workspaceId: string, online
   });
 }
 
-export function useReviewComments(serverId: string, workspaceId: string, online: boolean) {
-  const key = reviewCommentsKey(serverId, workspaceId);
+export function useReviewComments(serverId: string, workspaceId: string, online: boolean, branchRef?: string) {
+  const scope = { serverId, workspaceId, ...(branchRef ? { branchRef } : {}) };
+  const baseKey = reviewCommentsKey(serverId, workspaceId);
+  const key = branchRef ? [...baseKey, branchRef] : baseKey;
   const list = useRpc(listReviewComments);
   const save = useRpc(saveReviewComment);
   const update = useRpc(updateReviewComment);
@@ -49,7 +54,7 @@ export function useReviewComments(serverId: string, workspaceId: string, online:
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const query = useQuery({ queryKey: key, queryFn: () => list({ serverId, workspaceId }), enabled: online, staleTime: 5_000, retry: false });
+  const query = useQuery({ queryKey: key, queryFn: () => list(scope), enabled: online, staleTime: 5_000, retry: false });
 
   async function run<T extends { comments: ReviewComment[] }>(work: () => Promise<T>): Promise<T | null> {
     setBusy(true);
@@ -66,10 +71,10 @@ export function useReviewComments(serverId: string, workspaceId: string, online:
     comments: query.data?.comments ?? [],
     loadError: query.isError ? message(query.error) : null,
     busy, error, clearError: () => setError(null),
-    save: (input: { commentId?: string; path: string; anchor: CommentAnchor | null; body: string }) => run(() => save({ serverId, workspaceId, ...input })),
-    update: (commentId: string, action: Action) => run(() => update({ serverId, workspaceId, commentId, action })),
+    save: (input: { commentId?: string; path: string; anchor: CommentAnchor | null; body: string }) => run(() => save({ ...scope, ...input })),
+    update: (commentId: string, action: Action) => run(() => update({ ...scope, commentId, action })),
     send: async (input: { agentId: string; commentIds: string[]; workspaceName: string; scopeLabel: string }) => {
-      const result = await run(() => send({ serverId, workspaceId, ...input }));
+      const result = await run(() => send({ ...scope, ...input }));
       if (result?.error) setError(`Delivery unconfirmed: ${result.error}. Check the agent's chat, then mark each comment as arrived or not.`);
       return result;
     },

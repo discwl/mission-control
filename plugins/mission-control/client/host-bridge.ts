@@ -3,7 +3,7 @@ import type { PluginClientContext } from "@getpaseo/plugin/client";
 import * as agentNames from "../shared/agent-names";
 import * as decisions from "../shared/decisions";
 import { readFleet } from "../shared/fleet";
-import { startPipeline } from "../shared/pipeline";
+import { startPipeline, startReopenedPipeline } from "../shared/pipeline";
 import { readDecisionPlan } from "../shared/plan-approval";
 import * as launch from "../shared/launch";
 import * as merge from "../shared/merge";
@@ -93,7 +93,7 @@ const isContract = (value: unknown): value is PluginRpcContract => {
 // fleet and starting a task runner, so a host's own Tasks view can start a new task in the automatic workflow through
 // the coordinating computer's orchestrator. Setup, tools, settings, updates and cleanup stay with each host's own copy.
 export const bridgeContracts: ReadonlyMap<string, PluginRpcContract> = new Map(
-  [tasks, taskSummary, runs, launch, decisions, { readDecisionPlan }, questions, merge, pullRequest, paseoMetadata, review, vault, subagents, agentNames, { readFleet, startPipeline }]
+  [tasks, taskSummary, runs, launch, decisions, { readDecisionPlan }, questions, merge, pullRequest, paseoMetadata, review, vault, subagents, agentNames, { readFleet, startPipeline, startReopenedPipeline }]
     .flatMap(module => Object.values(module).filter(isContract).map(contract => [contract.name, contract] as const)),
 );
 

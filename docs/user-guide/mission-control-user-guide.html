@@ -626,6 +626,7 @@
 <p>Every Merge, Open PR and Clean up leaves a <strong>result card</strong> in Attention, with each step's outcome, until you press <span class="ui">Dismiss</span>.</p>
 
 <!-- ============================================================ -->
+<p>To revisit a merged delivery from chat, type <code>/mc reopen &lt;task ID&gt; &lt;what needs fixing&gt;</code> on its host or in its coordinator chat. The fix uses Standard. If the coordinator is unavailable or paused, the task stays ready and you can choose <span class="ui">Start fix</span> in All work.</p>
 <h2 id="review">Review</h2>
 <p>Review shows what a workspace has changed, file by file. Pick a workspace, or press <span class="ui">Review changes</span> on its page. From a chat, press the Review bubble once to open the main workspace tab using freshly resolved agent/workspace context. The extra Open Review popover is removed; switching away or closing the tab does not trigger navigation from a mounted launcher. The <code>/review</code> command also targets the main workspace tab. Automated regression checks pass; native desktop/mobile behavior still needs device verification.</p>
 <figure>
@@ -634,6 +635,8 @@
 </figure>
 <ul>
   <li><strong>The header</strong> says exactly what's being reviewed, for example "everything since this task branched: 3 commits plus uncommitted changes", with a snapshot time and line counts. <span class="ui">Change what to review</span> picks a different range; <span class="ui">Refresh</span> takes a new snapshot.</li>
+  <li>From a workspace’s Review panel, choose <span class="ui">Review a branch…</span> to compare a local or fetched remote branch with the project’s default branch. The diff starts at their common ancestor and includes committed changes. A clean feature branch with commits ahead of the default opens on this comparison automatically when the workspace has no saved review range.</li>
+  <li><span class="ui">View branch file</span> opens the file at the displayed commit. Branch comments and review marks stay with that branch. Comments can go to a chat working on the branch, or to the opening workspace’s chat when there is no matching worker. Choose <span class="ui">Return to checkout changes</span> to inspect local edits.</li>
   <li><strong>The file list</strong> is sorted by risk: HIGH, MEDIUM, LOW and INFO, with a filter for each. Every file shows its change blocks and lines added and removed.</li>
   <li><strong>A file</strong> shows why it was flagged (for example new export, security-sensitive, error handling, file writes), then its change blocks or the full file. Step through blocks with the arrows.</li>
   <li><span class="ui">Mark reviewed</span> ticks off a block, and <span class="ui">Mark file reviewed</span> a whole file; the header counts your progress. <span class="ui">Next to review</span> jumps to the next file.</li>
