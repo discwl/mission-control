@@ -49,7 +49,7 @@ export function MissionControlV2({ theme, host, layout, navigation, openAllWork 
   const allWork = () => { try { openAllWork?.(); } catch (cause) { setError(message(cause)); } };
   const refresh = () => { void query.refetch(); };
   return <View onLayout={event => setSize(event.nativeEvent.layout)} style={{ flex: 1, minHeight: 0, backgroundColor: colors.surface0 }}>
-    {selected && snapshot ? <KanbanDetail key={selected.row.key} item={selected} snapshot={snapshot} colors={colors} compact={compact} height={size.height} navigation={navigation} close={() => setSelection(null)} refresh={refresh} /> : <>
+    {selected && snapshot ? <KanbanDetail key={selected.row.key} item={selected} tasks={query.tasks} openTask={setSelection} snapshot={snapshot} colors={colors} compact={compact} height={size.height} navigation={navigation} close={() => setSelection(null)} refresh={refresh} /> : <>
       <View style={{ padding: compact ? 16 : 24, gap: 12, borderBottomWidth: 1, borderBottomColor: colors.border }}>
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
           <View style={{ flex: 1, minWidth: 180, gap: 5 }}><Text accessibilityRole="header" style={{ color: colors.foreground, fontSize: 27, fontWeight: "700" }}>Needs you</Text><Text style={{ color: colors.foregroundMuted, lineHeight: 21 }}>Questions, final decisions and work that needs help.</Text></View>

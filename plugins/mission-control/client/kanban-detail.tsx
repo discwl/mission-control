@@ -32,9 +32,10 @@ const guidance: Record<KanbanTab, { title: string; steps: string[] }> = {
 };
 
 import { navigateFromKanban } from "./kanban-origin";
+import { PrimaryTaskLink, TaskLinkEditor } from "./task-links";
 
-export function KanbanDetail({ item, snapshot, colors, compact, height, navigation, close, refresh }: {
-  item: KanbanTask; snapshot: FleetSnapshot; colors: Colors; compact: boolean; height: number;
+export function KanbanDetail({ item, tasks, openTask, snapshot, colors, compact, height, navigation, close, refresh }: {
+  item: KanbanTask; tasks: KanbanTask[]; openTask(key: string): void; snapshot: FleetSnapshot; colors: Colors; compact: boolean; height: number;
   navigation: PluginSurfaceProps["navigation"]; close(): void; refresh(): void;
 }) {
   const row = item.row;
@@ -62,6 +63,10 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
   const workspaceId = v2Workspace(row);
   const workspace = row.host.workspaces.find(workspace => workspace.id === workspaceId);
   const task = row.entry.task;
+  const [confirmedTask, setConfirmedTask] = useState<typeof task | null>(null);
+  // A host can confirm a write before its next fleet snapshot reaches this screen.
+  const linkTask = confirmedTask && confirmedTask.taskId === task.taskId && Date.parse(confirmedTask.updatedAt) > Date.parse(task.updatedAt) ? confirmedTask : task;
+  const linkItem = linkTask === task ? item : { ...item, row: { ...row, entry: { ...row.entry, task: linkTask } } };
   const delivered = task.status === "delivered" && !!task.pullRequest?.mergedAt;
   const awaitingFix = task.status === "ready" && !!task.deliveryHistory?.length && !task.pullRequest && !row.entry.run && !pending;
   const sourceWorkspace = delivered || awaitingFix ? task.worktree?.sourceWorkspaceId ?? task.assignments.find(assignment => assignment.serverId === row.serverId)?.workspaceId : undefined;
@@ -73,8 +78,13 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
   const resolved = [...row.entry.decisions].filter(entry => entry.decision.status !== "open")
     .sort((a, b) => b.decision.requestedAt.localeCompare(a.decision.requestedAt))[0];
   const receipt = resolved ? decisionReceipt(resolved, row.hostLabel, row.entry.decisions) : null;
-  const next = kanbanGuidance(item);
   const followUp = item.tab === "Next step" && item.lane === "progress" && !item.needsYou;
+  const link = linkTask.handledUnder;
+  const primary = link && link.serverId === row.serverId && link.taskId !== task.taskId
+    ? tasks.find(other => other.row.serverId === link.serverId && other.row.entry.task.taskId === link.taskId) : undefined;
+  const linkedFollowUp = followUp && !!primary;
+  const guidanceForTask = kanbanGuidance(item);
+  const next = linkedFollowUp ? { ...guidanceForTask, title: "Follow the primary task", why: "The linked task tracks the shared work. Any request specific to this ticket will appear here.", steps: [] } : guidanceForTask;
   const followUpNote = row.entry.run?.nextAction?.trim();
   const attentionEntry = row.staleReview ? { ...row.entry, decisions: row.entry.decisions.filter(item => item.decision.kind !== "review") } : row.entry;
   const hasRequest = kanbanHasRequest({ ...row, entry: attentionEntry });
@@ -136,6 +146,7 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
         <Text style={{ color: item.needsYou || row.state === "Unconfirmed" ? colors.statusWarning : colors.foregroundMuted }}>{item.label}</Text>
         {workflowLabels[workflow] ? <Text style={{ color: colors.foregroundMuted }}>{workflowLabels[workflow]}</Text> : null}
       </View>
+      {link ? <PrimaryTaskLink primary={primary} taskId={link.taskId} openTask={openTask} colors={colors} /> : null}
       {deliveredQuestion && hasRequest && tab !== "Decision" ? <View style={{ gap: 4 }}>
         <Text selectable style={{ color: colors.foreground }}>{deliveredQuestion.plain?.need || deliveredQuestion.question}</Text>
         <CompactLink label="View open question" colors={colors} onPress={() => setTab("Decision")} />
@@ -144,7 +155,7 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
         <Text style={{ color: colors.foreground, lineHeight: 22 }}>Next: {next.title}</Text>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
           {tab !== next.tab && next.tab !== "Workers" ? <CompactLink label={next.action} selected colors={colors} onPress={() => setTab(next.tab)} /> : null}
-          {followUp ? followUpLinks() : <CompactLink label={conversationLabel} icon="MessageSquare" colors={colors} onPress={conversation} />}
+          {linkedFollowUp ? null : followUp ? followUpLinks() : <CompactLink label={conversationLabel} icon="MessageSquare" colors={colors} onPress={conversation} />}
         </View>
       </View> : null}
       <ScrollView horizontal style={{ flexGrow: 0 }} contentContainerStyle={{ gap: 8 }} showsHorizontalScrollIndicator={false}>
@@ -175,7 +186,7 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
           <Text style={{ color: colors.foregroundMuted }}>Last saved handoff · {row.entry.run?.updatedAt}</Text>
           <Text selectable style={{ color: colors.foreground, lineHeight: 22 }}>{followUpNote}</Text>
         </View> : null}
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>{followUpLinks()}</View>
+        {!linkedFollowUp ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>{followUpLinks()}</View> : null}
       </View> : tab === "Next step" ? <View style={{ gap: 16, maxWidth: 950 }}>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
           {next.tab === "Workers" ? <CompactLink label={conversationLabel} icon="MessageSquare" selected colors={colors} onPress={conversation} />
@@ -187,6 +198,8 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
         <CompactLink label={handoff ? "Hide saved handoff" : "Read saved handoff and timestamp"} colors={colors} expanded={handoff} onPress={() => setHandoff(!handoff)} />
         {handoff ? <View style={{ gap: 8 }}><Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Workflow record updated {row.updatedAt}. This saved note may not reflect the latest conversation.</Text><Text selectable style={{ color: colors.foreground, lineHeight: 22 }}>{row.next}</Text></View> : null}
       </View> : null}
+      <TaskLinkEditor item={linkItem} tasks={tasks} openTask={openTask} onSaved={setConfirmedTask} colors={colors} copy={"copy" in bridge ? bridge.copy : undefined}
+        available={available} workspaceId={workspaceId} refresh={refresh} />
       <View style={{ gap: 8 }}>
         <CompactLink label={criteria ? "Hide acceptance criteria" : "Read task acceptance criteria"} colors={colors} expanded={criteria} onPress={() => setCriteria(!criteria)} />
         {criteria ? <Text selectable style={{ color: colors.foreground, lineHeight: 22, maxWidth: 950 }}>{Array.isArray(row.entry.task.acceptanceCriteria) ? row.entry.task.acceptanceCriteria.join("\n") : row.entry.task.acceptanceCriteria || "No acceptance criteria recorded. Clarify the intended result before approving a plan."}</Text> : null}

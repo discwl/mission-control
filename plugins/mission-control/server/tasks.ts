@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, open, readFile, readdir, realpath, unlink, writeFile } from "node:fs/promises";
 import { rename } from "./retrying-rename";
-import { isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { z } from "zod";
 import {
   pullRequestRecordSchema,
@@ -450,7 +450,11 @@ export async function attachTaskWorktree(input: { serverId: string; taskId: stri
 // Update the original document atomically, retaining unknown fields and the Markdown body.
 async function changeDelivery(source: TaskSource, transition: (current: TaskRecord) => Promise<Partial<TaskRecord> | null>) {
   if (!source.folder) throw new Error("This task needs a task folder before changing delivery.");
-  const folder = source.folder;
+  return patchTaskRecord(source, transition);
+}
+
+async function patchTaskRecord(source: TaskSource, transition: (current: TaskRecord) => Promise<Partial<TaskRecord> | null>) {
+  const folder = source.folder ?? dirname(source.file);
   return withTaskWriteLock(folder, async () => {
     const markdown = await readFile(source.file, "utf8");
     const current = parseTask(markdown);
@@ -469,6 +473,49 @@ async function changeDelivery(source: TaskSource, transition: (current: TaskReco
     finally { await unlink(temporary).catch(() => {}); }
     return next;
   });
+}
+
+/** Change only the source task. Holding both endpoint locks prevents concurrent links creating chains. */
+export async function setTaskHandledUnderRecord(input: {
+  serverId: string; workspaceId: string; taskId: string; expectedUpdatedAt: string; targetTaskId: string | null;
+}): Promise<TaskRecord> {
+  const { serverId, workspaceId, taskId, targetTaskId } = input;
+  if (taskId === targetTaskId) throw new Error("A task cannot be handled under itself.");
+  const { hostId, directory } = await taskLocation(serverId);
+  const sources = await taskSources(serverId);
+  const source = sources.find(item => item.task.taskId === taskId && item.task.hostId === hostId);
+  if (!source || !source.task.assignments.some(a => a.serverId === serverId && a.workspaceId === workspaceId)) {
+    throw new Error("The task is not assigned to this host and workspace.");
+  }
+  const target = sources.find(item => item.task.taskId === targetTaskId && item.task.hostId === hostId && item.task.assignments.some(a => a.serverId === serverId));
+  if (targetTaskId !== null && !target) throw new Error("The handling task is unavailable on this host. Refresh the task list.");
+
+  const update = () => patchTaskRecord(source, async current => {
+    // Lists prefer folders during migrations. A writer must not guess which duplicate a user selected.
+    const paths = new Set(await readdir(directory));
+    for (const id of [taskId, targetTaskId]) {
+      if (id && paths.has(id) && paths.has(`${id}.md`)) throw new Error(`Task ${id} has both a folder and a flat record. Resolve the duplicate before changing the link.`);
+    }
+    if (!current.assignments.some(a => a.serverId === serverId && a.workspaceId === workspaceId)) throw new Error("The task's workspace changed. Refresh the task.");
+    if (target) {
+      const parent = parseTask(await readFile(target.file, "utf8"));
+      if (parent.taskId !== targetTaskId || parent.hostId !== hostId || !parent.assignments.some(a => a.serverId === serverId)) throw new Error("The handling task changed. Refresh the task list.");
+      if (parent.handledUnder) throw new Error("Choose the task that handles the work directly.");
+    }
+    if (targetTaskId === null ? !current.handledUnder : current.handledUnder?.serverId === serverId && current.handledUnder.taskId === targetTaskId) return null;
+    if (current.updatedAt !== input.expectedUpdatedAt) throw new Error("Task changed since it was loaded. Refresh before changing the link.");
+    if (targetTaskId !== null) {
+      const inventory = await scanTaskSources(serverId);
+      if (inventory.problems.length) throw new Error(`Cannot verify all existing links. Check ${inventory.problems[0].file} before saving a new link.`);
+      const hasChildren = inventory.sources.some(({ task }) => task.handledUnder?.serverId === serverId && task.handledUnder.taskId === taskId);
+      if (hasChildren) throw new Error("This task already handles other tasks. Remove those links before linking it under another task.");
+    }
+    return { handledUnder: targetTaskId === null ? undefined : { serverId, taskId: targetTaskId } };
+  });
+  const sourceLock = source.folder ?? dirname(source.file);
+  const targetLock = target && (target.folder ?? dirname(target.file));
+  // Legacy flat records share the Tasks directory lock. The locks are non-blocking: a conflicting write can retry.
+  return targetLock && targetLock !== sourceLock ? withTaskWriteLock(targetLock, update) : update();
 }
 
 function samePullRequest(a: PullRequestRecord, b: PullRequestRecord) {

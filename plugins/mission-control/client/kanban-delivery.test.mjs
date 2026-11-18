@@ -8,7 +8,7 @@ const nodes = node => !node || typeof node !== 'object' ? [] : Array.isArray(nod
 const model = { exports: {} };
 const modelCode = ts.transpileModule(readFileSync(new URL('./kanban-model.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 runInNewContext(modelCode, { exports: model.exports });
-function render({ kind = 'code', online = true, builders = 1, stale = false, question = false, workflow, tierOnHost, runMode, projection = true, delivered = false, supported = true, tab = 'Delivery', followUp, navigation = {} } = {}) {
+function render({ kind = 'code', online = true, builders = 1, stale = false, question = false, workflow, tierOnHost, runMode, projection = true, delivered = false, supported = true, tab = 'Delivery', followUp, related, hookState = [], navigation = {} } = {}) {
   const jsx = (type, props) => ({ type, props });
   const row = { key: 'remote:task', serverId: 'remote', hostLabel: 'CNS', state: online ? 'Needs you' : 'Unconfirmed', staleReview: stale,
     entry: { task: { taskId: 'task', title: 'Keep invoice dates consistent', acceptanceCriteria: ['Preserve the selected date'] }, run: { runId: 'run', workspaceId: 'workspace', agentId: 'reviewer' }, decisions: question ? [{ decision: { kind: 'review', status: 'open' } }] : [], questions: question ? [{ question: { status: 'open', question: 'Which date should be preserved?' } }] : [], pipeline: { runId: 'run', workflowMode: 'automatic', deliveryKind: kind, stage: 'delivery', mode: 'ready' } },
@@ -26,8 +26,10 @@ function render({ kind = 'code', online = true, builders = 1, stale = false, que
     row.workflow = { stage: 'Your review', evidence: 'No run evidence recorded' };
     row.workers = [];
   }
+  if (related) Object.assign(row.entry.task, { handledUnder: related.link, updatedAt: related.updatedAt });
+  let cursor = 0;
   const modules = {
-    react: { useState: value => [typeof value === 'function' ? value() : value, () => {}] },
+    react: { useState(initial) { const i = cursor++; if (!(i in hookState)) hookState[i] = typeof initial === 'function' ? initial() : initial; return [hookState[i], value => { hookState[i] = value; }]; } },
     'react/jsx-runtime': { jsx, jsxs: jsx, Fragment: 'Fragment' }, 'react-native': { ScrollView: 'ScrollView', Text: 'Text', View: 'View' },
     '@getpaseo/plugin/client': { useHosts: () => [{ serverId: 'remote', status: online ? 'online' : 'offline' }] },
     '../shared/tasks': { reopenDeliveredTask: { name: 'tasks.reopen-delivered' } },
@@ -39,11 +41,12 @@ function render({ kind = 'code', online = true, builders = 1, stale = false, que
     './pipeline-review': { PipelineReviewEvidence: 'AutomaticEvidence' }, './action-delivery': { ActionDeliveryCard: 'ActionReview' }, './task-flow': { TaskFlowDetail: 'Evidence' },
     './mission-control-v2-model': { v2Workspace: () => 'workspace' },
     './kanban-model': { ...model.exports, kanbanCanAct: (_row, live) => live, kanbanHasRequest: () => question, kanbanGuidance: followUp ? model.exports.kanbanGuidance : () => ({ title: 'Review the completed work', why: 'The agents have finished their checks.', tab: 'Delivery', action: 'Review result', after: 'Choose whether to publish.', steps: [] }) },
+    './task-links': { PrimaryTaskLink: 'PrimaryTaskLink', TaskLinkEditor: 'TaskLinkEditor' },
     './kanban-origin': { navigateFromKanban: (_server, act) => act() },
   };
   const module = { exports: {} }; runInNewContext(compiled, { exports: module.exports, require: name => { if (!(name in modules)) throw Error(name); return modules[name]; } });
   const item = followUp ? model.exports.kanbanTask(row) : { row, lane: 'attention', tab: question === true ? 'Decision' : tab, label: 'Ready to publish', needsYou: true };
-  return module.exports.KanbanDetail({ item, snapshot: { serverId: followUp?.installation ?? 'personal', coordinators: followUp?.coordinators ?? [], state: { pipelines: [], revision: 1 } }, colors: {}, compact: false, height: 900, navigation, close() {}, refresh() {} });
+  return module.exports.KanbanDetail({ item, tasks: related?.tasks ?? [], openTask: related?.openTask ?? (() => {}), snapshot: { serverId: followUp?.installation ?? 'personal', coordinators: followUp?.coordinators ?? [], state: { pipelines: [], revision: 1 } }, colors: {}, compact: false, height: 900, navigation, close() {}, refresh() {} });
 }
 test('unowned review card explains the missing request and opens only the correct host orchestrator', () => {
   const coordinator = (agentId, remoteServerId, archivedAt = null) => ({ agentId, remoteServerId, name: agentId, agent: { archivedAt } });
@@ -56,6 +59,30 @@ test('unowned review card explains the missing request and opens only the correc
   assert.ok(!links.some(node => node.props.label === 'Find owner in workspace'));
   links.find(node => node.props.label === 'Open CNS orchestrator').props.onPress();
   assert.deepEqual(opened, [['personal', 'cns-chat']]);
+});
+
+test('handled-under links use the exact host and task even when ticket keys collide, preserving any open question', () => {
+  const primary = serverId => ({ row: { key: `${serverId}:primary`, serverId, entry: { task: { taskId: 'primary', ticket: { key: 'A-1' } } } } });
+  const local = primary('remote');
+  const related = { link: { serverId: 'remote', taskId: 'primary' }, tasks: [primary('elsewhere'), local] };
+  const tree = render({ followUp: {}, related });
+  assert.equal(nodes(tree).find(n => n.type === 'PrimaryTaskLink').props.primary, local);
+  assert.match(JSON.stringify(tree), /Follow the primary task/);
+  const standalone = render({ followUp: {}, related: { ...related, tasks: [primary('elsewhere')] } });
+  assert.equal(nodes(standalone).find(n => n.type === 'PrimaryTaskLink').props.primary, undefined);
+  assert.doesNotMatch(JSON.stringify(standalone), /Follow the primary task/);
+  assert.ok(nodes(render({ question: true, related })).find(n => n.type === 'Attention'));
+});
+
+test('a confirmed link removal replaces an older snapshot immediately and yields to newer host data', () => {
+  const related = { link: { serverId: 'remote', taskId: 'primary' }, tasks: [], updatedAt: '2026-11-17T03:00:00Z' };
+  const hookState = [], draw = () => nodes(render({ related, hookState }));
+  const findLink = () => draw().find(node => node.type === 'PrimaryTaskLink');
+  assert.ok(findLink());
+  draw().find(node => node.type === 'TaskLinkEditor').props.onSaved({ taskId: 'task', updatedAt: '2026-11-17T03:01:00Z' });
+  assert.equal(findLink(), undefined);
+  related.updatedAt = '2026-11-17T03:02:00Z';
+  assert.ok(findLink());
 });
 
 test('host-local follow-up without a coordinator shows the saved handoff and opens the task workspace', () => {

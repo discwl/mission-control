@@ -160,6 +160,21 @@ test('Needs you opens actionable task detail and All work without a second verti
   detail.props.close(); assert.ok(renderer.render().some(node => node?.type === 'Pressable'));
 });
 
+test('a child in Needs you can open its exact primary outside the filtered inbox', () => {
+  const child = entry(); child.run = run(); child.decisions = [decision({ kind: 'plan' })];
+  child.task.handledUnder = { serverId: 'remote', taskId: 'task_primary' };
+  const s = snapshot([child, entry('task_primary')]);
+  const renderer = needsYouRenderer(s, rows(s).map(kanbanTask));
+  const cards = renderer.render().filter(node => node?.type === 'Pressable');
+  assert.equal(cards.length, 1); cards[0].props.onPress();
+  const detail = () => renderer.render().find(node => node?.type === 'KanbanDetail').props;
+  const link = detail().item.row.entry.task.handledUnder;
+  const primary = detail().tasks.find(({ row }) => row.serverId === link.serverId && row.entry.task.taskId === link.taskId);
+  detail().openTask(primary.row.key);
+  assert.equal(detail().item.row.entry.task.taskId, 'task_primary');
+  detail().close(); assert.equal(renderer.render().filter(node => node?.type === 'Pressable').length, 1);
+});
+
 test('Needs you cannot show an all-clear empty state when a host is unavailable', () => {
   const s = snapshot([]); s.hosts[0].snapshot = null; s.hosts[0].error = 'offline';
   const text = needsYouRenderer(s, []).render().filter(node => typeof node === 'string').join(' ');

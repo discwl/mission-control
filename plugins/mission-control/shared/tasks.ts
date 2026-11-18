@@ -61,6 +61,8 @@ export const taskSchema = z.object({
   }).optional(),
   // Set when the task was imported from Jira or Azure DevOps. Tasks without it stay valid.
   ticket: ticketSchema.optional(),
+  // Explicit relationship to the task coordinating this work, scoped to the owning Paseo host.
+  handledUnder: z.object({ serverId: z.string().min(1), taskId: z.string().regex(/^task_[a-f0-9-]+$/) }).optional(),
   // A grouped import retains a source and acceptance check for every member, including the primary ticket.
   groupedTickets: z.array(ticketSchema.extend({ title: z.string().max(300), acceptanceCriteria: z.string().max(20_000) })).min(2).max(200).optional(),
   // Set when Mission Control opened the task's draft pull request (Open PR in Attention).
@@ -129,6 +131,15 @@ const taskDocumentAddressSchema = z.object({
   serverId: z.string().min(1),
   workspaceId: z.string().min(1),
   taskId: z.string().regex(/^task_[a-f0-9-]+$/),
+});
+
+export const setHandledUnder = defineRpc({
+  name: "tasks.handled-under.set",
+  input: taskDocumentAddressSchema.extend({
+    expectedUpdatedAt: z.string().min(1),
+    targetTaskId: taskDocumentAddressSchema.shape.taskId.nullable(),
+  }),
+  output: z.object({ task: taskSchema }),
 });
 
 export const reopenDeliveredTask = defineRpc({

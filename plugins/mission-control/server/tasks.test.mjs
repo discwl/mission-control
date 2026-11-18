@@ -69,6 +69,74 @@ test("nested review and paired evidence is read-only, scoped, and refuses linked
   await assert.rejects(tasks.listTaskDocumentRecords(serverId, workspaceId, id), /escapes|link/);
 });
 
+test("handled-under links persist by host and task ID, survive other edits, and reject stale or unsafe links", async t => {
+  const { vault, tasks } = await taskStore(t);
+  const child = task("task_aaaa");
+  const parent = task("task_bbbb", { assignments: [{ serverId, workspaceId: "other-workspace" }] });
+  const alternate = task("task_cccc");
+  const foreign = task("task_dddd", { assignments: [{ serverId: "foreign", workspaceId }] });
+  const pathOf = record => join(vault, "Tasks", record.taskId, "task.md");
+  for (const record of [child, parent, alternate, foreign]) {
+    await mkdir(dirname(pathOf(record)));
+    await writeFile(pathOf(record), markdown({ ...record, customField: "keep" }) + "Preserve this body.\n");
+  }
+  const save = (record, targetTaskId, overrides = {}) => tasks.setTaskHandledUnderRecord({
+    serverId, workspaceId: record.assignments[0].workspaceId, taskId: record.taskId,
+    expectedUpdatedAt: record.updatedAt, targetTaskId, ...overrides,
+  });
+  const parentBefore = await readFile(pathOf(parent), "utf8");
+  await assert.rejects(save(child, child.taskId), /itself/);
+  await assert.rejects(save(child, foreign.taskId), /unavailable on this host/);
+  await assert.rejects(save(child, "task_dead"), /unavailable on this host/);
+  await assert.rejects(save(child, parent.taskId, { workspaceId: "wrong" }), /not assigned/);
+  await assert.rejects(save(child, parent.taskId, { serverId: "wrong" }), /another host/);
+  const saved = await save(child, parent.taskId);
+  assert.deepEqual(saved.handledUnder, { serverId, taskId: parent.taskId });
+  assert.deepEqual(await save(child, parent.taskId), saved, "lost response is safe to retry");
+  assert.deepEqual((await tasks.assignedTask(serverId, workspaceId, child.taskId)).task.handledUnder, saved.handledUnder);
+  assert.equal(await readFile(pathOf(parent), "utf8"), parentBefore);
+  const content = await readFile(pathOf(child), "utf8");
+  assert.match(content, /customField: "keep"/);
+  assert.match(content, /Preserve this body\./);
+  await assert.rejects(save(child, null), /changed since/);
+  await assert.rejects(save(alternate, child.taskId), /directly/);
+  await assert.rejects(save(parent, alternate.taskId), /already handles/);
+  await assert.rejects(save(parent, child.taskId), /directly/);
+  let updated = await tasks.updateTaskDueDateRecord({ serverId, workspaceId, taskId: child.taskId, expectedUpdatedAt: saved.updatedAt, dueDate: "2026-11-20" });
+  updated = await tasks.updateTaskStatusRecord({ serverId, workspaceId, taskId: child.taskId, expectedUpdatedAt: updated.updatedAt, status: "in_review" });
+  assert.deepEqual(updated.handledUnder, saved.handledUnder);
+  updated = await save(updated, alternate.taskId);
+  assert.equal(updated.handledUnder.taskId, alternate.taskId);
+  assert.equal((await save(updated, null)).handledUnder, undefined);
+  assert.equal((await save(updated, null)).handledUnder, undefined, "unlink retry");
+  const duplicate = join(vault, "Tasks", `${child.taskId}.md`);
+  await writeFile(duplicate, markdown(child));
+  await assert.rejects(save(parent, child.taskId), /duplicate/);
+  await assert.rejects(save(child, null), /duplicate/);
+  await rm(duplicate);
+  const bad = join(vault, "Tasks", "task_daaa.md");
+  await writeFile(bad, "unreadable metadata");
+  await assert.rejects(save(parent, child.taskId), /verify all existing links/);
+});
+
+test("simultaneous inverse links cannot form a cycle, including for legacy flat records", async t => {
+  const { vault, tasks } = await taskStore(t);
+  for (const flat of [true, false]) {
+    const records = (flat ? ["task_ab", "task_ac"] : ["task_ba", "task_bc"]).map(id => task(id));
+    for (const record of records) {
+      const folder = join(vault, "Tasks", record.taskId);
+      if (!flat) await mkdir(folder);
+      await writeFile(flat ? `${folder}.md` : join(folder, "task.md"), markdown(record));
+    }
+    const link = (i) => tasks.setTaskHandledUnderRecord({ serverId, workspaceId, taskId: records[i].taskId, targetTaskId: records[1-i].taskId, expectedUpdatedAt: records[i].updatedAt });
+    const outcomes = await Promise.allSettled([link(0), link(1)]);
+    assert.ok(outcomes.some(outcome => outcome.status === "rejected"));
+    const read = async () => (await tasks.taskSources(serverId)).filter(source => records.some(r => r.taskId === source.task.taskId) && source.task.handledUnder);
+    if ((await read()).length === 0) await link(0);
+    assert.equal((await read()).length, 1);
+  }
+});
+
 test("task intake retries keep one exact task and refuse conflicting identities", async t => {
   const { tasks } = await taskStore(t);
   const requestId = "abcdefab-0000-4000-8000-000000000001";

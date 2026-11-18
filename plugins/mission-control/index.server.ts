@@ -12,10 +12,11 @@ import {
   saveTaskDocumentRecord,
   updateTaskStatusRecord,
   updateTaskDueDateRecord,
+  setTaskHandledUnderRecord,
   deliverTaskSource,
   recordTaskPullRequest,
 } from "./server/tasks";
-import { createTask, reopenDeliveredTask, listTaskDocuments, listTasks, saveTaskDocument, updateTaskDueDate, updateTaskStatus } from "./shared/tasks";
+import { createTask, reopenDeliveredTask, listTaskDocuments, listTasks, saveTaskDocument, setHandledUnder, updateTaskDueDate, updateTaskStatus } from "./shared/tasks";
 import { listRunRecords, runRecordsOf, taskAgentPrompt } from "./server/runs";
 import { agentRuns, createClaimHandler } from "./server/agents-panel";
 import { agentsPanelSettings, claimAgentsPanelWorkspaces, listAgentRuns } from "./shared/agents-panel";
@@ -298,6 +299,7 @@ export default function contribute(context: PluginServerContext) {
     return task;
   });
   server.handle(updateTaskDueDate, async input => updateTaskDueDateRecord(input));
+  server.handle(setHandledUnder, async input => ({ task: await setTaskHandledUnderRecord(input) }));
   server.handle(listTaskRuns, async ({ serverId, workspaceId, taskId }) => ({
     runs: await listRunRecords(serverId, workspaceId, taskId),
   }));
