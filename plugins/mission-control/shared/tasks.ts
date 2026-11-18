@@ -39,7 +39,10 @@ export const dueDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(valu
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }, "Use a real date as YYYY-MM-DD.");
 
+export const requestedWorkflowSchema = z.enum(["standard", "advanced", "manual"]);
+
 export const taskSchema = z.object({
+  requestedWorkflow: requestedWorkflowSchema.optional(),
   schemaVersion: z.literal(1),
   taskId: z.string().min(1),
   hostId: z.string().min(1),
@@ -112,6 +115,7 @@ export const createTask = defineRpc({
     title: z.string().trim().min(1).max(200).regex(/^[^\r\n]+$/),
     acceptanceCriteria: z.string().trim().min(1).max(4000),
     requestId: z.string().uuid().optional(),
+    requestedWorkflow: requestedWorkflowSchema.optional(),
   }),
   output: taskSchema,
 });

@@ -3,6 +3,7 @@ import { lstat, mkdir, open, readFile, readdir, realpath, unlink, writeFile } fr
 import { rename } from "./retrying-rename";
 import { isAbsolute, join, relative } from "node:path";
 import type { PaseoApi, PaseoAgent } from "@getpaseo/client";
+import type { RpcInput } from "@getpaseo/plugin";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
   getMorningStatus,
@@ -212,7 +213,7 @@ export function createMorningStore(overrides: Partial<Deps> = {}) {
     return status(input, paseo);
   }
 
-  async function importItems(input: { serverId: string; workspaceId: string; reportId: string; items: string[] }, paseo: PaseoApi, groupTitle?: string) {
+  async function importItems(input: RpcInput<typeof importMorningItems>, paseo: PaseoApi, groupTitle?: string) {
     await localHost(input.serverId);
     const workspace = await paseo.workspaces.ref(input.workspaceId).refresh();
     if (!workspace || workspace.archivingAt) throw new Error("This workspace is unavailable on this host.");
@@ -230,6 +231,7 @@ export function createMorningStore(overrides: Partial<Deps> = {}) {
       // A skipped task file whose ticket can't be read could be any of these items; importing could duplicate it.
       const unknown = skipped.filter(entry => !entry.ticket);
       if (unknown.length) throw new Error(`${unknown.map(entry => entry.file).join(", ")} ${unknown.length === 1 ? "is" : "are"} invalid and ${unknown.length === 1 ? "its ticket" : "their tickets"} can't be read, so importing could create a duplicate. Fix ${unknown.length === 1 ? "that file" : "those files"} in dev-vault first.`);
+      const workflow = input.requestedWorkflow ? { requestedWorkflow: input.requestedWorkflow } : {};
       const existing = compareTrackerItems(picked, [...sources.map(source => source.task), ...ticketsOf(skipped)]);
       if (groupTitle !== undefined) {
         const fields = groupedTaskFields(picked, groupTitle);
@@ -242,13 +244,13 @@ export function createMorningStore(overrides: Partial<Deps> = {}) {
           }
           return { created: [], skipped: existing.imported.map(({ item, taskIds }) => ({ key: item.key, taskIds })) };
         }
-        const task = await deps.createTask({ serverId: input.serverId, workspaceId: input.workspaceId, ...fields }, workspace.projectId);
-        return { created: [{ taskId: task.taskId, title: task.title, status: task.status, key: picked.map(item => item.key).join(", ") }], skipped: [] };
+        const task = await deps.createTask({ serverId: input.serverId, workspaceId: input.workspaceId, ...fields, ...workflow }, workspace.projectId);
+        return { created: [{ taskId: task.taskId, title: task.title, status: task.status, ...(task.requestedWorkflow && { requestedWorkflow: task.requestedWorkflow }), key: picked.map(item => item.key).join(", ") }], skipped: [] };
       }
       const created = [];
       for (const item of existing.missing) {
-        const task = await deps.createTask({ serverId: input.serverId, workspaceId: input.workspaceId, ...importedTaskFields(item) }, workspace.projectId);
-        created.push({ taskId: task.taskId, title: task.title, status: task.status, key: item.key });
+        const task = await deps.createTask({ serverId: input.serverId, workspaceId: input.workspaceId, ...importedTaskFields(item), ...workflow }, workspace.projectId);
+        created.push({ taskId: task.taskId, title: task.title, status: task.status, ...(task.requestedWorkflow && { requestedWorkflow: task.requestedWorkflow }), key: item.key });
       }
       return { created, skipped: existing.imported.map(({ item, taskIds }) => ({ key: item.key, taskIds })) };
     });

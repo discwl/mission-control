@@ -161,14 +161,18 @@ export function taskFingerprint(entry: FleetTask): string {
 }
 
 export function chooseNextTask(serverId: string, coordinator: FleetCoordinator, host: FleetHost, queue: readonly FleetQueueEntry[]): { entry: FleetTask; workflow: Workflow } | null {
-  if (!host.complete || host.warnings.length) return null;
+  if (host.serverId !== coordinator.remoteServerId || !host.complete || host.warnings.length) return null;
   const ids = managedWorkerIds(serverId, coordinator, host.agents);
   const workers = host.agents.filter(agent => ids.has(agent.id));
   // One active task per coordinator; never steer an active worker from a timer.
   if (workers.some(agent => agent.status === "running" || agent.status === "initializing")) return null;
   const tasks = managedTasks(serverId, coordinator, host);
   for (const item of queue.filter(item => item.enabled && item.coordinatorId === coordinator.agentId && item.remoteServerId === host.serverId).sort((a, b) => b.priority - a.priority || a.updatedAt.localeCompare(b.updatedAt))) {
-    const entry = tasks.find(entry => entry.task.taskId === item.taskId);
+    // A newly captured task can be explicitly queued before it has its first worker.
+    const entry = tasks.find(entry => entry.task.taskId === item.taskId) ?? (item.requestedWorkflow && host.tasks.find(candidate =>
+      candidate.task.taskId === item.taskId && !candidate.run && !candidate.problem && !candidate.task.pullRequest &&
+      candidate.task.assignments.some(assignment => assignment.serverId === host.serverId)));
+    if (entry && item.requestedWorkflow && (entry.run || entry.task.pullRequest || ["closed", "delivered"].includes(entry.task.status))) continue;
     if (!entry) continue;
     const assigned = taskWorkers(entry, host, ids, coordinator.links);
     const workspaceId = entry.run?.workspaceId || entry.task.worktree?.workspaceId || entry.task.assignments.find(item => item.serverId === host.serverId)?.workspaceId;

@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { getMorningStatus, importMorningItems, startMorningCheck, type MorningStatus } from "../shared/morning";
+import type { TaskRecord } from "../shared/tasks";
 import { taskSummaryKey } from "../shared/task-summary";
 import { ticketIdentity, ticketSystemLabels } from "../shared/tickets";
 import { formatDateTime } from "./date-time";
@@ -23,7 +24,8 @@ type Props = {
   colors: Colors;
   navigation?: PluginSurfaceProps["navigation"];
   coordinatorId?: string;
-  onImported?(tasks: { taskId: string; title: string }[]): void;
+  requestedWorkflow?: TaskRecord["requestedWorkflow"];
+  onImported?(tasks: { taskId: string; title: string; requestedWorkflow?: TaskRecord["requestedWorkflow"] }[]): void;
   openTask?(taskId: string): void;
 };
 
@@ -32,7 +34,7 @@ const trackerText = (report: NonNullable<MorningStatus["report"]>) =>
     : report.tracker.mode === "fixture" ? `Test fixture · ${report.items.length} items`
       : `${report.tracker.systems.map(system => ticketSystemLabels[system]).join(" and ")} · ${report.items.length} current-sprint items`;
 
-export function MorningCheck({ ownServerId, host, workspace, colors, navigation, onImported, openTask, coordinatorId }: Props) {
+export function MorningCheck({ ownServerId, host, workspace, colors, navigation, onImported, openTask, coordinatorId, requestedWorkflow }: Props) {
   const own = host.serverId === ownServerId;
   const online = host.status === "online";
   const queryClient = useQueryClient();
@@ -96,7 +98,7 @@ export function MorningCheck({ ownServerId, host, workspace, colors, navigation,
     setBusy("import"); setError(null); setNotice(null);
     try {
       const input = { serverId: ownServerId, workspaceId: workspace.id, reportId: report.reportId, items: picked };
-      const result = await (coordinatorId ? routedImport({ ...input, coordinatorId }) : importItems(input));
+      const result = await (coordinatorId ? routedImport({ ...input, coordinatorId, requestedWorkflow }) : importItems(input));
       setSelected([]);
       onImported?.(result.created);
       setNotice(`Imported ${result.created.length} ${result.created.length === 1 ? "task" : "tasks"} into ${workspace.name}${result.skipped.length ? `; ${result.skipped.length} already had a task` : ""}.`);

@@ -11,6 +11,9 @@ import { formatDateTime } from "./date-time";
 import { AgentPolicyEditor, TaskAgentPolicyEditor } from "./agent-policy";
 import { PipelineReviewEvidence } from "./pipeline-review";
 import { RemoteActionDeliveryCard } from "./action-delivery";
+import type { TaskRecord } from "../shared/tasks";
+
+type Workflow = NonNullable<TaskRecord["requestedWorkflow"]>;
 type Colors = PluginSurfaceProps["theme"]["colors"];
 export function PipelineBoard({ snapshot, coordinators, colors, busy, act, openAgent, openTask }: {
   snapshot: FleetSnapshot; coordinators: FleetCoordinator[]; colors: Colors; busy: boolean;
@@ -23,6 +26,7 @@ export function PipelineBoard({ snapshot, coordinators, colors, busy, act, openA
   const [workflowMode, setWorkflowMode] = useState<"manual" | "automatic">("automatic");
   const [deliveryKind, setDeliveryKind] = useState<"code" | "actions" | "report">("code");
   const [workflow, setWorkflow] = useState<"standard" | "advanced">("standard");
+  const [taskWorkflows, setTaskWorkflows] = useState<Record<string, Workflow>>({});
   const coordinator = ordered.find(item => item.agentId === coordinatorId) ?? ordered[0];
   const host = snapshot.hosts.find(item => item.serverId === coordinator?.remoteServerId)?.snapshot;
   const owned = coordinator && host ? new Set(managedTasks(snapshot.serverId, coordinator, host).map(item => item.task.taskId)) : new Set<string>();
@@ -85,7 +89,7 @@ export function PipelineBoard({ snapshot, coordinators, colors, busy, act, openA
       <PipelineIntakeForm snapshot={snapshot} coordinator={coordinator} colors={colors} busy={busy} act={act} workflowMode={workflowMode} workflow={workflow} deliveryKind={deliveryKind} />
       {coordinator ? <AgentPolicyEditor key={coordinator.remoteServerId} serverId={coordinator.remoteServerId} label={coordinator.hostLabel} colors={colors} /> : null}
       <TextInput accessibilityLabel="Find a task for Run to draft PR" value={search} onChangeText={setSearch} placeholder="Find an existing task" placeholderTextColor={colors.foregroundMuted} style={{ padding: 10, borderWidth: 1, borderColor: colors.border, borderRadius: 6, color: colors.foreground }} />
-      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>The choices above apply to tasks without a run. An older task's manual run can switch in one step: “Switch to automatic” retires its open plan or review requests without approving them, then reruns the plan check, validation and both reviews. A run that works in the shared project checkout can't switch; finish it on the old flow or start a new task. Continuing with human approvals needs this coordinator to manage the task (“adopt &lt;task ID&gt;” in its chat).</Text>
+      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>New tasks use the workflow above. A task with a saved workflow shows its selection beside its start button. An older task's manual run can switch in one step: “Switch to automatic” retires its open plan or review requests without approving them, then reruns the plan check, validation and both reviews. A run that works in the shared project checkout can't switch; finish it on the old flow or start a new task. Continuing with human approvals needs this coordinator to manage the task (“adopt &lt;task ID&gt;” in its chat).</Text>
       {!host ? <Text style={{ color: colors.statusWarning }}>Connect the selected host to choose a task.</Text> : null}
       {candidates.slice(0, 12).map(item => {
         const running = rows.some(row => row.taskId === item.task.taskId && !["stopped", "done"].includes(row.mode));
@@ -93,11 +97,20 @@ export function PipelineBoard({ snapshot, coordinators, colors, busy, act, openA
         // Automatic runners queue per host; a manual runner drives the coordinator chat, so only one at a time.
         const manualBusy = rows.some(row => row.remoteServerId === coordinator?.remoteServerId && row.workflowMode !== "automatic" && !["stopped", "done"].includes(row.mode));
         const blocked = busy || snapshot.state.paused || !host?.complete || running;
+        const saved = !item.run && item.task.requestedWorkflow;
+        const taskKey = `${coordinator?.remoteServerId}:${item.task.taskId}`;
+        const choice = saved ? taskWorkflows[taskKey] ?? saved : workflowMode === "manual" ? "manual" : workflow;
+        const mode = item.run ? item.run.workflowMode ?? "manual" : choice === "manual" ? "manual" : "automatic";
+        const kind = item.run ? item.run.deliveryKind ?? "code" : mode === "manual" ? "code" : deliveryKind;
         return <View key={item.task.taskId} style={{ gap: 6, paddingVertical: 8, borderTopColor: colors.border, borderTopWidth: 1 }}>
           <Text style={{ color: colors.foreground }}>{item.task.title}</Text>
+          {saved && !running ? <View style={buttonRow}>{(["standard", "advanced", "manual"] as const).map(value => {
+            const label = value === "standard" ? "Standard" : value === "advanced" ? "Advanced" : "Manual";
+            return <CompactLink key={value} label={label} accessibilityLabel={`${label} workflow for ${item.task.title}`} selected={choice === value} disabled={busy} colors={colors} onPress={() => setTaskWorkflows(current => ({ ...current, [taskKey]: value }))} />;
+          })}</View> : null}
           <View style={buttonRow}>
             {manualRun ? <CompactLink label="Switch to automatic (retires open approvals)" colors={colors} disabled={blocked} onPress={() => act(item.task.taskId, () => start({ coordinatorId: coordinator!.agentId, remoteServerId: coordinator!.remoteServerId, taskId: item.task.taskId, workflowMode: "automatic", deliveryKind: item.run!.deliveryKind ?? "code", expectedRevision: snapshot.state.revision, adoptExisting: true }))} /> : null}
-            <CompactLink label={item.run ? manualRun ? "Continue with human approvals" : "Continue existing automatic workflow" : deliveryKind === "code" ? "Run this task to draft PR" : deliveryKind === "actions" ? "Prepare reviewed actions" : "Prepare reviewed report"} colors={colors} disabled={blocked || (manualRun || (!item.run && workflowMode === "manual")) && manualBusy || Boolean(item.run) && !owned.has(item.task.taskId)} onPress={() => act(item.task.taskId, () => start({ coordinatorId: coordinator!.agentId, remoteServerId: coordinator!.remoteServerId, taskId: item.task.taskId, workflowMode: item.run ? item.run.workflowMode ?? "manual" : workflowMode, ...(!item.run && workflowMode === "automatic" ? { workflow } : {}), deliveryKind: item.run ? item.run.deliveryKind ?? "code" : deliveryKind, expectedRevision: snapshot.state.revision }))} />
+            <CompactLink label={item.run ? manualRun ? "Continue with human approvals" : "Continue existing automatic workflow" : kind === "code" ? "Run this task to draft PR" : kind === "actions" ? "Prepare reviewed actions" : "Prepare reviewed report"} colors={colors} disabled={blocked || mode === "manual" && manualBusy || Boolean(item.run) && !owned.has(item.task.taskId)} onPress={() => act(item.task.taskId, () => start({ coordinatorId: coordinator!.agentId, remoteServerId: coordinator!.remoteServerId, taskId: item.task.taskId, workflowMode: mode, ...(!item.run && choice !== "manual" ? { workflow: choice } : {}), deliveryKind: kind, expectedRevision: snapshot.state.revision }))} />
           </View>
           {running ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>This task already has a runner above.</Text> : null}
         </View>;

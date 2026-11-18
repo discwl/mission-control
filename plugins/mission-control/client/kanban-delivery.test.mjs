@@ -133,6 +133,10 @@ test('historical approval evidence identifies Manual only on the exact run with 
   assert.equal(resolve([decide({})], { run: { ...run, workflowMode: 'automatic' } }), 'automatic');
   for (const status of ['delivered', 'in_progress', 'closed']) assert.equal(resolve([], { run: null, task: { status } }), 'noRun');
   for (const status of ['inbox', 'ready']) assert.equal(resolve([], { run: null, task: { status } }), 'unselected');
+  for (const requestedWorkflow of ['standard', 'advanced', 'manual']) {
+    assert.equal(resolve([], { run: null, task: { status: 'inbox', requestedWorkflow } }), requestedWorkflow);
+    assert.equal(resolve([], { task: { ...entry.task, requestedWorkflow } }), 'unknown');
+  }
   assert.equal(resolve([], { run: null, task: { status: 'ready' }, problem: 'Read failed' }), 'unknown');
   assert.equal(model.exports.kanbanWorkflow({ ...entry, run: null }, { workflowMode: 'automatic', workflow: 'standard' }), 'standard');
 });

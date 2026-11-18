@@ -1,6 +1,6 @@
 import { defineRpc, defineSubscription } from "@getpaseo/plugin";
 import { z } from "zod";
-import { taskSchema } from "./tasks";
+import { requestedWorkflowSchema, taskSchema } from "./tasks";
 import { runSchema } from "./runs";
 import { decisionEntrySchema } from "./decisions";
 import { questionEntrySchema } from "./questions";
@@ -52,6 +52,7 @@ export const supervisorEntrySchema = z.object({
 });
 export type SupervisorEntry = z.infer<typeof supervisorEntrySchema>;
 export const fleetQueueSchema = z.object({
+  requestedWorkflow: requestedWorkflowSchema.optional(),
   coordinatorId: z.string(), remoteServerId: z.string(), taskId: z.string(),
   enabled: z.boolean(), priority: z.number().int().min(0).max(9).default(5), updatedAt: z.string(),
 });

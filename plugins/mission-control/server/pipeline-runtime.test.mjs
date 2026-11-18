@@ -26,13 +26,50 @@ async function fixture(t) {
   const engine = registerPipelineRuntime({ handle: (contract, handler) => handlers.set(contract.name, handler) }, store, deps, snapshot, async (...args) => calls.push(args), () => {}); t.after(() => engine.stop());
   t.mock.method(names, "daemonServerId", async () => "personal");
   const invoke = async (method, input) => handlers.get(method)(input, { paseo: {} });
-  return { file, store, task, host, coordinator, others, snapshot, calls, invoke };
+  return { file, store, task, host, coordinator, others, snapshot, calls, invoke, enrollQueued: engine.enrollQueued };
 }
 function bindExistingRun(f, extra = {}) {
   f.task.run = { schemaVersion: 1, runId: "run_11111111-0000-4000-8000-000000000002", taskId, hostId: "remote", projectId: "project", serverId: "remote", workspaceId: "work", stage: "execute", outcome: "completed", createdAt: at, updatedAt: at, nextAction: "Continue the approved scope", agentId: "worker", gitHead: null, gitDirty: false, gitChanges: [], omittedChanges: 0, ...extra };
   f.host.agents.push(agent("worker", "work"));
   f.coordinator.links.push({ serverId: "personal", agentId: "coordinator", remoteServerId: "remote", remoteAgentId: "worker", remoteWorkspaceId: "work", taskId, linkedAt: at });
 }
+
+test("fresh backlog starts inherit a saved workflow and can explicitly override it", async t => {
+  for (const [preference, overrides, expected] of [
+    ["advanced", {}, "advanced"], ["manual", {}, "manual"], ["standard", {}, "standard"],
+    ["advanced", { workflowMode: "manual" }, "manual"], ["advanced", { workflowMode: "automatic", workflow: "standard" }, "standard"],
+  ]) {
+    const f = await fixture(t);
+    f.task.task.requestedWorkflow = preference;
+    t.mock.method(transport, "invokeChatHost", async serverId => ({ serverId, version: 1, idempotentIntake: true, automaticWorkflow: true, standardWorkflow: true, taskWorktrees: true }));
+    const row = await f.invoke("pipeline.start", { coordinatorId: "coordinator", remoteServerId: "remote", taskId, expectedRevision: 0, ...overrides });
+    assert.equal(row.workflowMode, expected === "manual" ? "manual" : "automatic");
+    assert.equal(row.workflow, expected === "manual" ? undefined : expected);
+  }
+});
+
+test("guarded queue enrollment consumes one heartbeat and one runner, rejects stale, legacy and grouped entries", async t => {
+  const f = await fixture(t);
+  const { supervisorEntrySchema } = require("../shared/fleet.ts");
+  t.mock.method(transport, "invokeChatHost", async serverId => ({ serverId, version: 1, idempotentIntake: true, automaticWorkflow: true, standardWorkflow: true, taskWorktrees: true }));
+  const before = await f.store.update(state => {
+    state.coordinators.push(supervisorEntrySchema.parse({ agentId: "coordinator", remoteServerId: "remote", enabled: true }));
+    state.queue.push({ taskId, coordinatorId: "coordinator", remoteServerId: "remote", enabled: true, priority: 5, updatedAt: at });
+  });
+  const enroll = revision => f.enrollQueued("coordinator", "remote", taskId, "standard", revision, at);
+  await assert.rejects(enroll(before.revision), /queue or heartbeat changed/);
+  const ready = await f.store.update(state => { state.queue[0].requestedWorkflow = "standard"; });
+  f.task.task.handledUnder = { serverId: "remote", taskId: "task_22222222-0000-4000-8000-000000000002" };
+  await assert.rejects(enroll(ready.revision), /handled under/);
+  delete f.task.task.handledUnder;
+  const outcomes = await Promise.allSettled([enroll(ready.revision), enroll(ready.revision)]);
+  assert.equal(outcomes.filter(result => result.status === "fulfilled").length, 1);
+  const state = await f.store.read();
+  assert.equal(state.pipelines.length, 1); assert.equal(state.pipelines[0].workflow, "standard");
+  assert.equal(state.pipelines[0].stage, "plan"); assert.equal(state.queue[0].enabled, false);
+  assert.equal(state.coordinators[0].wakeups, 1); assert.equal(state.coordinators[0].lastCheckedAt, at);
+  assert.deepEqual(f.task.decisions, []); assert.deepEqual(f.calls, []);
+});
 
 test("reopening enrolls one fresh Standard runner, preserves previous dispatch receipts, and rejects an older reopening", async t => {
   const f = await fixture(t);

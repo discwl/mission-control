@@ -2,7 +2,7 @@ import { readFleet } from "../shared/fleet";
 import { startPipeline, controlPipeline } from "../shared/pipeline";
 import { invokeChatHost } from "./chat-transport";
 import { reopenFromChat } from "./chat-reopen";
-export const PIPELINE_CHAT_HELP = "run to draft PR <task ID> [standard|advanced] — start a task with Standard by default. Standard uses one fresh reviewer. Advanced adds an independent plan check, separate validation and a second reviewer. You authorize publication. Tasks queue per host; each host runs one stage at a time\nreopen <task ID> <what needs fixing> — reopen a merged delivery and start a Standard fix\npipeline <task ID> — show its stage and next action\npause pipeline <task ID> | resume pipeline <task ID> | stop pipeline <task ID> — control future stages\nautomate pipeline <task ID> — switch a task's manual run to automatic checks; its open plan/review requests are retired without approval";
+export const PIPELINE_CHAT_HELP = "run to draft PR <task ID> [standard|advanced] — use the task's saved workflow, or Standard by default. Standard uses one fresh reviewer. Advanced adds an independent plan check, separate validation and a second reviewer. You authorize publication. Tasks queue per host; each host runs one stage at a time\nreopen <task ID> <what needs fixing> — reopen a merged delivery and start a Standard fix\npipeline <task ID> — show its stage and next action\npause pipeline <task ID> | resume pipeline <task ID> | stop pipeline <task ID> — control future stages\nautomate pipeline <task ID> — switch a task's manual run to automatic checks; its open plan/review requests are retired without approval";
 export async function managePipelineChat(command: string, context: { local: string; target: string; agentId: string; label: string; orchestrator: boolean }): Promise<{ text: string } | null> {
   if (/^reopen\b/i.test(command)) return reopenFromChat(command, context);
   const start = /^run to draft pr\s+(task_[a-f0-9-]+)(?:\s+(standard|advanced))?$/i.exec(command);
@@ -16,12 +16,12 @@ export async function managePipelineChat(command: string, context: { local: stri
     const existing = fleet.state.pipelines.find(row => row.coordinatorId === context.agentId && row.remoteServerId === context.target && row.taskId === taskId && !["done", "stopped"].includes(row.mode));
     if (existing) return { text: `${context.label} · ${existing.title}\nAlready enrolled · ${existing.stage} · ${existing.mode}\n${existing.message}\nUse pipeline ${taskId} to inspect it.` };
     const task = fleet.hosts.find(host => host.serverId === context.target)?.snapshot?.tasks.find(item => item.task.taskId === taskId);
-    const workflowMode = task?.run ? task.run.workflowMode ?? "manual" : "automatic";
+    const choice = start[2]?.toLowerCase() ?? task?.task.requestedWorkflow ?? "standard";
+    const workflowMode = task?.run ? task.run.workflowMode ?? "manual" : choice === "manual" ? "manual" : "automatic";
     if (task?.run && start[2]) return { text: `This task already has a run. Use run to draft PR ${taskId} to continue its saved workflow.` };
-    const requestedWorkflow = start[2]?.toLowerCase() === "advanced" ? "advanced" : "standard";
     const deliveryKind = task?.run?.deliveryKind ?? "code";
-    const result = startPipeline.output.parse(await invokeChatHost(context.local, startPipeline.name, { coordinatorId: context.agentId, remoteServerId: context.target, taskId, workflowMode, ...(!task?.run ? { workflow: requestedWorkflow } : {}), deliveryKind, expectedRevision: fleet.state.revision }));
-    const workflow = result.workflowMode === "automatic" ? (result.workflow === "standard" ? "Standard: plan, build and checks, one fresh review, then final authorization." : "Advanced: plan, independent plan check, build, validation, two independent reviews, then final authorization.") : `This existing run keeps its human plan and code-review approvals. To switch it to automatic checks, pause pipeline ${taskId}, then automate pipeline ${taskId}.`;
+    const result = startPipeline.output.parse(await invokeChatHost(context.local, startPipeline.name, { coordinatorId: context.agentId, remoteServerId: context.target, taskId, workflowMode, ...(!task?.run && workflowMode === "automatic" ? { workflow: choice } : {}), deliveryKind, expectedRevision: fleet.state.revision }));
+    const workflow = result.workflowMode === "automatic" ? (result.workflow === "standard" ? "Standard: plan, build and checks, one fresh review, then final authorization." : "Advanced: plan, independent plan check, build, validation, two independent reviews, then final authorization.") : `The manual workflow keeps its human plan and code-review approvals. To switch it to automatic checks, pause pipeline ${taskId}, then automate pipeline ${taskId}.`;
     return { text: `${context.label} · ${result.title}\nTask runner enrolled.\n${workflow}\nThe task, run and existing work are preserved. No plan, code or external action was approved.\nStatus: pipeline ${taskId}` };
   }
   const requested = control?.[1]?.toLowerCase();

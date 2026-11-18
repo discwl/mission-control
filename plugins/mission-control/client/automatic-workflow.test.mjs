@@ -42,6 +42,23 @@ function runtime(file, initialProps, handler = async () => ({}), memory = new Ma
   return { props, calls, nodes, errors, memory, render, button, input, text: () => JSON.stringify(nodes.map(node => node.props?.children)), press(label) { const target = button(label); assert.ok(!target.disabled); target.onPress(); }, settle: () => Promise.all(pending) };
 }
 
+test("the console uses each backlog task's saved tier and an override applies to that task alone", async () => {
+  const fleet = snapshot(), tasks = fleet.hosts[0].snapshot.tasks;
+  tasks[0].task.requestedWorkflow = 'advanced';
+  tasks.push({ task: { taskId: 'task_two', title: 'Second task', status: 'ready', requestedWorkflow: 'manual' }, run: null });
+  const r = runtime('./pipelines.tsx', { snapshot: fleet });
+  const choice = (task, workflow) => r.nodes.find(node => node.props.accessibilityLabel === `${workflow} workflow for ${task}`).props;
+  const run = async index => { r.nodes.filter(node => node.props.label === 'Run this task to draft PR')[index].props.onPress(); await r.settle(); return r.calls.at(-1).input; };
+  r.render();
+  assert.equal(choice('Fix the behavior', 'Advanced').selected, true);
+  assert.equal(choice('Second task', 'Manual').selected, true);
+  assert.equal((await run(0)).workflow, 'advanced');
+  assert.equal((await run(1)).workflowMode, 'manual');
+  choice('Fix the behavior', 'Standard').onPress(); r.render();
+  assert.equal((await run(0)).workflow, 'standard');
+  assert.equal(choice('Second task', 'Manual').selected, true);
+});
+
 test("new starts use automatic review and the selected host/task revision", async () => {
   const r = runtime("./pipelines.tsx", { snapshot: snapshot() }); r.render();
   assert.equal(r.button("Standard").selected, true);

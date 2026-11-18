@@ -8,6 +8,7 @@ import { listCopies } from "./host-bridge";
 import { useQuery } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import type { TaskRecord } from "../shared/tasks";
 import type { BranchType } from "../shared/branch-names";
 import { getTaskLaunch, launchTask, type TaskBinding } from "../shared/launch";
 import { isRequestTimeout } from "../shared/request-timeout";
@@ -17,12 +18,13 @@ import { findAgent, useRoster } from "./roster";
 import { SubagentContextLink, useTaskTitles } from "./subagents";
 
 type Colors = PluginSurfaceProps["theme"]["colors"];
-type Props = { binding: TaskBinding; colors: Colors; navigation?: PluginSurfaceProps["navigation"] };
+type Workflow = NonNullable<TaskRecord["requestedWorkflow"]>;
+type Props = { binding: TaskBinding; requestedWorkflow?: Workflow; colors: Colors; navigation?: PluginSurfaceProps["navigation"] };
 type Choice = { id: string; label: string; description?: string; warn?: boolean };
 const stages = ["intake", "plan", "execute", "validate", "review", "fix", "delivery", "handoff"];
 const titles: Record<string, string> = { intake: "Intake", plan: "Plan", execute: "Build", validate: "Checks", review: "Review", fix: "Fixes", delivery: "Delivery", handoff: "Handoff" };
 
-export function TaskLauncher({ binding, colors, navigation }: Props) {
+export function TaskLauncher({ binding, colors, navigation, requestedWorkflow }: Props) {
   const readStatus = useRpc(getTaskLaunch);
   const dispatch = useRpc(launchTask);
   const pending = useRef(false);
@@ -55,10 +57,12 @@ export function TaskLauncher({ binding, colors, navigation }: Props) {
   // A failed lookup offers no start at all; it never falls back to the manual workflow.
   const lookupFailure = status?.action === "start" && fleet.isError ? (fleet.error instanceof Error ? fleet.error.message : String(fleet.error)) : null;
   // The manual launcher's model and permission pickers load only when this task really starts manually.
-  const manualStart = status?.action === "start" && fleet.isSuccess && !automaticStart;
+  const needsCoordinator = status?.action === "start" && fleet.isSuccess && !automaticStart && !status.run && (requestedWorkflow === "standard" || requestedWorkflow === "advanced");
+  const manualStart = status?.action === "start" && fleet.isSuccess && !automaticStart && !needsCoordinator;
   const [deliveryKind, setDeliveryKind] = useState<"code" | "actions" | "report">("code");
   const [coordinatorId, setCoordinatorId] = useState<string | null>(null);
-  const [workflow, setWorkflow] = useState<"standard" | "advanced">("standard");
+  const [override, setOverride] = useState<Workflow | null>(null);
+  const workflow = override ?? (status?.run ? undefined : requestedWorkflow) ?? "standard";
   const coordinator = coordinators.find(item => item.agentId === coordinatorId) ?? coordinators[0];
   // A task agent that another agent started says whose it is.
   const online = useHosts().some(candidate => candidate.serverId === binding.serverId && candidate.status === "online");
@@ -92,11 +96,13 @@ export function TaskLauncher({ binding, colors, navigation }: Props) {
   const branch = status?.action === "start" && status.canIsolate && isolate ? status.branch : null;
   const branchOption = branch && branch.options.length > 1 ? branch.options.find(entry => entry.type === branchType) : branch?.options[0];
   const branchProblem = branch ? branch.problem ?? branchOption?.problem ?? (branchOption ? null : "The task's branch name is unknown. Refresh this task.") : null;
-  async function startAutomatic() {
+  async function startManaged() {
     if (!coordinator || !fleet.data || pending.current) return;
     pending.current = true; setBusy(true); setError(null);
     try {
-      const input = { coordinatorId: coordinator.agentId, remoteServerId: binding.serverId, taskId: binding.taskId, workflowMode: "automatic" as const, workflow, deliveryKind, expectedRevision: fleet.data.fleet.state.revision };
+      const policy = workflow === "manual" ? { workflowMode: "manual" as const, deliveryKind: "code" as const }
+        : { workflowMode: "automatic" as const, workflow, deliveryKind };
+      const input = { coordinatorId: coordinator.agentId, remoteServerId: binding.serverId, taskId: binding.taskId, ...policy, expectedRevision: fleet.data.fleet.state.revision };
       // The runner belongs to the copy whose orchestrator manages this host: this one, or the coordinating computer's.
       if (fleet.data.copy) await fleet.data.copy.rpc(startPipeline.name, input);
       else await startRunner(input);
@@ -164,19 +170,20 @@ export function TaskLauncher({ binding, colors, navigation }: Props) {
         openAgent={agentId => { try { const target = { serverId: binding.serverId, agentId, focusHost: true }; navigation?.openAgent(target); } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); } }} /> : null}
       {checkingStart ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Checking how this task starts…</Text> : null}
       {lookupFailure ? <Text accessibilityRole="alert" style={{ color: colors.statusDanger, fontSize: 12, lineHeight: 17 }}>{lookupFailure}</Text> : null}
+      {needsCoordinator ? <Text accessibilityRole="alert" style={{ color: colors.statusWarning }}>Connect the host’s orchestrator to start this task with its saved {requestedWorkflow === "standard" ? "Standard" : "Advanced"} workflow.</Text> : null}
       {automaticStart ? <View style={{ gap: 9 }}>
-        <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}>Automatic workflow</Text>
+        <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}>Managed workflow</Text>
         {runner ? <>
           <Text style={{ color: colors.foreground, fontSize: 13 }}>{runner.workflowMode === "automatic" ? runner.workflow === "standard" ? "Standard" : "Advanced" : "Human approvals"} · {runner.stage} · {runner.mode}</Text>
           <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>{runner.message}</Text>
           <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>Follow it in Orchestrator → Run a task. Questions and the final publishing decision come to you there and in Needs you.</Text>
         </> : <>
-          <ChoiceRow label="Workflow" choices={[{ id: "standard", label: "Standard" }, { id: "advanced", label: "Advanced" }]} selected={workflow} onSelect={id => setWorkflow(id === "advanced" ? "advanced" : "standard")} disabled={busy} colors={colors} button={button} hint={workflow === "standard" ? "The planner writes the plan. The builder implements it and runs checks. One fresh reviewer checks the result." : "A second model checks the plan. A validator runs checks and two independent reviewers examine the result."} />
+          <ChoiceRow label="Workflow" choices={[{ id: "standard", label: "Standard" }, { id: "advanced", label: "Advanced" }, { id: "manual", label: "Manual" }]} selected={workflow} onSelect={id => setOverride(id === "manual" || id === "advanced" ? id : "standard")} disabled={busy} colors={colors} button={button} hint={workflow === "manual" ? "You approve the plan before implementation and review the changes before delivery." : workflow === "standard" ? "The planner writes the plan. The builder implements it and runs checks. One fresh reviewer checks the result." : "A second model checks the plan. A validator runs checks and two independent reviewers examine the result."} />
           <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 17 }}>Code tasks get their own branch and worktree. You authorize publication or execution of prepared actions.</Text>
           {coordinators.length > 1 ? <ChoiceRow label="Orchestrator" choices={coordinators.map(item => ({ id: item.agentId, label: item.name.length > 40 ? `${item.name.slice(0, 40)}…` : item.name }))} selected={coordinator?.agentId ?? null} onSelect={setCoordinatorId} disabled={busy} colors={colors} button={button} /> : null}
-          <ChoiceRow label="Deliverable" choices={[{ id: "code", label: "Code and draft PR" }, { id: "actions", label: "Scripts or actions" }, { id: "report", label: "Read-only report" }]} selected={deliveryKind} onSelect={id => setDeliveryKind(id === "actions" ? "actions" : id === "report" ? "report" : "code")} disabled={busy} colors={colors} button={button} />
-          <Pressable accessibilityRole="button" disabled={busy || query.isError || !coordinator || fleet.data?.fleet.state.paused} onPress={() => void startAutomatic()} style={{ ...button, alignSelf: "flex-start", backgroundColor: colors.accent, opacity: busy || query.isError || !coordinator || fleet.data?.fleet.state.paused ? 0.5 : 1 }}>
-            <Text style={{ color: colors.accentForeground, fontWeight: "600" }}>{busy ? "Starting…" : "Start automatic workflow"}</Text>
+          {workflow !== "manual" ? <ChoiceRow label="Deliverable" choices={[{ id: "code", label: "Code and draft PR" }, { id: "actions", label: "Scripts or actions" }, { id: "report", label: "Read-only report" }]} selected={deliveryKind} onSelect={id => setDeliveryKind(id === "actions" ? "actions" : id === "report" ? "report" : "code")} disabled={busy} colors={colors} button={button} /> : null}
+          <Pressable accessibilityRole="button" disabled={busy || query.isError || !coordinator || fleet.data?.fleet.state.paused} onPress={() => void startManaged()} style={{ ...button, alignSelf: "flex-start", backgroundColor: colors.accent, opacity: busy || query.isError || !coordinator || fleet.data?.fleet.state.paused ? 0.5 : 1 }}>
+            <Text style={{ color: colors.accentForeground, fontWeight: "600" }}>{busy ? "Starting…" : workflow === "manual" ? "Start with manual approvals" : "Start automatic workflow"}</Text>
           </Pressable>
           {fleet.data?.fleet.state.paused ? <Text style={{ color: colors.statusWarning, fontSize: 12 }}>Fleet wake-ups are paused. Resume them in Orchestrator before starting.</Text> : null}
         </>}

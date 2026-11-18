@@ -8,7 +8,7 @@ import { daemonServerId } from "./agent-names";
 import { fleetEvent, type FleetStore } from "./fleet-store";
 
 export function registerPipelineIntake(server: PluginServerContext, store: FleetStore, snapshot: () => Promise<FleetSnapshot>, invalidate: () => void) {
-  server.handle(pipelineCapabilities, async ({ serverId }) => { if (serverId !== await daemonServerId()) throw new Error("Wrong host."); return { serverId, version: 1 as const, idempotentIntake: true as const, automaticWorkflow: true as const, actionBundles: true as const, taskWorktrees: true as const, supersedeDecisions: true as const, standardWorkflow: true as const, stageLaunchReceipts: true as const }; });
+  server.handle(pipelineCapabilities, async ({ serverId }) => { if (serverId !== await daemonServerId()) throw new Error("Wrong host."); return { serverId, version: 1 as const, idempotentIntake: true as const, automaticWorkflow: true as const, actionBundles: true as const, taskWorktrees: true as const, supersedeDecisions: true as const, intakeWorkflow: true as const, standardWorkflow: true as const, stageLaunchReceipts: true as const }; });
   async function verify(row: Pipeline) {
     if (row.deliveryKind !== "code" && row.workflowMode !== "automatic") throw new Error("Non-code delivery requires the automatic workflow.");
     const current = await snapshot();

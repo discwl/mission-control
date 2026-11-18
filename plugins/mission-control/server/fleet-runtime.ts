@@ -85,7 +85,7 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
     if (!entry || !isQuiet(entry.agent) || entry.agent.pendingPermissions?.length || entry.agent.archivedAt) throw new Error("Coordinator changed before send.");
     await paseo.agents.ref(id).send(prompt, { messageId: requestId, activeTurnBehavior: "steer" });
   }), () => { cached = null; });
-  const supervisor = createFleetSupervisor({ store, snapshot: async () => {
+  const supervisor = createFleetSupervisor({ store, enrollQueued: pipeline.enrollQueued, snapshot: async () => {
     const current = await snapshot(true);
     const owned = new Set(current.state.pipelines.filter(row => !["stopped", "done"].includes(row.mode)).map(row => row.remoteServerId));
     return { ...current, state: { ...current.state, queue: current.state.queue.filter(item => !owned.has(item.remoteServerId)) } };
@@ -159,9 +159,14 @@ export function registerFleet(server: PluginServerContext, deps: Omit<FleetHostD
     const current = await snapshot(true);
     const coordinator = current.coordinators.find(item => item.agentId === input.coordinatorId && item.remoteServerId === input.remoteServerId);
     const host = current.hosts.find(item => item.serverId === input.remoteServerId)?.snapshot;
-    if (input.enabled && (!coordinator || !host || !managedTasks(current.serverId, coordinator, host).some(entry => entry.task.taskId === input.taskId))) throw new Error("This task is not linked to this coordinator. Link its worker first.");
+    const task = host?.tasks.find(entry => entry.task.taskId === input.taskId);
+    if (input.enabled && task?.task.handledUnder) throw new Error("This task is handled under another task. Queue the primary task instead.");
+    const requestedWorkflow = input.requestedWorkflow ?? (!task?.run ? task?.task.requestedWorkflow : undefined);
+    const newIntake = requestedWorkflow && task && !task.run && !task.problem && !task.task.pullRequest && task.task.assignments.some(assignment => assignment.serverId === input.remoteServerId) && ["inbox", "ready"].includes(task.task.status) && host?.complete && !host.warnings.length;
+    if (input.enabled && (!coordinator || !host || !newIntake && !managedTasks(current.serverId, coordinator, host).some(entry => entry.task.taskId === input.taskId))) throw new Error("This task is not linked to this coordinator. Link its worker first.");
     return store.update(state => {
-      const next = { coordinatorId: input.coordinatorId, remoteServerId: input.remoteServerId, taskId: input.taskId, enabled: input.enabled, priority: input.priority, updatedAt: new Date().toISOString() };
+      const previous = state.queue.find(item => item.coordinatorId === input.coordinatorId && item.remoteServerId === input.remoteServerId && item.taskId === input.taskId);
+      const next = { coordinatorId: input.coordinatorId, remoteServerId: input.remoteServerId, taskId: input.taskId, enabled: input.enabled, priority: input.priority, requestedWorkflow: input.requestedWorkflow ?? previous?.requestedWorkflow ?? requestedWorkflow, updatedAt: new Date().toISOString() };
       state.queue = state.queue.filter(item => !(item.coordinatorId === input.coordinatorId && item.remoteServerId === input.remoteServerId && item.taskId === input.taskId)); state.queue.push(next);
       fleetEvent(state, { coordinatorId: input.coordinatorId, remoteServerId: input.remoteServerId, taskId: input.taskId, kind: "settings", message: input.enabled ? `Queued for automatic work (priority ${input.priority}).` : "Removed from automatic work." });
     }, input.expectedRevision);

@@ -74,12 +74,13 @@ export const importMorningItems = defineRpc({
   name: "morning.import",
   input: hostInput.extend({
     workspaceId: z.string().min(1),
+    requestedWorkflow: taskSchema.shape.requestedWorkflow,
     reportId: morningReportIdSchema,
     // Ticket identities from ticketIdentity(): "<system>:<KEY>".
     items: z.array(z.string().min(1).max(200)).min(1).max(200),
   }),
   output: z.object({
-    created: z.array(taskBriefSchema.extend({ key: z.string() })),
+    created: z.array(taskBriefSchema.extend({ key: z.string(), requestedWorkflow: taskSchema.shape.requestedWorkflow })),
     skipped: z.array(z.object({ key: z.string(), taskIds: z.array(z.string()) })),
   }),
 });

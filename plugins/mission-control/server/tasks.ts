@@ -200,7 +200,7 @@ export async function listTaskRecords(serverId: string, workspaceId: string): Pr
 }
 
 export async function createTaskRecord(
-  input: { serverId: string; workspaceId: string; title: string; acceptanceCriteria: string; ticket?: Ticket; groupedTickets?: TaskRecord["groupedTickets"]; requestId?: string },
+  input: { serverId: string; workspaceId: string; title: string; acceptanceCriteria: string; ticket?: Ticket; groupedTickets?: TaskRecord["groupedTickets"]; requestedWorkflow?: TaskRecord["requestedWorkflow"]; requestId?: string },
   projectId: string,
 ): Promise<TaskRecord> {
   const { directory, hostId } = await taskLocation(input.serverId);
@@ -220,6 +220,7 @@ export async function createTaskRecord(
     updatedAt: now,
     ...(input.ticket ? { ticket: input.ticket } : {}),
     ...(input.groupedTickets ? { groupedTickets: input.groupedTickets } : {}),
+    ...(input.requestedWorkflow ? { requestedWorkflow: input.requestedWorkflow } : {}),
   });
   const folder = join(directory, task.taskId);
   try { await mkdir(folder); }
@@ -229,7 +230,7 @@ export async function createTaskRecord(
     const rel = relative(directory, actual); const fileRel = relative(actual, file);
     if (rel !== task.taskId || fileRel !== "task.md") throw new Error("Task intake path does not match its request.");
     const existing = parseTask(await readFile(file, "utf8"));
-    if (existing.taskId !== task.taskId || existing.hostId !== hostId || existing.projectId !== projectId || existing.title !== task.title || existing.acceptanceCriteria !== task.acceptanceCriteria || !existing.assignments.some(item => item.serverId === input.serverId && item.workspaceId === input.workspaceId)) throw new Error("This intake request ID already belongs to different task details. Inspect the existing task.");
+    if (existing.taskId !== task.taskId || existing.hostId !== hostId || existing.projectId !== projectId || existing.title !== task.title || existing.acceptanceCriteria !== task.acceptanceCriteria || existing.requestedWorkflow !== task.requestedWorkflow || !existing.assignments.some(item => item.serverId === input.serverId && item.workspaceId === input.workspaceId)) throw new Error("This intake request ID already belongs to different task details. Inspect the existing task.");
     return existing;
   }
   await writeFile(join(folder, "status.md"), `# Status log\n\nCreated ${now}. Initial state: inbox. See task.md for the current state.\n`, { flag: "wx" });

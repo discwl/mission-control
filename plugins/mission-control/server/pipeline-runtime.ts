@@ -186,8 +186,7 @@ export function registerPipelineRuntime(server: PluginServerContext, store: Flee
       note: `Retired on ${day} when this task switched to the automatic workflow. Not approved: a fresh independent plan check, validation and two independent reviews replace this request.` }));
   }
   const adoptedMessage = "Switched to the automatic workflow. Open old-flow requests were retired without approval; a fresh independent plan check comes next.";
-  async function enroll(input: ReturnType<typeof startPipeline.input.parse>, expectedReopening?: string) {
-    if (input.deliveryKind !== "code" && input.workflowMode !== "automatic") throw new Error("Non-code delivery requires the automatic workflow.");
+  async function enroll(input: ReturnType<typeof startPipeline.input.parse>, expectedReopening?: string, queuedAt?: string) {
     if (input.adoptExisting) {
       if (input.workflowMode !== "automatic") throw new Error("Switching an existing run requires the automatic workflow.");
       const before = await store.read();
@@ -214,6 +213,13 @@ export function registerPipelineRuntime(server: PluginServerContext, store: Flee
     const host = current.hosts.find(item => item.serverId === input.remoteServerId)?.snapshot;
     const task = host?.tasks.find(item => item.task.taskId === input.taskId);
     if (!coordinator || !host?.complete || host.warnings.length || current.warnings.length || !task) throw new Error("Choose a connected host with a complete current task snapshot.");
+    if (task.task.handledUnder) throw new Error("This task is handled under another task. Open its primary task before starting a runner.");
+    if (queuedAt && (task.run || task.problem || task.questions.some(item => item.question.status === "open") || task.decisions.some(item => item.decision.status === "open"))) throw new Error("The queued task has progressed or needs attention. Inspect its current state.");
+    const preference = !task.run ? task.task.requestedWorkflow : undefined;
+    const automatic = input.workflow || preference === "standard" || preference === "advanced";
+    const workflowMode = input.workflowMode ?? (automatic ? "automatic" : "manual");
+    input = { ...input, workflowMode };
+    if (input.deliveryKind !== "code" && workflowMode !== "automatic") throw new Error("Non-code delivery requires the automatic workflow.");
     const reopenedAt = task.task.deliveryHistory?.at(-1)?.reopenedAt;
     if (expectedReopening) {
       if (expectedReopening !== reopenedAt) throw new Error("The task's reopening changed. Refresh the task before starting the fix.");
@@ -227,7 +233,7 @@ export function registerPipelineRuntime(server: PluginServerContext, store: Flee
     if (task.run && input.deliveryKind !== (task.run.deliveryKind ?? "code")) throw new Error("An existing run must keep its recorded deliverable. Create a new task for a different deliverable.");
     let workflow: Pipeline["workflow"];
     if (input.workflowMode === "automatic") {
-      workflow = input.workflow ?? (task.run ? undefined : "standard");
+      workflow = input.workflow ?? (task.run ? undefined : preference === "advanced" ? "advanced" : "standard");
       if (task.run) {
         const saved = pipelineInspectionSchema.parse(await invokeChatHost(input.remoteServerId, inspectPipeline.name, { serverId: input.remoteServerId, workspaceId: task.run.workspaceId, taskId: input.taskId }));
         workflow = saved.workflow ?? "advanced";
@@ -253,6 +259,19 @@ export function registerPipelineRuntime(server: PluginServerContext, store: Flee
         }
       }
       const active = state.pipelines.filter(item => !["stopped", "done"].includes(item.mode));
+      if (queuedAt) {
+        const setting = state.coordinators.find(item => item.agentId === row.coordinatorId && item.remoteServerId === row.remoteServerId);
+        const choice = row.workflowMode === "automatic" ? row.workflow : "manual";
+        const queued = state.queue.some(item => item.enabled && item.coordinatorId === row.coordinatorId && item.remoteServerId === row.remoteServerId && item.taskId === row.taskId && item.requestedWorkflow === choice);
+        if (!queued || !setting?.enabled || setting.pending || state.stoppedAgentIds.includes(row.coordinatorId)) throw new Error("The queue or heartbeat changed before enrollment.");
+        if (active.some(item => item.remoteServerId === row.remoteServerId)) throw new Error("Another runner owns this host.");
+        const date = queuedAt.slice(0, 10);
+        setting.wakeups = setting.date === date ? setting.wakeups + 1 : 1;
+        setting.date = date;
+        setting.lastCheckedAt = queuedAt;
+        setting.nextCheckAt = new Date(Date.parse(queuedAt) + setting.intervalMinutes * 60_000).toISOString();
+        setting.message = `Started the queued ${choice} workflow for ${row.title}.`;
+      }
       if (active.some(item => item.taskId === input.taskId)) throw new Error("A runner already owns this task. Inspect it before starting another.");
       // Automatic runners queue per host. A manual runner drives the coordinator chat, so it stays alone.
       if (input.workflowMode !== "automatic" && active.some(item => item.workflowMode !== "automatic" && (item.remoteServerId === input.remoteServerId || item.coordinatorId === input.coordinatorId))) throw new Error("A manual runner already owns this host or coordinator. Inspect it before starting another.");
@@ -339,5 +358,8 @@ export function registerPipelineRuntime(server: PluginServerContext, store: Flee
     if (input.action === "resume" && result?.intake?.phase === "pending") return finishIntake(result);
     return result!;
   });
-  return engine;
+  return { ...engine, enrollQueued(coordinatorId: string, remoteServerId: string, taskId: string, choice: "standard" | "advanced" | "manual", expectedRevision: number, at: string) {
+    return enroll(startPipeline.input.parse({ coordinatorId, remoteServerId, taskId, expectedRevision,
+      workflowMode: choice === "manual" ? "manual" : "automatic", workflow: choice === "manual" ? undefined : choice }), undefined, at);
+  } };
 }

@@ -22,7 +22,7 @@ export const pipelineCapabilities = defineRpc({ name: "pipeline.capabilities", i
   // Automatic code tasks get their own worktree before planning, and switching a task can retire its open requests.
   taskWorktrees: z.literal(true).optional(), supersedeDecisions: z.literal(true).optional(),
   // Stage starts keep durable receipts (pipeline.stage.launch-status), so a slow start is followed, not guessed.
-  standardWorkflow: z.literal(true).optional(), stageLaunchReceipts: z.literal(true).optional() }) });
+  intakeWorkflow: z.literal(true).optional(), standardWorkflow: z.literal(true).optional(), stageLaunchReceipts: z.literal(true).optional() }) });
 // Creates and attaches the task's own worktree before its first automatic stage. It replies within seconds; a slow
 // creation continues on the host and a later call reports it. Repeated calls never create a second worktree.
 export const prepareTaskWorktree = defineRpc({ name: "pipeline.worktree.prepare", input: z.object({ serverId: z.string().min(1), workspaceId: z.string().min(1), taskId: z.string().regex(/^task_[a-f0-9-]+$/) }),
@@ -36,6 +36,6 @@ export const inspectPipeline = defineRpc({ name: "pipeline.inspect", input: z.ob
 export const readPipelineEvidence = defineRpc({ name: "pipeline.evidence.read", input: inspectPipeline.input, output: pipelineInspectionSchema });
 // adoptExisting: switch a task's existing manual run to the automatic workflow in one guarded step (its open plan/review
 // requests are retired without approval). Valid only with workflowMode "automatic".
-export const startPipeline = defineRpc({ name: "pipeline.start", input: z.object({ coordinatorId: z.string(), remoteServerId: z.string(), taskId: z.string(), workflow: workflowSchema.optional(), workflowMode: workflowModeSchema.default("manual"), deliveryKind: deliveryKindSchema.default("code"), expectedRevision: z.number().int(), adoptExisting: z.boolean().optional() }), output: pipelineSchema });
+export const startPipeline = defineRpc({ name: "pipeline.start", input: z.object({ coordinatorId: z.string(), remoteServerId: z.string(), taskId: z.string(), workflow: workflowSchema.optional(), workflowMode: workflowModeSchema.optional(), deliveryKind: deliveryKindSchema.default("code"), expectedRevision: z.number().int(), adoptExisting: z.boolean().optional() }), output: pipelineSchema });
 export const startReopenedPipeline = defineRpc({ name: "pipeline.reopened.start", input: z.object({ coordinatorId: z.string(), remoteServerId: z.string(), taskId: z.string(), reopenedAt: z.string().datetime(), expectedRevision: z.number().int() }), output: pipelineSchema });
 export const controlPipeline = defineRpc({ name: "pipeline.control", input: z.object({ id: z.string().uuid(), action: z.enum(["pause", "resume", "stop", "acknowledge", "adopt-automatic"]), expectedRevision: z.number().int(), requestId: z.string().optional(), delivery: z.enum(["sent", "not_sent"]).optional() }), output: pipelineSchema });

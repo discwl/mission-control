@@ -140,11 +140,13 @@ test("simultaneous inverse links cannot form a cycle, including for legacy flat 
 test("task intake retries keep one exact task and refuse conflicting identities", async t => {
   const { tasks } = await taskStore(t);
   const requestId = "abcdefab-0000-4000-8000-000000000001";
-  const input = { serverId, workspaceId, title: "Runner intake", acceptanceCriteria: "One task survives a lost reply.", requestId };
+  const input = { serverId, workspaceId, title: "Runner intake", acceptanceCriteria: "One task survives a lost reply.", requestedWorkflow: "advanced", requestId };
   const first = await tasks.createTaskRecord(input, "prj_test");
   const retry = await tasks.createTaskRecord(input, "prj_test");
   assert.equal(first.taskId, `task_${requestId}`); assert.deepEqual(retry, first);
   assert.equal((await tasks.listTaskRecords(serverId, workspaceId)).tasks.length, 1);
+  assert.equal(retry.requestedWorkflow, "advanced");
+  await assert.rejects(tasks.createTaskRecord({ ...input, requestedWorkflow: "standard" }, "prj_test"), /different task details/);
   await assert.rejects(tasks.createTaskRecord({ ...input, title: "Changed scope" }, "prj_test"), /different task details/);
   await assert.rejects(tasks.createTaskRecord(input, "other_project"), /different task details/);
   await assert.rejects(tasks.createTaskRecord({ ...input, workspaceId: "another" }, "prj_test"), /different task details/);

@@ -9,6 +9,7 @@ type Dependencies = {
   coordinator(id: string): Promise<FleetAgent | null>;
   revalidate(coordinator: FleetCoordinator, taskId: string, fingerprint: string): Promise<boolean>;
   send(id: string, prompt: string, requestId: string): Promise<void>;
+  enrollQueued(coordinatorId: string, remoteServerId: string, taskId: string, workflow: "standard" | "advanced" | "manual", revision: number, at: string): Promise<unknown>;
   now?: () => number;
 };
 // A closed coordinator is resting: Paseo 0.14 releases idle agents, and the wake-up message resumes it.
@@ -41,7 +42,7 @@ export function createFleetSupervisor(deps: Dependencies) {
       const host = snapshot.hosts.find(host => host.serverId === coordinator.remoteServerId);
       const live = await deps.coordinator(coordinator.agentId);
       const busyHost = dispatchedHosts.has(coordinator.remoteServerId) || snapshot.coordinators.some(other => other.remoteServerId === coordinator.remoteServerId && ["running", "initializing"].includes(other.agent.status));
-      let next = null;
+      let next: ReturnType<typeof chooseNextTask> = null;
       if (!host?.snapshot || host.error) reason = host?.error || "Host unavailable";
       else if (Date.parse(host.snapshot.observedAt) < now() - 60_000) reason = "Host state is stale; waiting for a fresh observation.";
       else if (!canWake(live)) reason = "Coordinator is busy or needs your attention.";
@@ -52,6 +53,19 @@ export function createFleetSupervisor(deps: Dependencies) {
       const fingerprint = next ? taskFingerprint(next.entry) : null;
       if (fingerprint && setting.lastFingerprint === fingerprint && setting.unchangedAttempts >= 3) {
         reason = "Three wake-ups without new task evidence. Inspect this task before continuing."; next = null;
+      }
+      const queued = next && state.queue.find(item => item.enabled && item.coordinatorId === coordinator.agentId && item.remoteServerId === coordinator.remoteServerId && item.taskId === next?.entry.task.taskId);
+      if (next && fingerprint && queued?.requestedWorkflow) {
+        try {
+          if (!await deps.revalidate(coordinator, queued.taskId, fingerprint) || !canWake(await deps.coordinator(coordinator.agentId)) || stopped) continue;
+          // Enrollment consumes the queue entry and records its runner in one revision-checked write.
+          await deps.enrollQueued(coordinator.agentId, coordinator.remoteServerId, queued.taskId, queued.requestedWorkflow, state.revision, at);
+          dispatchedHosts.add(coordinator.remoteServerId);
+          continue;
+        } catch (error) {
+          reason = `Waiting to start ${queued.requestedWorkflow} workflow: ${error instanceof Error ? error.message : String(error)}`;
+          next = null;
+        }
       }
       if (!next || !fingerprint) {
         await deps.store.update(current => {

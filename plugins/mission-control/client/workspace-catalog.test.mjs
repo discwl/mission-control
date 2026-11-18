@@ -7,8 +7,9 @@ const require = createRequire(import.meta.url), ts = require('typescript');
 const jsx = (type, props) => ({ type, props });
 const nodes = value => !value || typeof value !== 'object' ? [] : Array.isArray(value) ? value.flatMap(nodes) : [value, ...nodes(value.props?.children)];
 const text = value => value == null ? '' : typeof value === 'string' ? value : Array.isArray(value) ? value.map(text).join('') : text(value.props?.children);
-function harness(surface, { host = 'remote', workspace = 'w1', cwd = 'C:/work/one', workspaceError = null, resolved = true, archived = false, coordinators = [], lookupError = null } = {}) {
-  const queries = [], calls = [], exports = {};
+function harness(surface, { host = 'remote', workspace = 'w1', cwd = 'C:/work/one', workspaceError = null, resolved = true, archived = false, coordinators = [], lookupError = null, requestedWorkflow } = {}) {
+  const queries = [], calls = [], exports = {}, state = [];
+  let cursor = 0;
   const api = serverId => ({
     workspaces: { ref: id => ({ refresh: async () => { calls.push({ kind: 'workspace', serverId, id }); return { workspaceDirectory: cwd, archivingAt: archived ? 'now' : null }; } }) },
     providers: {
@@ -20,9 +21,9 @@ function harness(surface, { host = 'remote', workspace = 'w1', cwd = 'C:/work/on
   const code = ts.transpileModule(readFileSync(new URL(`./${surface}.tsx`, import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText;
   vm.runInNewContext(code, { exports, require: name => {
     if (name === 'react/jsx-runtime') return { jsx, jsxs: jsx };
-    if (name === 'react') return { useRef: initial => ({ current: initial }), useState: initial => [initial, () => {}] };
-    if (name === '@getpaseo/plugin/client') return { getPaseoClient: api, useHosts: () => [{ serverId: host, status: 'online' }], useRpc: () => async () => ({}) };
-    if (name === './host-rpc') return { useRpc: () => async () => ({}) };
+    if (name === 'react') return { useRef: initial => ({ current: initial }), useState: initial => { const id = cursor++; if (!(id in state)) state[id] = initial; return [state[id], value => { state[id] = value; }]; } };
+    if (name === '@getpaseo/plugin/client') return { getPaseoClient: api, useHosts: () => [{ serverId: host, status: 'online' }], useRpc: () => async input => { calls.push({ kind: 'rpc', input }); return {}; } };
+    if (name === './host-rpc') return { useRpc: () => async input => { calls.push({ kind: 'rpc', input }); return {}; } };
     if (name === '@tanstack/react-query') return { useQueryClient: () => ({ invalidateQueries() {} }), useQuery: query => {
       queries.push(query); const key = query.queryKey[1];
       const result = { data: undefined, error: null, isError: false, isPending: false, isSuccess: true, isFetching: false, refetch() {} };
@@ -42,10 +43,13 @@ function harness(surface, { host = 'remote', workspace = 'w1', cwd = 'C:/work/on
     if (name === '../shared/tickets') return { ticketSystemLabels: {}, ticketIdentity: () => '' };
     return {};
   } });
-  const tree = surface === 'task-launcher'
-    ? exports.TaskLauncher({ binding: { serverId: host, workspaceId: workspace, taskId: 'task' }, colors: {} })
+  function render() {
+    cursor = 0;
+    return surface === 'task-launcher'
+    ? exports.TaskLauncher({ binding: { serverId: host, workspaceId: workspace, taskId: 'task' }, requestedWorkflow, colors: {} })
     : exports.MorningCheck({ ownServerId: host, host: { serverId: host, status: 'online', label: 'Host' }, workspace: { id: workspace, name: 'Workspace' }, colors: {} });
-  return { tree, calls, queries, query: suffix => queries.find(q => q.queryKey[1].endsWith(suffix)) };
+  }
+  return { tree: render(), render, calls, queries, query: suffix => queries.find(q => q.queryKey[1].endsWith(suffix)) };
 }
 for (const surface of ['task-launcher', 'morning-check']) {
   test(`${surface}: resolves the exact host/workspace and scopes catalog requests`, async () => {
@@ -91,6 +95,28 @@ test('task-launcher: when an orchestrator manages the host, a new task offers on
   const labels = nodes(h.tree).filter(n => n.type === 'Pressable').map(text);
   assert.ok(labels.includes('Start automatic workflow'));
   assert.ok(!labels.includes('Start task'), 'no manual start while an orchestrator manages the host');
+});
+
+test('task-launcher: managed starts show the saved workflow, and an explicit override controls the runner', async () => {
+  const coordinators = [{ agentId: 'chat-1', remoteServerId: 'remote', name: 'Remote orchestrator' }];
+  for (const requestedWorkflow of ['advanced', 'manual']) {
+    const h = harness('task-launcher', { coordinators, requestedWorkflow });
+    const selection = nodes(h.tree).find(node => node.props.label === 'Workflow').props;
+    assert.equal(selection.selected, requestedWorkflow);
+    const button = tree => nodes(tree).find(node => node.type === 'Pressable' && text(node).startsWith('Start '));
+    button(h.tree).props.onPress(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.calls.at(-1).input.workflowMode, requestedWorkflow === 'manual' ? 'manual' : 'automatic');
+    assert.equal(h.calls.at(-1).input.workflow, requestedWorkflow === 'manual' ? undefined : requestedWorkflow);
+    selection.onSelect('standard');
+    button(h.render()).props.onPress(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.calls.at(-1).input.workflow, 'standard');
+  }
+});
+
+test('task-launcher: an unbound host explains a saved automatic tier without downgrading the task', () => {
+  const h = harness('task-launcher', { requestedWorkflow: 'advanced' });
+  assert.match(text(h.tree), /Connect the host’s orchestrator.*Advanced/);
+  assert.equal(nodes(h.tree).some(node => node.type === 'Pressable' && text(node) === 'Start task'), false);
 });
 
 test('task-launcher: a failed orchestrator lookup offers no start at all, never the manual one', () => {

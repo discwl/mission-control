@@ -19,6 +19,10 @@ export function registerIntake(server: PluginServerContext, snapshot: () => Prom
     }
     return { fleet, host: remote.snapshot };
   }
+  async function requireIntakeWorkflow(serverId: string) {
+    const capability = pipelineCapabilities.output.safeParse(await invokeChatHost(serverId, pipelineCapabilities.name, { serverId }));
+    if (!capability.success || capability.data.serverId !== serverId || !capability.data.intakeWorkflow) throw new Error("Update Mission Control on this host before saving intake.");
+  }
   async function route(input: RpcInput<typeof routeIntake>): Promise<RpcOutput<typeof routeIntake>> {
     const { fleet, host } = await destination(input);
     const entry = host.tasks.find(row => row.task.taskId === input.taskId);
@@ -28,14 +32,17 @@ export function registerIntake(server: PluginServerContext, snapshot: () => Prom
     if (["closed", "delivered"].includes(entry.task.status) || entry.task.pullRequest || entry.run && !["intake", "plan"].includes(entry.run.stage)) throw new Error("This task already progressed beyond intake. Open its existing workflow instead of planning it again.");
     const existing = fleet.state.pipelines.find(row => row.remoteServerId === input.remoteServerId && row.taskId === input.taskId && !["done", "stopped"].includes(row.mode));
     if (existing) return receipt(`Existing runner: ${existing.stage} · ${existing.mode}. ${existing.message} No second runner was started.`);
+    if (entry.task.handledUnder) throw new Error("This task is handled under another task. Open its primary task to continue.");
+    const queued = fleet.state.queue?.find(item => item.enabled && item.remoteServerId === input.remoteServerId && item.coordinatorId === input.coordinatorId && item.taskId === input.taskId);
+    const requestedWorkflow = input.requestedWorkflow ?? queued?.requestedWorkflow ?? (!entry.run ? entry.task.requestedWorkflow : undefined);
     try {
       if (input.action === "queue") {
-        setFleetQueue.output.parse(await invokeChatHost(fleet.serverId, setFleetQueue.name, { coordinatorId: input.coordinatorId, remoteServerId: input.remoteServerId, taskId: input.taskId, enabled: true, priority: 5, expectedRevision: fleet.state.revision }));
+        setFleetQueue.output.parse(await invokeChatHost(fleet.serverId, setFleetQueue.name, { coordinatorId: input.coordinatorId, remoteServerId: input.remoteServerId, taskId: input.taskId, enabled: true, priority: 5, requestedWorkflow, expectedRevision: fleet.state.revision }));
         const enabled = !fleet.state.paused && fleet.state.coordinators.some(c => c.agentId === input.coordinatorId && c.enabled);
-        return receipt(`Queued for planning. ${enabled ? "Heartbeat can pick it up when eligible." : "Heartbeat is paused or not enrolled; it will not start automatically until enabled."} Plan approval remains required.`);
+        return receipt(`Queued for planning. ${enabled ? "Heartbeat can pick it up when eligible." : "Heartbeat is paused or not enrolled; it will not start automatically until enabled."} ${requestedWorkflow && requestedWorkflow !== "manual" ? "Publication requires your approval." : "Plan approval remains required."}`);
       }
-      const runner = startPipeline.output.parse(await invokeChatHost(fleet.serverId, startPipeline.name, { coordinatorId: input.coordinatorId, remoteServerId: input.remoteServerId, taskId: input.taskId, expectedRevision: fleet.state.revision }));
-      return receipt(`Planning requested. ${runner.message} The managed workflow waits for your plan, code and publication decisions.`);
+      const runner = startPipeline.output.parse(await invokeChatHost(fleet.serverId, startPipeline.name, { coordinatorId: input.coordinatorId, remoteServerId: input.remoteServerId, taskId: input.taskId, workflowMode: requestedWorkflow && requestedWorkflow !== "manual" ? "automatic" : "manual", workflow: requestedWorkflow === "manual" ? undefined : requestedWorkflow, expectedRevision: fleet.state.revision }));
+      return receipt(`Planning requested. ${runner.message}`);
     } catch (error) {
       return receipt(`Task saved; scheduling is not confirmed. Refresh its queue/runner before retrying. ${error instanceof Error ? error.message : String(error)}`, false);
     } finally { invalidate(); }
@@ -53,20 +60,26 @@ export function registerIntake(server: PluginServerContext, snapshot: () => Prom
   });
   server.handle(intakeDiscoveryImport, async ({ coordinatorId, ...input }) => {
     await destination({ coordinatorId, remoteServerId: input.serverId });
-    try { return importMorningItems.output.parse(await invokeChatHost(input.serverId, importMorningItems.name, input)); }
-    finally { invalidate(); }
+    await requireIntakeWorkflow(input.serverId);
+    const requestedWorkflow = input.requestedWorkflow ?? "standard";
+    try {
+      const result = importMorningItems.output.parse(await invokeChatHost(input.serverId, importMorningItems.name, { ...input, requestedWorkflow }));
+      if (result.created.some(task => task.requestedWorkflow !== requestedWorkflow)) throw new Error("Imported task receipt did not match the selected workflow. Inspect the saved tasks before routing them.");
+      return result;
+    } finally { invalidate(); }
   });
   server.handle(routeIntake, route);
   server.handle(captureIntake, async input => {
     const { host } = await destination(input);
     if (!host.workspaces.some(w => w.id === input.workspaceId && !["archived", "archiving", "failed"].includes(w.status))) throw new Error("Choose an available workspace on this host.");
-    const capability = pipelineCapabilities.output.safeParse(await invokeChatHost(input.remoteServerId, pipelineCapabilities.name, { serverId: input.remoteServerId }));
-    if (!capability.success || capability.data.serverId !== input.remoteServerId || !capability.data.idempotentIntake) throw new Error("Update Mission Control on this host before saving intake.");
-    const task = createTask.output.parse(await invokeChatHost(input.remoteServerId, createTask.name, { serverId: input.remoteServerId, workspaceId: input.workspaceId, title: input.title, acceptanceCriteria: input.acceptanceCriteria, requestId: input.requestId }));
-    if (task.taskId !== `task_${input.requestId.toLowerCase()}` || !task.assignments.some(a => a.serverId === input.remoteServerId && a.workspaceId === input.workspaceId)) throw new Error("Task receipt did not match this intake. Inspect it before retrying.");
+    await requireIntakeWorkflow(input.remoteServerId);
+    const prior = host.tasks.find(entry => entry.task.taskId === `task_${input.requestId.toLowerCase()}`);
+    const requestedWorkflow = input.requestedWorkflow ?? (prior ? prior.task.requestedWorkflow : "standard");
+    const task = createTask.output.parse(await invokeChatHost(input.remoteServerId, createTask.name, { serverId: input.remoteServerId, workspaceId: input.workspaceId, title: input.title, acceptanceCriteria: input.acceptanceCriteria, requestId: input.requestId, requestedWorkflow }));
+    if (task.taskId !== `task_${input.requestId.toLowerCase()}` || task.requestedWorkflow !== requestedWorkflow || !task.assignments.some(a => a.serverId === input.remoteServerId && a.workspaceId === input.workspaceId)) throw new Error("Task receipt did not match this intake. Inspect it before retrying.");
     invalidate();
     if (input.action === "backlog") return { taskId: task.taskId, title: task.title, action: input.action, completed: true, message: "Saved to backlog. No worker launched and no automatic work enrolled." };
-    try { return await route({ coordinatorId: input.coordinatorId, remoteServerId: input.remoteServerId, taskId: task.taskId, action: input.action }); }
+    try { return await route({ coordinatorId: input.coordinatorId, remoteServerId: input.remoteServerId, taskId: task.taskId, action: input.action, requestedWorkflow }); }
     catch (error) { return { taskId: task.taskId, title: task.title, action: input.action, completed: false, message: `Task saved; ${input.action === "plan" ? "planning" : "queueing"} not confirmed. ${error instanceof Error ? error.message : String(error)}` }; }
   });
 }

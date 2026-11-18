@@ -67,7 +67,7 @@ export function kanbanWorkflow(entry: FleetTask, pending?: FleetSnapshot["state"
   if (!run) {
     if (pending) return pending.workflowMode === "automatic" ? pending.workflow ?? "advanced" : "manual";
     if (entry.problem) return "unknown";
-    return ["inbox", "ready"].includes(entry.task.status) ? "unselected" : "noRun";
+    return ["inbox", "ready"].includes(entry.task.status) ? entry.task.requestedWorkflow ?? "unselected" : "noRun";
   }
   if (entry.pipeline?.runId === run.runId) return entry.pipeline.workflow ?? (entry.runWorkflow === "manual" ? "automatic" : entry.runWorkflow) ?? "automatic";
   if (entry.runWorkflow || run.workflowMode) return entry.runWorkflow ?? run.workflowMode!;

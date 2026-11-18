@@ -26,7 +26,7 @@ function fixture() {
   };
   new Function('require','module','exports',compile(readFileSync(new URL('./kanban-intake.tsx',import.meta.url),'utf8')))(name => deps[name] ?? require(name),module,module.exports);
   function render() { cursor = 0; const tree = module.exports.KanbanIntake({ snapshot, colors: {}, navigation: {}, close() {}, refresh() {}, openTask() {} }); const nodes = []; const walk = node => { if (!node || typeof node !== 'object') return; if (Array.isArray(node)) return node.forEach(walk); nodes.push(node); walk(node.props?.children); }; walk(tree); return nodes; }
-  return { state, snapshot, calls, render, failOnce: () => { fail = true; } };
+  return { state, snapshot, calls, render, remount: () => { hooks.length = 0; }, failOnce: () => { fail = true; } };
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
 test('Describe defaults to backlog, sends exact host identity and retains the request through a lost reply', async () => {
@@ -38,15 +38,60 @@ test('Describe defaults to backlog, sends exact host identity and retains the re
   tree.find(node => node.props?.label === 'Retry saved request').props.onPress(); await settle();
   assert.equal(f.calls.length, 2); assert.deepEqual(f.calls[0], f.calls[1]);
   assert.equal(f.calls[0].input.remoteServerId, 'remote'); assert.equal(f.calls[0].input.workspaceId, 'work'); assert.equal(f.calls[0].input.action, 'backlog');
+  assert.equal(f.calls[0].input.requestedWorkflow, 'standard');
   assert.equal(f.state.get('kanban-intake:personal:pending'), null); assert.equal(f.state.get('kanban-intake:personal:receipts').length, 1);
 });
 test('Discovery receives the selected remote coordinator and workspace, not Personal', () => {
   const f = fixture(); f.state.set('kanban-intake:personal:mode', 'discover');
   const discovery = f.render().find(node => node.type === 'MorningCheck');
   assert.equal(discovery.props.ownServerId, 'remote'); assert.equal(discovery.props.coordinatorId, 'coordinator'); assert.equal(discovery.props.workspace.id, 'work');
-  discovery.props.onImported([{ taskId: `task_${randomUUID()}`, title: 'Selected ticket' }]);
+  assert.equal(discovery.props.requestedWorkflow, 'standard');
+  discovery.props.onImported([{ taskId: `task_${randomUUID()}`, title: 'Selected ticket', requestedWorkflow: 'standard' }]);
+  assert.equal(f.state.get('kanban-intake:personal:receipts')[0].requestedWorkflow, 'standard');
   assert.equal(f.calls.length, 0); assert.equal(f.state.get('kanban-intake:personal:receipts')[0].action, 'backlog');
 });
+const link = (f, label) => f.render().find(node => node.type === 'CompactLink' && node.props.label === label);
+
+test('new tasks default to Standard; an override survives a draft, capture, retry and scheduling', async () => {
+  for (const [label, workflow, action] of [['Advanced', 'advanced', 'plan'], ['Manual', 'manual', 'queue']]) {
+    const f = fixture();
+    link(f, label).props.onPress();
+    f.remount();
+    assert.equal(link(f, label).props.selected, true);
+    f.failOnce();
+    link(f, 'Save to backlog').props.onPress(); await settle();
+    f.remount();
+    assert.equal(link(f, label).props.disabled, true);
+    link(f, 'Retry saved request').props.onPress(); await settle();
+    assert.deepEqual(f.calls[0], f.calls[1]);
+    assert.equal(f.calls[0].input.requestedWorkflow, workflow);
+    assert.equal(link(f, 'Standard').props.selected, true);
+    link(f, action === 'plan' ? 'Plan now' : 'Queue for planning').props.onPress(); await settle();
+    assert.equal(f.calls[2].input.requestedWorkflow, workflow);
+    assert.equal(f.calls[2].input.action, action);
+  }
+});
+
+test('leaving an empty form discards its choice, typing into that form saves it with the draft', () => {
+  const f = fixture();
+  for (const key of ['title', 'requirements']) f.state.set(`kanban-intake:personal:${key}`, '');
+  link(f, 'Advanced').props.onPress();
+  f.remount();
+  assert.equal(link(f, 'Standard').props.selected, true);
+  link(f, 'Manual').props.onPress();
+  f.render().find(node => node.props?.accessibilityLabel === 'Task title').props.onChangeText('New task');
+  f.remount();
+  assert.equal(link(f, 'Manual').props.selected, true);
+});
+
+test('routing an older saved receipt preserves its original workflow behavior', async () => {
+  const f = fixture();
+  f.state.set('kanban-intake:personal:receipts', [{ taskId: `task_${randomUUID()}`, title: 'Older task', serverId: 'remote', coordinatorId: 'coordinator', action: 'backlog', completed: true }]);
+  link(f, 'Advanced').props.onPress();
+  link(f, 'Plan now').props.onPress(); await settle();
+  assert.equal('requestedWorkflow' in f.calls[0].input, false);
+});
+
 test('stale host and ambiguous coordinators disable creation; invalid details stay editable', async () => {
   const f = fixture(); f.snapshot.hosts[0].snapshot.observedAt = '2020-01-01';
   assert.equal(f.render().find(node => node.props?.label === 'Save to backlog').props.disabled, true);

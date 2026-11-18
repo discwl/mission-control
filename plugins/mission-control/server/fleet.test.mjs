@@ -71,6 +71,7 @@ test("only opted-in owned tasks are eligible; finished attention can advance but
   assert.equal(chooseNextTask("personal", coordinator(), host(), []), null);
   assert.equal(chooseNextTask("personal", coordinator(), host(), [queue({ coordinatorId: "other" })]), null);
   assert.equal(chooseNextTask("personal", coordinator(), host(), [queue({ remoteServerId: "other" })]), null);
+  assert.equal(chooseNextTask("personal", coordinator({ remoteServerId: "other", links: [] }), host(), [queue({ requestedWorkflow: "standard" })]), null);
   assert.ok(chooseNextTask("personal", coordinator(), host({ agents: [agent("worker", { attention: true, attentionReason: "finished" })] }), [queue()]));
   assert.equal(chooseNextTask("personal", coordinator(), host({ agents: [agent("worker", { pendingPermissions: 1 })] }), [queue()]), null);
 });
@@ -111,6 +112,37 @@ test("one wake-up reserves intent, keeps external approval instructions, and can
   assert.equal(state.coordinators[0].pending, null);
   assert.equal(state.coordinators[0].wakeups, 1);
   await f.engine.tick(); assert.equal(f.sent.length, 1);
+});
+
+test("new queued tasks enroll with the selected workflow before they have a worker", async t => {
+  for (const workflow of ["standard", "advanced", "manual"]) {
+    const enrollments = [];
+    const f = await fixture(t, { enrollQueued: async (...args) => { enrollments.push(args); } });
+    f.current.coordinators[0].links = [];
+    f.currentHost.agents = [];
+    await f.change(state => { state.queue[0].requestedWorkflow = workflow; });
+    const revision = (await f.store.read()).revision;
+    await Promise.all([f.engine.tick(), f.engine.tick()]);
+    assert.deepEqual(enrollments, [["coordinator", "remote", "task_a", workflow, revision, at]]);
+    assert.equal(f.sent.length, 0);
+  }
+});
+
+test("a queued workflow waits after failed enrollment and never falls back to a chat prompt", async t => {
+  let attempts = 0;
+  const f = await fixture(t, { enrollQueued: async () => { attempts++; throw new Error("Host is updating"); } });
+  await f.change(state => { state.queue[0].requestedWorkflow = "standard"; });
+  f.setValid(false);
+  await f.engine.tick();
+  assert.equal(attempts, 0);
+  f.setValid(true);
+  await f.engine.tick();
+  await f.engine.tick();
+  const state = await f.store.read();
+  assert.equal(attempts, 1);
+  assert.equal(f.sent.length, 0);
+  assert.equal(state.queue[0].enabled, true);
+  assert.match(state.coordinators[0].message, /Host is updating/);
 });
 
 test("two supervisor instances cannot both reserve the same task", async t => {
