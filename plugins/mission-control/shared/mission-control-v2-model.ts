@@ -65,8 +65,10 @@ export function buildV2Tasks(snapshot: FleetSnapshot, options: { unconfirmed?: b
         if (!newer && unresolvedDelivery.decision.resume?.phase === "pending") { state = "Waiting on worker"; waitingOn = "Worker availability"; next = "Decision saved; worker delivery is pending. No repeat approval is needed."; }
         else if (!newer) { state = "Needs you"; waitingOn = "Delivery inspection"; next = "Delivery is unconfirmed. Inspect the worker before retrying."; }
         else { state = workflow.actor === "you" ? "Needs you" : running ? "Working" : "Waiting on worker"; waitingOn = workflow.actor === "you" ? "You" : "Worker"; }
-      } else if (entry.problem || workflow.actor === "dependency") { state = "Blocked"; waitingOn = "Recorded blocker"; }
-      else if (workflow.actor === "you") { state = "Needs you"; waitingOn = "You"; }
+      } else if (workflow.stage === "Your review" || workflow.stage === "Blocked" || workflow.actor === "dependency") {
+        state = "Blocked"; waitingOn = "Host orchestrator follow-up";
+        if (workflow.stage === "Your review") next = "The task is marked in review without an open review request.";
+      } else if (workflow.actor === "you") { state = "Needs you"; waitingOn = "You"; }
       else if (running) { state = "Working"; waitingOn = "Worker"; }
       else if (queue.length) { state = "Queued"; waitingOn = "Coordinator eligibility check"; }
       else { state = "Waiting on worker"; waitingOn = "Worker"; }

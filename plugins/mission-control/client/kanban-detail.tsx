@@ -74,6 +74,8 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
     .sort((a, b) => b.decision.requestedAt.localeCompare(a.decision.requestedAt))[0];
   const receipt = resolved ? decisionReceipt(resolved, row.hostLabel, row.entry.decisions) : null;
   const next = kanbanGuidance(item);
+  const followUp = item.tab === "Next step" && item.lane === "progress" && !item.needsYou;
+  const followUpNote = row.entry.run?.nextAction?.trim();
   const attentionEntry = row.staleReview ? { ...row.entry, decisions: row.entry.decisions.filter(item => item.decision.kind !== "review") } : row.entry;
   const hasRequest = kanbanHasRequest({ ...row, entry: attentionEntry });
   const deliveredQuestion = task.status === "delivered" ? attentionEntry.questions.find(({ question }) => question.status === "open")?.question : undefined;
@@ -91,6 +93,22 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
       try { navigation.openWorkspace({ serverId: row.serverId, workspaceId }); } catch (cause) { setError(String(cause)); }
     } else setTab("Workers");
   };
+  function followUpLinks() {
+    if (!navigation) return <Text style={{ color: colors.foregroundMuted }}>Conversation navigation is unavailable in this view.</Text>;
+    // A host coordinator is a contact for unowned work. It does not become the recorded task owner.
+    const hostCoordinators = snapshot.coordinators.filter(coordinator => coordinator.remoteServerId === row.serverId && !coordinator.agent.archivedAt);
+    const owners = hostCoordinators.filter(coordinator => row.coordinators.some(owner => owner.agentId === coordinator.agentId));
+    const contacts = owners.length ? owners : hostCoordinators;
+    if (contacts.length) return contacts.map(coordinator => <CompactLink key={coordinator.agentId}
+      label={contacts.length === 1 ? `Open ${row.hostLabel} orchestrator` : `Open ${coordinator.name} · ${row.hostLabel}`}
+      icon="MessageSquare" colors={colors} onPress={() => openAgent(snapshot.serverId, coordinator.agentId)} />);
+    if (singleWorker) return <CompactLink label="Open linked worker" icon="MessageSquare" colors={colors} onPress={() => openAgent(row.serverId, singleWorker.id)} />;
+    if (activeWorkers.length) return <CompactLink label="View linked workers" colors={colors} onPress={() => setTab("Workers")} />;
+    if (workspaceId) return <CompactLink label={`Open workspace on ${row.hostLabel}`} colors={colors} onPress={() => {
+      try { navigation.openWorkspace({ serverId: row.serverId, workspaceId }); } catch (cause) { setError(String(cause)); }
+    }} />;
+    return <Text style={{ color: colors.foregroundMuted }}>No linked conversation or workspace is available on {row.hostLabel}.</Text>;
+  }
   const visibleTabs = tabs.filter(name => (name !== "Decision" || hasRequest)
     && (allTabs || ["Next step", "Workers", "Evidence", tab, next.tab, ...(hasRequest ? ["Decision"] : []), ...(receipt ? ["Receipt"] : [])].includes(name)));
   const guide = tab === "Next step" ? next : automatic && tab === "Plan"
@@ -126,7 +144,7 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
         <Text style={{ color: colors.foreground, lineHeight: 22 }}>Next: {next.title}</Text>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
           {tab !== next.tab && next.tab !== "Workers" ? <CompactLink label={next.action} selected colors={colors} onPress={() => setTab(next.tab)} /> : null}
-          <CompactLink label={conversationLabel} icon="MessageSquare" colors={colors} onPress={conversation} />
+          {followUp ? followUpLinks() : <CompactLink label={conversationLabel} icon="MessageSquare" colors={colors} onPress={conversation} />}
         </View>
       </View> : null}
       <ScrollView horizontal style={{ flexGrow: 0 }} contentContainerStyle={{ gap: 8 }} showsHorizontalScrollIndicator={false}>
@@ -152,7 +170,13 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
         {tab === "Next step" ? <Text style={{ color: colors.foreground, lineHeight: 22 }}>{next.why}</Text> : null}
         {guide.steps.map((step, index) => <Text key={step} style={{ color: colors.foregroundMuted, lineHeight: 21 }}>{index + 1}. {step}</Text>)}
       </View>
-      {tab === "Next step" ? <View style={{ gap: 16, maxWidth: 950 }}>
+      {tab === "Next step" && followUp ? <View style={{ gap: 10, maxWidth: 950 }}>
+        {followUpNote ? <View style={{ gap: 4 }}>
+          <Text style={{ color: colors.foregroundMuted }}>Last saved handoff · {row.entry.run?.updatedAt}</Text>
+          <Text selectable style={{ color: colors.foreground, lineHeight: 22 }}>{followUpNote}</Text>
+        </View> : null}
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>{followUpLinks()}</View>
+      </View> : tab === "Next step" ? <View style={{ gap: 16, maxWidth: 950 }}>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
           {next.tab === "Workers" ? <CompactLink label={conversationLabel} icon="MessageSquare" selected colors={colors} onPress={conversation} />
             : <CompactLink label={next.action} selected colors={colors} onPress={() => setTab(next.tab)} />}
@@ -171,9 +195,9 @@ export function KanbanDetail({ item, snapshot, colors, compact, height, navigati
       {!available ? <View style={{ gap: 8 }}><Text accessibilityRole="alert" style={{ color: colors.statusWarning }}>Actions and live evidence are unavailable until {row.hostLabel} has a fresh, complete task snapshot and its Mission Control connection is ready. Last observed: {row.observedAt}. Use Refresh task after reconnecting.</Text>{row.entry.problem ? <Text selectable style={{ color: colors.foreground }}>{row.entry.problem}</Text> : null}</View> : null}
       {row.staleReview ? <Text accessibilityRole="alert" style={{ color: colors.statusWarning }}>The saved review belongs to a different run or revision. Ask the worker for a fresh review; this review cannot be accepted.</Text> : null}
       {tab === "Workers" ? <View style={{ gap: 16 }}>
-        {!activeWorkers.length ? <Text style={{ color: colors.foreground }}>No active worker is linked to this task. {row.coordinators.length ? "Open its coordinator below to establish the next step." : "Open the owning workspace to locate the task owner. Do not assume another agent in that workspace owns this ticket."}</Text> : null}
-        {!activeWorkers.length && !row.coordinators.length && workspaceId && navigation ? <CompactLink label="Open owning workspace" colors={colors} onPress={() => navigation.openWorkspace({ serverId: row.serverId, workspaceId })} /> : null}
-        {!activeWorkers.length && !row.coordinators.length && !workspaceId ? <Text style={{ color: colors.statusWarning }}>No owning workspace or conversation is verified. Ask the host orchestrator to recover the binding for task {row.entry.task.taskId} on {row.hostLabel}.</Text> : null}
+        {!activeWorkers.length ? <Text style={{ color: colors.foreground }}>No active worker is linked to this task. {followUp ? null : row.coordinators.length ? "Open its coordinator below to establish the next step." : "Open the owning workspace to locate the task owner. Do not assume another agent in that workspace owns this ticket."}</Text> : null}
+        {!followUp && !activeWorkers.length && !row.coordinators.length && workspaceId && navigation ? <CompactLink label="Open owning workspace" colors={colors} onPress={() => navigation.openWorkspace({ serverId: row.serverId, workspaceId })} /> : null}
+        {!followUp && !activeWorkers.length && !row.coordinators.length && !workspaceId ? <Text style={{ color: colors.statusWarning }}>No owning workspace or conversation is verified. Ask the host orchestrator to recover the binding for task {row.entry.task.taskId} on {row.hostLabel}.</Text> : null}
         <FleetWorkerTree workers={row.workers} serverId={row.serverId} colors={colors} openAgent={openAgent} />
         {row.coordinators.map(coordinator => <CompactLink key={coordinator.agentId} label={`Open ${coordinator.name}`} colors={colors} onPress={() => openAgent(snapshot.serverId, coordinator.agentId)} />)}
         {row.queue.map(queue => <Text key={queue.coordinatorId} style={{ color: colors.foregroundMuted }}>Queue priority {queue.priority} · coordinator checks eligibility before starting</Text>)}

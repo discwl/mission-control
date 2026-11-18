@@ -209,18 +209,40 @@ test('a completed run or idle agent cannot mark a task done', () => {
   e.task.status = 'delivered'; assert.equal(cards(s)[0].lane, 'done');
 });
 
+test('an in-review task without a run or request remains visible for host follow-up', () => {
+  const e = entry(); e.task.status = 'in_review';
+  const s = snapshot([e]);
+  const item = cards(s)[0];
+  assert.equal(item.row.state, 'Blocked');
+  assert.equal(item.lane, 'progress'); assert.equal(item.tab, 'Next step');
+  assert.equal(item.label, 'In review · no review request');
+  assert.equal(kanbanGuidance(item).title, 'No action needed from you');
+  assert.match(kanbanGuidance(item).why, /no saved run or review request/);
+  assert.equal(filterKanban([item], 'all', 'all', '', 'All work').length, 1);
+  assert.equal(kanbanCounts([item]).needsYou, 0);
+  assert.equal(kanbanSidebarCounts(s, [item], now).input, 0);
+  const { attentionTask } = load('./needs-you-model.ts');
+  assert.equal(attentionTask(item), null);
+  e.run = run('review'); e.decisions = [decision('review')];
+  const review = cards(s)[0];
+  assert.equal(review.tab, 'Code review'); assert.equal(kanbanCounts([review]).needsYou, 1);
+  assert.equal(attentionTask(review).section, 'manual');
+});
+
 test('a later blocked handoff and a worker error cannot look ready for delivery', () => {
   const e = entry(); e.run = { ...run('handoff'), outcome: 'blocked', updatedAt: '2026-10-30T16:02:00.000Z', nextAction: 'Repair the failed checkpoint' };
   e.decisions = [decision('review', { status: 'approved', resolvedAt: at })];
   const s = snapshot([e]);
-  assert.equal(cards(s)[0].lane, 'attention');
+  assert.equal(cards(s)[0].tab, 'Next step');
+  assert.equal(cards(s)[0].needsYou, false);
   assert.match(cards(s)[0].row.next, /Repair the failed checkpoint/);
   e.decisions[0] = decision('review');
   assert.equal(cards(s)[0].lane, 'attention', 'an actual open request remains actionable');
   e.decisions = [decision('review', { status: 'approved', resolvedAt: '2026-10-30T16:03:00.000Z' })];
   assert.equal(cards(s)[0].lane, 'attention');
   s.hosts[0].snapshot.agents = [{ ...worker('idle'), attentionReason: 'error', updatedAt: '2026-10-30T16:04:00.000Z' }];
-  assert.equal(cards(s)[0].lane, 'attention');
+  assert.equal(cards(s)[0].tab, 'Next step');
+  assert.match(cards(s)[0].row.next, /worker error/);
 });
 
 test('historical worker errors do not hide a later accepted review', () => {
@@ -234,9 +256,9 @@ test('historical worker errors do not hide a later accepted review', () => {
   s.hosts[0].snapshot.agents = [historical];
   assert.equal(cards(s)[0].lane, 'attention', 'later acceptance supersedes an older owner error');
   historical.updatedAt = '2026-10-30T16:01:00.000Z';
-  assert.equal(cards(s)[0].lane, 'attention', 'a new current-run failure needs action');
+  assert.equal(cards(s)[0].tab, 'Next step', 'a new current-run failure requires follow-up');
   historical.id = 'stage-reviewer';
-  assert.equal(cards(s)[0].lane, 'attention', 'task-labelled stage workers need not be run.agentId');
+  assert.equal(cards(s)[0].tab, 'Next step', 'task-labelled stage workers need not be run.agentId');
   historical.labels['mission-control.run-id'] = 'run_other';
   assert.equal(cards(s)[0].lane, 'attention', 'an explicit different run is historical');
 });
@@ -348,11 +370,11 @@ test('a blocked handoff without an open request routes to a conversation, not an
   const s = snapshot(); s.hosts[0].snapshot.agents = [worker('idle')];
   const row = { ...cards(s)[0].row, state: 'Blocked', next: 'Approve and publish everything', workflow: { stage: 'Blocked' } };
   const item = kanbanTask(row);
-  assert.equal(item.tab, 'Workers'); assert.equal(kanbanHasRequest(row), false);
+  assert.equal(item.tab, 'Next step'); assert.equal(kanbanHasRequest(row), false);
   const guide = kanbanGuidance(item);
-  assert.match(guide.why, /no open approval/i); assert.doesNotMatch(JSON.stringify(guide), /Approve and publish everything/);
+  assert.equal(guide.title, 'No open request for you'); assert.match(guide.why, /no open question/i); assert.doesNotMatch(JSON.stringify(guide), /Approve and publish everything/);
   const rendered = renderDetail(item, 'Next step');
-  const chat = rendered.nodes.find(node => node.props?.label === 'Open worker conversation');
+  const chat = rendered.nodes.find(node => node.props?.label === 'Open linked worker');
   chat.props.onPress(); assert.deepEqual(rendered.navigation, [{ serverId: 'remote', agentId: 'worker' }]);
   assert.equal(rendered.nodes.some(node => node.props?.label === 'Decision'), false);
   assert.equal(renderDetail(item, 'Decision').nodes.some(node => node.type === 'TaskAttention'), false);
@@ -387,10 +409,10 @@ test('pending receipt, stale review and unavailable records keep their specific 
 test('multiple workers require a choice and archived workers are not chosen automatically', () => {
   const s = snapshot(); s.hosts[0].snapshot.agents = [worker('idle'), { ...worker('idle'), id: 'second' }];
   const row = { ...cards(s)[0].row, state: 'Blocked', workflow: { stage: 'Blocked' } };
-  assert.ok(renderDetail(kanbanTask(row), 'Next step').nodes.some(node => node.props?.label === 'Choose a conversation'));
+  assert.ok(renderDetail(kanbanTask(row), 'Next step').nodes.some(node => node.props?.label === 'View linked workers'));
   row.workers[0].archivedAt = at;
   const rendered = renderDetail(kanbanTask(row), 'Next step');
-  rendered.nodes.find(node => node.props?.label === 'Open worker conversation').props.onPress();
+  rendered.nodes.find(node => node.props?.label === 'Open linked worker').props.onPress();
   assert.deepEqual(rendered.navigation, [{ serverId: 'remote', agentId: 'second' }]);
 });
 

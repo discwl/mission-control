@@ -108,7 +108,7 @@ test('Needs you groups actual questions and final decisions, while routine autom
   e.pipeline.mode = 'waiting';
   assert.equal(attentionTask(card()), null, 'authorized actions still running do not ask again');
   e.pipeline.mode = 'blocked';
-  assert.equal(attentionTask(card()).section, 'intervention');
+  assert.equal(attentionTask(card()), null, 'a runner issue with no pending user request stays on All work');
   e.questions = [{ question: { questionId: 'q', status: 'open', question: 'Which test environment should be used?', askedAt: at, plain: null } }];
   assert.equal(attentionTask(card()).section, 'questions');
   assert.equal(attentionTask(card()).why, 'Which test environment should be used?');

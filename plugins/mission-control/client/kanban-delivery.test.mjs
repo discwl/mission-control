@@ -8,7 +8,7 @@ const nodes = node => !node || typeof node !== 'object' ? [] : Array.isArray(nod
 const model = { exports: {} };
 const modelCode = ts.transpileModule(readFileSync(new URL('./kanban-model.ts', import.meta.url), 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
 runInNewContext(modelCode, { exports: model.exports });
-function render({ kind = 'code', online = true, builders = 1, stale = false, question = false, workflow, tierOnHost, runMode, projection = true, delivered = false, supported = true, tab = 'Delivery' } = {}) {
+function render({ kind = 'code', online = true, builders = 1, stale = false, question = false, workflow, tierOnHost, runMode, projection = true, delivered = false, supported = true, tab = 'Delivery', followUp, navigation = {} } = {}) {
   const jsx = (type, props) => ({ type, props });
   const row = { key: 'remote:task', serverId: 'remote', hostLabel: 'CNS', state: online ? 'Needs you' : 'Unconfirmed', staleReview: stale,
     entry: { task: { taskId: 'task', title: 'Keep invoice dates consistent', acceptanceCriteria: ['Preserve the selected date'] }, run: { runId: 'run', workspaceId: 'workspace', agentId: 'reviewer' }, decisions: question ? [{ decision: { kind: 'review', status: 'open' } }] : [], questions: question ? [{ question: { status: 'open', question: 'Which date should be preserved?' } }] : [], pipeline: { runId: 'run', workflowMode: 'automatic', deliveryKind: kind, stage: 'delivery', mode: 'ready' } },
@@ -19,6 +19,13 @@ function render({ kind = 'code', online = true, builders = 1, stale = false, que
   if (projection) row.entry.pipeline.workflow = workflow; else delete row.entry.pipeline;
   if (delivered) Object.assign(row.entry.task, { status: 'delivered', worktree: { sourceWorkspaceId: 'source' }, assignments: [{ serverId: 'remote', workspaceId: 'source' }], pullRequest: { number: 13, repository: 'billing', url: 'https://example.test/pr/13', mergedAt: 'today' }, deliveryHistory: [{ reopenedAt: 'yesterday', reason: 'Test failed', pullRequest: { number: 12, repository: 'billing', url: 'https://example.test/pr/12' } }] });
   if (delivered === 'unverified') delete row.entry.task.pullRequest.mergedAt;
+  if (followUp) {
+    row.entry.run = followUp.run ?? null;
+    delete row.entry.pipeline;
+    row.entry.task.status = 'in_review';
+    row.workflow = { stage: 'Your review', evidence: 'No run evidence recorded' };
+    row.workers = [];
+  }
   const modules = {
     react: { useState: value => [typeof value === 'function' ? value() : value, () => {}] },
     'react/jsx-runtime': { jsx, jsxs: jsx, Fragment: 'Fragment' }, 'react-native': { ScrollView: 'ScrollView', Text: 'Text', View: 'View' },
@@ -31,12 +38,38 @@ function render({ kind = 'code', online = true, builders = 1, stale = false, que
     './final-change-request': { FinalChangeRequest: 'RequestFixes' },
     './pipeline-review': { PipelineReviewEvidence: 'AutomaticEvidence' }, './action-delivery': { ActionDeliveryCard: 'ActionReview' }, './task-flow': { TaskFlowDetail: 'Evidence' },
     './mission-control-v2-model': { v2Workspace: () => 'workspace' },
-    './kanban-model': { ...model.exports, kanbanCanAct: (_row, live) => live, kanbanHasRequest: () => question, kanbanGuidance: () => ({ title: 'Review the completed work', why: 'The agents have finished their checks.', tab: 'Delivery', action: 'Review result', after: 'Choose whether to publish.', steps: [] }) },
+    './kanban-model': { ...model.exports, kanbanCanAct: (_row, live) => live, kanbanHasRequest: () => question, kanbanGuidance: followUp ? model.exports.kanbanGuidance : () => ({ title: 'Review the completed work', why: 'The agents have finished their checks.', tab: 'Delivery', action: 'Review result', after: 'Choose whether to publish.', steps: [] }) },
     './kanban-origin': { navigateFromKanban: (_server, act) => act() },
   };
   const module = { exports: {} }; runInNewContext(compiled, { exports: module.exports, require: name => { if (!(name in modules)) throw Error(name); return modules[name]; } });
-  return module.exports.KanbanDetail({ item: { row, lane: 'attention', tab: question === true ? 'Decision' : tab, label: 'Ready to publish', needsYou: true }, snapshot: { serverId: 'personal', state: { pipelines: [], revision: 1 } }, colors: {}, compact: false, height: 900, navigation: {}, close() {}, refresh() {} });
+  const item = followUp ? model.exports.kanbanTask(row) : { row, lane: 'attention', tab: question === true ? 'Decision' : tab, label: 'Ready to publish', needsYou: true };
+  return module.exports.KanbanDetail({ item, snapshot: { serverId: followUp?.installation ?? 'personal', coordinators: followUp?.coordinators ?? [], state: { pipelines: [], revision: 1 } }, colors: {}, compact: false, height: 900, navigation, close() {}, refresh() {} });
 }
+test('unowned review card explains the missing request and opens only the correct host orchestrator', () => {
+  const coordinator = (agentId, remoteServerId, archivedAt = null) => ({ agentId, remoteServerId, name: agentId, agent: { archivedAt } });
+  const opened = [];
+  const navigation = { openAgent: target => opened.push([target.serverId, target.agentId]) };
+  const tree = render({ followUp: { coordinators: [coordinator('wrong-host', 'elsewhere'), coordinator('old-chat', 'remote', 'yesterday'), coordinator('cns-chat', 'remote')] }, navigation });
+  const links = nodes(tree).filter(node => node.type === 'Link');
+  assert.match(JSON.stringify(tree), /No action needed from you/);
+  assert.ok(links.some(node => node.props.label === 'Next step' && node.props.selected));
+  assert.ok(!links.some(node => node.props.label === 'Find owner in workspace'));
+  links.find(node => node.props.label === 'Open CNS orchestrator').props.onPress();
+  assert.deepEqual(opened, [['personal', 'cns-chat']]);
+});
+
+test('host-local follow-up without a coordinator shows the saved handoff and opens the task workspace', () => {
+  const opened = [];
+  const run = { runId: 'run', workspaceId: 'workspace', updatedAt: '2026-11-02T00:00:00Z', nextAction: 'Waiting for QA to confirm the deployment.' };
+  const tree = render({ followUp: { installation: 'remote', run }, navigation: { openWorkspace: target => opened.push([target.serverId, target.workspaceId]) } });
+  assert.match(JSON.stringify(tree), /Last saved handoff/);
+  assert.match(JSON.stringify(tree), /Waiting for QA to confirm the deployment/);
+  const links = nodes(tree).filter(node => node.type === 'Link');
+  assert.ok(!links.some(node => /orchestrator/i.test(node.props.label)));
+  links.find(node => node.props.label === 'Open workspace on CNS').props.onPress();
+  assert.deepEqual(opened, [['remote', 'workspace']]);
+});
+
 test('Ready to publish includes the existing code review and comments component on the owning host', () => {
   const tree = render(); const all = nodes(tree); const review = all.find(node => node.type === 'CodeReview');
   assert.ok(review); assert.equal(review.props.serverId, 'remote'); assert.equal(review.props.workspace.id, 'workspace');

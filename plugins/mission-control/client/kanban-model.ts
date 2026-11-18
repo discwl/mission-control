@@ -43,10 +43,10 @@ export function kanbanTask(row: V2Task): KanbanTask {
     return result(unconfirmed ? "attention" : "progress", unconfirmed ? "Decision saved; delivery unconfirmed" : "Sending your decision to the worker", "Check delivery receipt", "Receipt", unconfirmed);
   }
   if (row.workflow.stage === "Delivery approval" && row.workflow.actor === "you") return result("attention", row.entry.pipeline?.deliveryKind === "actions" ? "Actions ready for your approval" : "Ready for your final review", row.entry.pipeline?.deliveryKind === "actions" ? "Review proposed actions" : "Review changes and delivery", "Delivery", true);
-  if (row.state === "Blocked" || row.workflow.stage === "Blocked" || row.state === "Needs you") {
-    return result("attention", "Needs clarification or recovery", "Resolve blocker in conversation", "Workers", true);
+  if (row.state === "Blocked" || row.workflow.stage === "Blocked" || row.workflow.stage === "Your review" || row.state === "Needs you") {
+    const label = row.workflow.stage === "Your review" ? "In review · no review request" : "Blocked · follow-up needed";
+    return result("progress", label, "Read follow-up", "Next step");
   }
-  if (row.workflow.stage === "Your review") return result("attention", "Review request missing", "Inspect review evidence", "Code review", true);
   if ((row.workflow.stage === "Ready" && row.entry.pipeline?.stage !== "delivery") || (row.queue.length && !row.entry.run && !running)) return result("queue", "Waiting to start", "Read task details", "Workers");
   if (!row.entry.run && !running) return result("queue", "Waiting to start", "Read task details", "Evidence");
   const kind = row.entry.pipeline?.deliveryKind ?? row.entry.run?.deliveryKind ?? "code";
@@ -116,6 +116,15 @@ export function kanbanGuidance(item: KanbanTask): { title: string; why: string; 
   if (item.needsYou && item.tab === "Code review" && !item.row.staleReview && item.row.entry.decisions.some(entry => entry.decision.kind === "review" && entry.decision.status === "open")) return make("Review the result, then accept or request fixes", "A code-review request is waiting for your decision.",
     ["Compare the change summary with the approved plan and acceptance criteria.", "Inspect the diff, actual validation results and unresolved findings. Missing or stale evidence must be refreshed.", "When the readiness checks allow it, use Your decision beside the report to accept the code or describe the fixes needed. Ask the reviewer to explain any change you cannot assess."],
     "Acceptance moves toward delivery preparation. Publishing, PR creation and merges require separate authorization.", "Review changes and checks", "Code review");
+  if (item.tab === "Next step" && lane === "progress") {
+    const why = row.workflow.stage === "Your review"
+      ? `The task is marked in review. ${row.entry.run ? "No open review request is attached." : "There is no saved run or review request."}`
+      : "Progress is blocked. There is no open question, permission request or approval for you.";
+    const title = row.workflow.stage === "Your review" && !row.entry.run ? "No action needed from you" : "No open request for you";
+    return make(title, why,
+      [`The ${row.hostLabel} orchestrator can check the ticket and any related work, then update the task or identify its owner.`],
+      "If your input is needed, the owner can record the question here.", "Open follow-up conversation", "Workers");
+  }
   if (lane === "progress" && ["Intake", "Planning", "Plan check"].includes(row.workflow.stage)) return make(item.label,
     "The task is being planned and checked. There is no decision waiting for you.", ["Read the saved plan or progress if you want an update.", "Open the conversation if requirements have changed or you have useful context."],
     planningNext[kanbanWorkflow(row.entry)], "Read planning progress", "Evidence");

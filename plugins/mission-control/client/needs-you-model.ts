@@ -15,6 +15,7 @@ export function attentionTask(item: KanbanTask): AttentionTask | null {
   const { row } = item;
   const make = (section: AttentionSection, label: string, why: string, action: string, requestedAt = row.updatedAt): AttentionTask => ({ item, section, label, why, action, requestedAt });
   if (row.state === "Unconfirmed" || row.limited) return make("intervention", "Status needs checking", `${row.hostLabel} has not returned a fresh, complete task update. Saved details may be out of date.`, "Check connection and task");
+  if (!item.needsYou) return null;
   if (row.entry.problem) return make("intervention", "Task could not be read", "Some task information could not be read. Check the task before continuing.", "Inspect task details");
   const question = row.entry.questions.filter(entry => entry.question.status === "open").sort((a, b) => a.question.askedAt.localeCompare(b.question.askedAt))[0];
   if (question) return make("questions", "Answer needed", question.question.plain?.need || question.question.question, "Answer question", question.question.askedAt);
@@ -28,8 +29,8 @@ export function attentionTask(item: KanbanTask): AttentionTask | null {
       : make("execute", "Actions ready for your decision", "Inspect exactly what will run, where it will run, its effects, checks and recovery steps before authorizing it.", "Review prepared actions");
   }
   if (row.staleReview) return make("intervention", "Review needs refreshing", "The changes no longer match the saved review. Ask the task worker to validate and review the current version.", "Inspect changed work");
-  if (item.needsYou || row.state === "Blocked" || row.workflow.actor === "dependency") return make("intervention", "Task cannot continue", "Check the saved explanation and the task conversation to resolve what is blocking progress.", "Inspect blocker");
-  return null;
+  if (item.tab === "Receipt") return make("intervention", "Decision delivery unconfirmed", "Your decision is saved. Check whether the worker received it.", "Read delivery receipt");
+  return make("intervention", item.label, item.row.next, item.action);
 }
 
 export function attentionTasks(items: readonly KanbanTask[], host = "all", search = ""): AttentionTask[] {
